@@ -27,6 +27,7 @@ for the journal alone to carry, because the unmount follows at once.
 import os
 import random
 import sys
+import time
 
 root = sys.argv[1]
 burst = sys.argv[2:] == ["--burst"]
@@ -58,8 +59,20 @@ if burst:
         os.unlink(os.path.join(late, f"n{i:04d}"))
     for i in range(2, 300, 6):
         write(os.path.join(late, f"n{i:04d}"), blob(5000 + i))
-    write(os.path.join(late, "big.bin"), blob(700_000))
+    # Every change must be in a flushed journal entry before the mount is
+    # dropped, or the reference's own recovery finds a torn update (an
+    # extent past its inode's size, measured once in CI) and the fixture
+    # is not a clean replay. So each file and the directory are fsynced,
+    # and the wait outlasts the journal's flush delay (1 s by default).
+    for name in sorted(os.listdir(late)):
+        fd = os.open(os.path.join(late, name), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+    fd = os.open(late, os.O_RDONLY)
+    os.fsync(fd)
+    os.close(fd)
     os.sync()
+    time.sleep(2)
     sys.exit(0)
 
 # Many small files in one directory: enough entries to split nodes.
