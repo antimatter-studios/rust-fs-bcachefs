@@ -32,6 +32,7 @@ be learned this way is an **open question**, not a guess.
 | S5 | The LZ4 block format description, https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md (BSD-2-Clause documentation of a public format) | prose documentation | Token, literal-length and match-length encoding, little-endian 16-bit offsets, overlapping matches: the decoder in `src/compress.rs` is written from it. |
 | S6 | Published check values: CRC-32C of "123456789" (0xe3069283), CRC-64/WE of "123456789" (0x62ec59e3f1a4f00a), XXH64 of the empty input with seed 0 (0xef46db3751d8e999) | public reference values | Unit-test anchors for the checksum implementations. |
 | S8 | The reference implementation mounted through FUSE in the test VM (tools v1.39.7 built with `BCACHEFS_FUSE=1`, per S2), driven by ordinary file operations (`scripts/guest-age.py`) | black-box oracle | The `aged` and `aged-unclean` fixtures: what a running filesystem writes (inline data, narrow key formats, nodes of many bsets, link counts, an unclean shutdown), with the inode numbers and link counts the mount reported. |
+| S9 | J.-P. Aumasson and D. J. Bernstein, "SipHash: a fast short-input PRF" (2012), https://www.aumasson.jp/siphash/siphash.pdf, and its published test vector | prose documentation | The SipHash-2-4 algorithm `src/siphash.rs` is written from. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
 
 ## Per-structure notes
@@ -254,6 +255,38 @@ by operation (positions `inode:offset:snapshot`):
   btrees of the write-study base and of the aged image (level-1 roots)
   leaves images the reference checker passes with nothing to fix.
 
+### Creating a file (`Writer::create_file`) -- learned from the write study, judged
+
+- Dirent offset = SipHash-2-4 keyed `(directory's hash_seed, 0)` over the
+  name, shifted right by one. SipHash is a published algorithm (Aumasson
+  and Bernstein, 2012; S9); which key and which shift were found by
+  computing candidates against the write study's dirents (S4) and then
+  checked against every dirent of every fixture, thousands in `aged`
+  (tests/oracle_encode.rs). Collisions (open question 10) are refused.
+- inode_v3 varints in order: atime, ctime, mtime, otime (two varints
+  each), uid, gid, nlink, generation, dev, data_checksum, compression,
+  project, background_compression, data_replicas, promote_target,
+  foreground_target, background_target, erasure_code, fields_set, dir,
+  dir_offset (a file stores 21 fields), then subvol, parent_subvol, nocow,
+  depth (a directory stores 25). Varint encoding is the inverse of the
+  decoding above; decoding then encoding every inode of every fixture gives
+  back its bytes (checked).
+- Times are nanoseconds since the superblock's time base (`time_base_lo`,
+  nanoseconds since the epoch; precision 1) -- the reference's create was
+  5.1e9 units after the base's, five seconds later (S8); the reference
+  mount reports the mtime this writer sets (checked).
+- The next inode number is the `inode_alloc_cursor` key (type 35) in
+  logged_ops at 1:1:0, value `(u64 0, u64 next)`; the reference advanced it
+  by one per create (S8).
+- Accounting: `nr_inodes` at POS_MIN (value: count), and per btree the key
+  at inode `0x05ffffffff000000 | id << 16` (value: keys, bytes, 0), bytes
+  counted at the unpacked size (S8, every pair).
+- The largest inline file written is 248 bytes, the largest seen inline.
+- Judged: four files in the write-study base and one in the aged image
+  pass the reference checker with nothing to fix, and the reference mount
+  lists them and reads back their bytes, sizes and modes
+  (tests/write_oracle.rs, in the guest).
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
@@ -286,6 +319,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    `whiteout` key type has not been seen yet.
 9. **Dirent names longer than one key, casefolded dirents, and the
    31-bit dirent offset change** (1.30) -- not exercised.
+10. **Dirent hash collisions**: where an entry goes when its name's hash
+    slot is taken (none occurred in any fixture). The writer refuses.
+11. **The inline-data limit**: inline was seen up to 248 bytes and not at
+    2024; where between the reference switches to extents is unknown.
+12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
+    accounting keys' versions: copied and left unchanged by the writer;
+    the reference checker accepts both.
 
 ## Confirmation
 

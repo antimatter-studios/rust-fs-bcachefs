@@ -44,6 +44,13 @@ API, a patch never does.
 - **`fsck.bcachefs`, check-only** (`check::check`): btree nodes, key order,
   directory entries, link counts, extents and data checksums; fsck(8) exit
   status. Never writes.
+- **Writing, behind the `write` feature (off by default)**:
+  `write::Writer` appends bsets to btree nodes and carries their length to
+  the superblock, and `Writer::create_file` creates a small (inline) file in
+  an existing directory. Every image it writes in the tests passes the
+  reference checker and reads back through the reference implementation.
+- **Encoders**: `inode::InodeV3Raw`, `inode::varint_encode`,
+  `Dirent::encode_value`, `inode::dirent_hash` and `siphash::siphash24`.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in

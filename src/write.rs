@@ -367,12 +367,6 @@ impl<D: BlockDevice> Writer<D> {
     /// `data` (at most [`INLINE_MAX`] bytes, stored inline). Returns its
     /// inode number.
     pub fn create_file(&mut self, parent: u64, name: &[u8], data: &[u8], mode: u32) -> Result<u64> {
-        if !name.is_empty() {
-            return Err(Error::Unsupported(format!(
-                "creating files is not implemented yet ({parent}, {} bytes, mode {mode:o})",
-                data.len()
-            )));
-        }
         if data.len() > INLINE_MAX {
             return Err(Error::Unsupported(format!(
                 "files over {INLINE_MAX} bytes need allocation, which is not implemented"
