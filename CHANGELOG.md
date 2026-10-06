@@ -26,6 +26,8 @@ API, a patch never does.
   is read through its journal (`journal::read_entries`, `journal::replay`,
   `btree::walk_replayed`), as the reference sees it after its own replay,
   without writing to the device.
+- **Extended attributes** (`Filesystem::xattrs`, `xattr::Xattr`): the
+  user and trusted namespaces, read through a journal replay too.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in

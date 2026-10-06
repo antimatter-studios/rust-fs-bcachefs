@@ -185,6 +185,16 @@ all eight fixture sets.
   `aged-unclean` reads exactly as the reference sees it after its own
   replay, every path, listing and file byte.
 
+### Extended attributes (`src/xattr.rs`, S8)
+
+- The xattrs btree (id 3, S1's order) holds one `xattr` key (type 11) per
+  attribute at `inode:hash:snapshot`. Value: namespace u8, name length u8,
+  value length le16, the name without its namespace prefix, the value,
+  zero padding (S3 + S4: hexdumps against the lister's `name:value` and
+  the mount's listing; checked for every path of aged and aged-unclean).
+- Namespaces seen: 0 = `user.`, 3 = `trusted.`. Others are refused, not
+  guessed (open question 6).
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
