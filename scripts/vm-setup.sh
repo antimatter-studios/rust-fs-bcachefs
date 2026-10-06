@@ -37,7 +37,10 @@ REF_BUILD="$REF_VERSION fuse"
 ROOT=/srv/ref-trixie
 
 apt-get update -qq
-apt-get install -y -qq debootstrap jq xxd coreutils fuse3 >/dev/null
+# build-essential: the in-guest suite (`chore test:vm`, scripts/guest-suite.sh)
+# compiles this crate in the guest itself, and its build scripts need a C
+# linker; the reference tools are built in the chroot and need none of this.
+apt-get install -y -qq debootstrap jq xxd coreutils fuse3 build-essential >/dev/null
 
 if [ ! -f "$ROOT/.bootstrapped" ]; then
     rm -rf "$ROOT"

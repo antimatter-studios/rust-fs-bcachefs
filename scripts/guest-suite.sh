@@ -9,9 +9,10 @@
 #
 # rust-fs-core's guest-rust-run, run in place from the staged sibling,
 # links the siblings, puts the toolchain and the build on the guest's own
-# disk and installs the pinned toolchain; then the unit and oracle tiers'
-# tests run, exactly the targets `chore test:unit` and `chore test:oracle`
-# name. The fixtures are the ones on the share (.vm-share/fixtures).
+# disk and installs the pinned toolchain; then the unit tier's tests run in
+# debug, and every oracle test target (by glob, so a new one needs no edit
+# here) and the C ABI test in release. The fixtures are the ones on the
+# share (.vm-share/fixtures).
 set -euo pipefail
 
 [ "${FLTH_GUEST:-}" = 1 ] ||
@@ -24,6 +25,5 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
     fs-bcachefs /share rust-fs-core -- bash -c '
         set -euo pipefail
         EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib --test fuzz_decoders "$@"
-        cargo test --locked --release --test oracle_superblock --test oracle_tree \
-            --test oracle_fs --test capi "$@"
+        cargo test --locked --release --test "oracle_*" --test capi "$@"
     ' guest-suite "$@"
