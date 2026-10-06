@@ -13,7 +13,10 @@ anyone writing this crate. The reference tools are built and run only inside
 the disposable Linux test VM (`scripts/vm-setup.sh`), are never linked or
 copied here, and are named by role: the **reference formatter**
 (`format`), the **reference superblock printer** (`show-super`), the
-**reference lister** (`list`), the **reference checker** (`fsck`).
+**reference lister** (`list`), the **reference checker** (`fsck`), and the
+**reference implementation**: the tools' userspace copy of the filesystem
+mounted through FUSE (`fusemount`), which ages the `aged` fixture inside the
+VM by ordinary file operations.
 
 Every source used is listed below with what it told us. A fact that could not
 be learned this way is an **open question**, not a guess.
@@ -23,11 +26,12 @@ be learned this way is an **open question**, not a guess.
 | # | Source | Kind | What it told us |
 |---|---|---|---|
 | S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (fetched 2026-10-06) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a 44-bit sector offset and a generation; list of key types and metadata versions in order. |
-| S2 | bcachefs-tools `INSTALL.md` at v1.39.7 (build instructions only) | prose documentation | The reference tools' build dependencies and minimum Rust, used only to build the oracle inside the VM. Contains no format information. |
+| S2 | bcachefs-tools `INSTALL.md` at v1.39.7 (build instructions only) | prose documentation | The reference tools' build dependencies, minimum Rust and the `BCACHEFS_FUSE=1` switch for their FUSE mount, used only to build the oracle inside the VM. Contains no format information. |
 | S3 | Reference tools v1.39.7, run in the test VM | black-box oracle | `show-super`, `list`, `fsck` output for each fixture; recorded in `.vm-share/fixtures/*.json` and `*.txt` beside the images. |
 | S4 | Hexdumps of fixture images, and candidate computations over their bytes (checksum conventions) | black-box observation | See the per-structure notes below. |
 | S5 | The LZ4 block format description, https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md (BSD-2-Clause documentation of a public format) | prose documentation | Token, literal-length and match-length encoding, little-endian 16-bit offsets, overlapping matches: the decoder in `src/compress.rs` is written from it. |
 | S6 | Published check values: CRC-32C of "123456789" (0xe3069283), CRC-64/WE of "123456789" (0x62ec59e3f1a4f00a), XXH64 of the empty input with seed 0 (0xef46db3751d8e999) | public reference values | Unit-test anchors for the checksum implementations. |
+| S8 | The reference implementation mounted through FUSE in the test VM (tools v1.39.7 built with `BCACHEFS_FUSE=1`, per S2), driven by ordinary file operations (`scripts/guest-age.py`) | black-box oracle | The `aged` and `aged-unclean` fixtures: what a running filesystem writes (inline data, narrow key formats, nodes of many bsets, link counts, an unclean shutdown), with the inode numbers and link counts the mount reported. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
 
 ## Per-structure notes
@@ -123,33 +127,58 @@ all eight fixture sets.
   incompressible 5 (S3 + S4, checked). lz4 = bare LZ4 block; zstd = u32
   length + standard frame; gzip = raw deflate (S4, checked).
 - Small files and symlink targets were stored as ordinary extents, not
-  inline data, by this formatter (S3).
+  inline data, by this formatter (S3). A mounted filesystem stores small
+  files as `inline_data` keys (type 17, S1's list order) in the extents
+  btree: the value is the file's bytes zero-padded to a whole u64 (the
+  lister's `datalen` is the value length), and the key covers `size`
+  sectors ending at its position like any extent (S3, S4, S8; checked by
+  reading every file of `aged`).
+
+### What an aged filesystem added (`aged`, S8)
+
+- Feature bits 5 = `journal_seq_blacklist_v3` and 8 = `inline_data`, by the
+  same pairing as the other names (S3, checked).
+- Clean shutdown: superblock flags[0] bit 1. The printer's `Clean: 1` and
+  `Clean: 0` images (aged, aged-unclean) differ in flags[0] in that bit
+  alone, and it is set on every formatter-made image (S3, S4, inferred).
+  The reader refuses an image without it: its roots are stale until the
+  journal is replayed (open question 4).
+- Link counts: a file stores one less than its link count (three names,
+  stored 2); a directory stores its number of subdirectories, and the mount
+  reports that plus 2 (S3 against S8's `st_nlink` for every inode, checked).
+- Leaf nodes with packed formats narrower than 64/64/32 and non-zero field
+  offsets (`fields 16:2147485236, 8:1, 32:0, 8:0`; the lister's `formats`
+  mode, recorded as `aged.<btree>.formats.txt`), and nodes of up to 78
+  bsets with deletions among them: every key the lister prints is read,
+  in order, with the same type, position and size (checked).
 
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
 has settled yet. Each needs a fixture that exercises it, not a guess.
 
-1. **Packed fields that are not byte-aligned.** Every node format the
-   formatter produced was 64/64/32 bits; the top-down bit order is proven
-   only for that. A filesystem aged by a kernel (narrower formats) is needed.
+1. **Packed fields that are not byte-aligned.** The aged image's formats are
+   narrower (8, 16 and 32 bits, with field offsets) and are read correctly,
+   but every width seen is still a whole number of bytes; the top-down bit
+   order is proven only for those.
 2. **Pointer device and generation bits** (assumed 48..55 and 56..63). Every
    fixture is single-device with generation 0.
 3. **Btree node flags**: where the btree id and level are, and what bit 8 and
    bit 32 mean. The reader does not need them yet (it trusts the parent).
-4. **Unclean filesystems**: without the `clean` field the roots must come
-   from the journal (`jset`), which is not decoded. Every fixture is clean
-   because nothing here mounts.
+4. **Unclean filesystems**: the roots must come from the journal (`jset`),
+   which is not decoded. `aged-unclean` is such an image; it is refused
+   until the journal is replayed (#5).
 5. **Snapshots and subvolumes**: keys are read at whatever snapshot they
    carry; visibility rules (S1 9.4) are not implemented.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
-   reflink, inline_data, xattrs, multiple devices and replicas**: not seen in
-   any fixture.
+   reflink, xattrs, multiple devices and replicas**: not seen in any
+   fixture. (inline_data: seen and read, see above.)
 7. **Varint fields beyond `dev`** (data_checksum ... casefold) are skipped,
    and the meaning of flags bits 32..35 of an inode's flags word is unknown.
-8. **Whiteouts and deleted keys across bsets** in a node that was written
-   more than once by a mounted kernel; the merge is newest-bset-wins, which
-   needs an aged image to confirm.
+8. **Whiteouts and deleted keys across bsets**: SETTLED for what the aged
+   image holds. Nodes of up to 78 bsets merge newest-bset-wins with deleted
+   keys dropped, and the result equals the lister's keys exactly. A
+   `whiteout` key type has not been seen yet.
 9. **Dirent names longer than one key, casefolded dirents, and the
    31-bit dirent offset change** (1.30) -- not exercised.
 

@@ -26,6 +26,16 @@ pub struct Filesystem<D: BlockRead> {
 impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
+        if !sb.is_clean() {
+            // The roots in the superblock are as of the last clean
+            // shutdown; everything since is in the journal, which is not
+            // replayed yet. Reading the roots would show an old tree as
+            // if it were current.
+            return Err(Error::Unsupported(
+                "the filesystem was not cleanly unmounted; its journal must be replayed first"
+                    .into(),
+            ));
+        }
         if sb.nr_devices != 1 {
             return Err(Error::Unsupported(format!(
                 "{} devices: only single-device filesystems are read",
@@ -103,6 +113,28 @@ impl<D: BlockRead> Filesystem<D> {
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {}
                 crate::bkey::key_type::RESERVATION => continue,
+                crate::bkey::key_type::INLINE_DATA => {
+                    // The value is the data itself, zero-padded to a whole
+                    // u64, and the key covers `size` sectors ending at its
+                    // position like any extent (S3: the lister prints the
+                    // bytes and a `datalen` equal to the value length; S4:
+                    // the bytes match the file the mount wrote).
+                    let start = k
+                        .pos
+                        .offset
+                        .checked_sub(k.size as u64)
+                        .ok_or_else(|| Error::Corrupt("inline extent before offset 0".into()))?
+                        .checked_mul(512)
+                        .ok_or_else(|| Error::Corrupt("inline extent offset overflows".into()))?;
+                    if start >= size {
+                        continue;
+                    }
+                    let n = ((size - start) as usize)
+                        .min(k.value.len())
+                        .min(k.size as usize * 512);
+                    out[start as usize..start as usize + n].copy_from_slice(&k.value[..n]);
+                    continue;
+                }
                 t => return Err(Error::Unsupported(format!("extent key type {t}"))),
             }
             let e = DataExtent::from_key(&k)?;
