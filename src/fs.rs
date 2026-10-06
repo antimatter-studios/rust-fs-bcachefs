@@ -12,12 +12,16 @@ use crate::btree::{self, btree_id};
 use crate::error::{Error, Result};
 use crate::extent::{compression, DataExtent};
 use crate::inode::{Dirent, Inode, ROOT_INO};
+use crate::journal::Replay;
 use crate::superblock::Superblock;
 use fs_core::BlockRead;
 
 pub struct Filesystem<D: BlockRead> {
     dev: D,
     sb: Superblock,
+    /// What a replay of the journal adds, when the filesystem was not shut
+    /// down cleanly.
+    replay: Option<Replay>,
     inodes: BTreeMap<u64, Inode>,
     /// directory inode -> entries, in btree (hash) order
     dirents: BTreeMap<u64, Vec<Dirent>>,
@@ -26,31 +30,29 @@ pub struct Filesystem<D: BlockRead> {
 impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
-        if !sb.is_clean() {
-            // The roots in the superblock are as of the last clean
-            // shutdown; everything since is in the journal, which is not
-            // replayed yet. Reading the roots would show an old tree as
-            // if it were current.
-            return Err(Error::Unsupported(
-                "the filesystem was not cleanly unmounted; its journal must be replayed first"
-                    .into(),
-            ));
-        }
         if sb.nr_devices != 1 {
             return Err(Error::Unsupported(format!(
                 "{} devices: only single-device filesystems are read",
                 sb.nr_devices
             )));
         }
+        // The roots in the superblock are as of the last clean shutdown;
+        // after an unclean one everything since is in the journal, which
+        // is replayed here, in memory.
+        let replay = if sb.is_clean() {
+            None
+        } else {
+            Some(crate::journal::replay(&dev, &sb)?)
+        };
         let mut inodes = BTreeMap::new();
-        for k in btree::walk(&dev, &sb, btree_id::INODES)? {
+        for k in btree::walk_replayed(&dev, &sb, btree_id::INODES, replay.as_ref())? {
             if k.key_type == crate::bkey::key_type::INODE_V3 {
                 let i = Inode::from_key(&k)?;
                 inodes.insert(i.ino, i);
             }
         }
         let mut dirents: BTreeMap<u64, Vec<Dirent>> = BTreeMap::new();
-        for k in btree::walk(&dev, &sb, btree_id::DIRENTS)? {
+        for k in btree::walk_replayed(&dev, &sb, btree_id::DIRENTS, replay.as_ref())? {
             if k.key_type == crate::bkey::key_type::DIRENT {
                 let d = Dirent::from_key(&k)?;
                 dirents.entry(d.dir).or_default().push(d);
@@ -59,6 +61,7 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(Filesystem {
             dev,
             sb,
+            replay,
             inodes,
             dirents,
         })
@@ -106,13 +109,14 @@ impl<D: BlockRead> Filesystem<D> {
             usize::try_from(size)
                 .map_err(|_| Error::Unsupported("file larger than memory".into()))?
         ];
-        for k in btree::walk(&self.dev, &self.sb, btree_id::EXTENTS)? {
+        for k in btree::walk_replayed(&self.dev, &self.sb, btree_id::EXTENTS, self.replay.as_ref())?
+        {
             if k.pos.inode != ino {
                 continue;
             }
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {}
-                crate::bkey::key_type::RESERVATION => continue,
+                crate::bkey::key_type::RESERVATION | crate::bkey::key_type::WHITEOUT => continue,
                 crate::bkey::key_type::INLINE_DATA => {
                     // The value is the data itself, zero-padded to a whole
                     // u64, and the key covers `size` sectors ending at its

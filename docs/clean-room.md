@@ -152,6 +152,39 @@ all eight fixture sets.
   bsets with deletions among them: every key the lister prints is read,
   in order, with the same type, position and size (checked).
 
+### Journal and replay (`src/journal.rs`) -- documented behaviour, inferred layout
+
+- Documented (S1 9.7, 11.2): a ring of buckets of `jset`s with increasing
+  sequence numbers; sub-entries typed in the listed order (btree_keys 0,
+  btree_root 1, ..., log 9, overwrite 10, ...); btree roots recorded on
+  every write; recovery replays from the newest flush entry's `last_seq`
+  to that entry; entries after the last flush are not replayed; btree
+  data from never-committed sequence numbers is ignored.
+- `journal_v2` field (type 9): `(first bucket u64, count u64)` pairs; the
+  journal's buckets are at `bucket * bucket_size` sectors (S4: every entry
+  the reference lists is found at the sector it names, checked).
+- jset: csum[16], magic u64 @16 (= 0x245235c1a3625032 XOR the internal
+  UUID's first 8 bytes; constant across every entry, inferred), seq u64
+  @24, version u32 @32, flags u32 @36 (low 4 bits checksum type; bit 5 set
+  on the entries the reference calls `flush 0`), u64s u32 @40, last_seq
+  u64 @48, sub-entries @56; the checksum covers bytes 16 to the end of the
+  sub-entries; each entry is padded to the block size (S4, every header
+  field checked against `list_journal -H` for all 201 entries).
+- Sub-entry header: the same 8 bytes as the clean field's entries; keys
+  are unpacked bkeys (S4; every `btree_keys` key of the replay window
+  checked against `list_journal -d` by btree, position and size).
+- Btree ids beyond dirents follow S1's list order; those the journals
+  touch (alloc 4, lru 10, freespace 11, need_discard 12, backpointers 13,
+  deleted_inodes 16, logged_ops 17, accounting 20) are checked.
+- Replay in memory: the roots are the newest flush entry's `btree_root`
+  entries, each with its level; bsets whose journal sequence (bset bytes
+  8..16) is above that entry are ignored; the replayed keys, leaf and
+  interior (the journal carries level-1 pointer updates when nodes split),
+  replace the keys at their positions in the nodes they fall within, a
+  deleted key or whiteout removing one. Checked: the uncleanly unmounted
+  `aged-unclean` reads exactly as the reference sees it after its own
+  replay, every path, listing and file byte.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
@@ -165,9 +198,12 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    fixture is single-device with generation 0.
 3. **Btree node flags**: where the btree id and level are, and what bit 8 and
    bit 32 mean. The reader does not need them yet (it trusts the parent).
-4. **Unclean filesystems**: the roots must come from the journal (`jset`),
-   which is not decoded. `aged-unclean` is such an image; it is refused
-   until the journal is replayed (#5).
+4. **Unclean filesystems**: SETTLED for single-device images (see Journal
+   above). Still open: the superblock's `journal_seq_blacklist` field
+   (type 8; pairs of u64, e.g. 313..4409 after a replay) on a clean image
+   -- whether its end is inclusive, and whether a clean image can still
+   hold bsets from a blacklisted sequence. The reader does not consult it
+   yet; every clean fixture reads correctly without it.
 5. **Snapshots and subvolumes**: keys are read at whatever snapshot they
    carry; visibility rules (S1 9.4) are not implemented.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,

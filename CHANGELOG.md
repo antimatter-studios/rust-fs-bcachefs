@@ -22,6 +22,10 @@ API, a patch never does.
 - **Fixtures made by the reference formatter in the Linux test VM**, each with
   a JSON record of what the reference tools say is in it.
 - **docs/clean-room.md**, the provenance of every fact about the format.
+- **Journal replay, in memory**: a filesystem that was not cleanly unmounted
+  is read through its journal (`journal::read_entries`, `journal::replay`,
+  `btree::walk_replayed`), as the reference sees it after its own replay,
+  without writing to the device.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in
@@ -30,6 +34,9 @@ API, a patch never does.
 
 ### Fixed
 
-- **An uncleanly unmounted filesystem is refused** instead of being read
-  from roots that are stale until its journal is replayed.
+- **An uncleanly unmounted filesystem is no longer read from its stale
+  superblock roots**: `btree::walk` refuses it, and `Filesystem::open`
+  replays its journal.
+- **Key positions print as the reference lister prints them** (`POS_MIN`,
+  `SPOS_MAX`, `U64_MAX`).
 - **Link counts** are reported as a mount reports them (`Inode::link_count`).

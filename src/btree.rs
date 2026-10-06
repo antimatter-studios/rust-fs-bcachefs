@@ -121,6 +121,21 @@ impl Node {
         block_bytes: usize,
         expect_seq: Option<u64>,
     ) -> Result<Self> {
+        Self::parse_upto(b, magic, block_bytes, expect_seq, u64::MAX)
+    }
+
+    /// [`Node::parse`], ignoring the keys of every bset whose journal
+    /// sequence number is above `max_journal_seq`: after an unclean
+    /// shutdown those bsets belong to journal entries that were never
+    /// committed (S1 9.7.5, "sequence blacklisting"). Their checksums are
+    /// still verified.
+    pub fn parse_upto(
+        b: &[u8],
+        magic: u64,
+        block_bytes: usize,
+        expect_seq: Option<u64>,
+        max_journal_seq: u64,
+    ) -> Result<Self> {
         if b.len() < HEADER_BSET + BSET_HEADER {
             return Err(Error::Corrupt("btree node shorter than its header".into()));
         }
@@ -181,8 +196,9 @@ impl Node {
                     computed,
                 }
             })?;
+            let committed = le64(b, bset_at + 8) <= max_journal_seq;
             let mut p = keys_at;
-            while p < end {
+            while committed && p < end {
                 let n = b[p] as usize;
                 if n == 0 {
                     return Err(Error::Corrupt("zero-length key in a bset".into()));
@@ -230,51 +246,139 @@ fn csum_mask(t: u8) -> u64 {
     }
 }
 
-/// Every leaf key of one btree, in order. Reads the whole tree: fine for
-/// the images this spike reads, and the first thing to replace with a
-/// cursor.
+/// Every leaf key of one btree, in order, on a cleanly unmounted
+/// filesystem. Reads the whole tree: fine for the images this spike reads,
+/// and the first thing to replace with a cursor.
+///
+/// An image that was not shut down cleanly is refused: its superblock's
+/// roots are stale. [`walk_replayed`] reads it through its journal.
 pub fn walk(dev: &dyn BlockRead, sb: &Superblock, id: u8) -> Result<Vec<Bkey>> {
-    let roots = sb.btree_roots()?;
-    let root = roots
-        .iter()
-        .find(|r| r.btree_id == id)
-        .ok_or_else(|| Error::NotFound(format!("btree {id} has no root")))?;
-    let key = bkey::decode(
-        &root.key,
-        &BkeyFormat {
-            key_u64s: 5,
-            nr_fields: 6,
-            bits: [0; 6],
-            field_offset: [0; 6],
-        },
-    )?;
+    walk_replayed(dev, sb, id, None)
+}
+
+/// Every leaf key of one btree, in order, with a journal replay applied
+/// over it when one is given: the root is the one the replay's newest
+/// flush entry recorded, bsets from uncommitted journal entries are
+/// ignored, and the replayed keys replace the keys at their positions (a
+/// deleted key or a whiteout removes it). Nothing is written.
+pub fn walk_replayed(
+    dev: &dyn BlockRead,
+    sb: &Superblock,
+    id: u8,
+    replay: Option<&crate::journal::Replay>,
+) -> Result<Vec<Bkey>> {
+    let (root_level, root_key) = match replay {
+        Some(r) => r
+            .roots
+            .iter()
+            .find(|(b, _, _)| *b == id)
+            .map(|(_, level, k)| (*level, k.clone()))
+            .ok_or_else(|| Error::NotFound(format!("btree {id} has no root in the journal")))?,
+        None => {
+            if !sb.is_clean() {
+                return Err(Error::Unsupported(
+                    "the filesystem was not cleanly unmounted; its journal must be replayed first"
+                        .into(),
+                ));
+            }
+            let roots = sb.btree_roots()?;
+            let root = roots
+                .iter()
+                .find(|r| r.btree_id == id)
+                .ok_or_else(|| Error::NotFound(format!("btree {id} has no root")))?;
+            let key = bkey::decode(
+                &root.key,
+                &BkeyFormat {
+                    key_u64s: 5,
+                    nr_fields: 6,
+                    bits: [0; 6],
+                    field_offset: [0; 6],
+                },
+            )?;
+            (root.level, key)
+        }
+    };
+    if u32::from(root_level) >= MAX_DEPTH {
+        return Err(Error::Corrupt(format!(
+            "btree {id} root at level {root_level}"
+        )));
+    }
+    let walk = Walk {
+        dev,
+        sb,
+        id,
+        replay,
+        max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+    };
     let mut out = Vec::new();
-    descend(dev, sb, &NodePtr::from_key(&key)?, MAX_DEPTH, &mut out)?;
+    walk.descend(&NodePtr::from_key(&root_key)?, root_level, &mut out)?;
     Ok(out)
 }
 
-fn descend(
-    dev: &dyn BlockRead,
-    sb: &Superblock,
-    ptr: &NodePtr,
-    budget: u32,
-    out: &mut Vec<Bkey>,
-) -> Result<()> {
-    if budget == 0 {
-        return Err(Error::Corrupt("btree deeper than its root's level".into()));
-    }
-    let node = read_node(dev, sb, ptr)?;
-    for k in node.keys {
-        if k.key_type == key_type::BTREE_PTR_V2 {
-            descend(dev, sb, &NodePtr::from_key(&k)?, budget - 1, out)?;
-        } else {
-            out.push(k);
+/// One walk of one btree, with the replay (if any) it applies.
+struct Walk<'a> {
+    dev: &'a dyn BlockRead,
+    sb: &'a Superblock,
+    id: u8,
+    replay: Option<&'a crate::journal::Replay>,
+    max_seq: u64,
+}
+
+impl Walk<'_> {
+    /// Read the node at `level` (0 = leaf) and everything below it.
+    fn descend(&self, ptr: &NodePtr, level: u8, out: &mut Vec<Bkey>) -> Result<()> {
+        let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq)?;
+        let keys = self.apply(node.keys, level, node.min_key, node.max_key);
+        if level == 0 {
+            out.extend(keys);
+            return Ok(());
         }
+        for k in keys {
+            if k.key_type != key_type::BTREE_PTR_V2 {
+                return Err(Error::Corrupt(format!(
+                    "key type {} in an interior node",
+                    k.key_type
+                )));
+            }
+            self.descend(&NodePtr::from_key(&k)?, level - 1, out)?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// A node's keys with the replayed keys of its btree and level that
+    /// fall within it applied: each replaces the key at its position, and a
+    /// deleted key or a whiteout removes it.
+    fn apply(&self, keys: Vec<Bkey>, level: u8, min: Bpos, max: Bpos) -> Vec<Bkey> {
+        let Some(overlay) = self
+            .replay
+            .and_then(|r| r.keys.get(&(self.id, level)))
+            .filter(|o| o.iter().any(|k| k.pos >= min && k.pos <= max))
+        else {
+            return keys;
+        };
+        let mut merged: std::collections::BTreeMap<Bpos, Bkey> =
+            keys.into_iter().map(|k| (k.pos, k)).collect();
+        for k in overlay.iter().filter(|k| k.pos >= min && k.pos <= max) {
+            if k.key_type == key_type::DELETED || k.key_type == key_type::WHITEOUT {
+                merged.remove(&k.pos);
+            } else {
+                merged.insert(k.pos, k.clone());
+            }
+        }
+        merged.into_values().collect()
+    }
 }
 
 pub fn read_node(dev: &dyn BlockRead, sb: &Superblock, ptr: &NodePtr) -> Result<Node> {
+    read_node_upto(dev, sb, ptr, u64::MAX)
+}
+
+fn read_node_upto(
+    dev: &dyn BlockRead,
+    sb: &Superblock,
+    ptr: &NodePtr,
+    max_seq: u64,
+) -> Result<Node> {
     let p = &ptr.ptrs[0];
     let len = ptr.sectors_written as usize * 512;
     if len == 0 || len > (sb.btree_node_size() as usize * 512).max(512) {
@@ -284,10 +388,11 @@ pub fn read_node(dev: &dyn BlockRead, sb: &Superblock, ptr: &NodePtr) -> Result<
     }
     let mut b = vec![0u8; len];
     dev.read_at(p.offset * 512, &mut b)?;
-    Node::parse(
+    Node::parse_upto(
         &b,
         node_magic(&sb.uuid),
         sb.block_size as usize * 512,
         Some(ptr.seq),
+        max_seq,
     )
 }

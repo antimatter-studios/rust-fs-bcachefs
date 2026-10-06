@@ -60,10 +60,15 @@ fn an_uncleanly_unmounted_image_is_read_through_its_journal() {
     let path = fixture("aged-unclean.img");
     let before = Sha256::digest(std::fs::read(&path).unwrap());
     let fs = open("aged-unclean").unwrap_or_else(|e| panic!("aged-unclean: {e}"));
+    // As many entries under /late as the reference saw after its replay
+    // (what the burst's last writes left of it is the reference's call).
+    let want = manifest("aged-unclean")
+        .iter()
+        .filter(|e| e.path.starts_with("/late/"))
+        .count();
+    assert!(want > 200, "the burst left only {want} entries");
     let late = fs.lookup("/late").unwrap();
-    assert!(fs.readdir(late).unwrap().len() > 200);
-    let big = fs.lookup("/late/big.bin").unwrap();
-    assert_eq!(fs.read(big).unwrap().len(), 700_000);
+    assert_eq!(fs.readdir(late).unwrap().len(), want);
     drop(fs);
     let after = Sha256::digest(std::fs::read(&path).unwrap());
     assert_eq!(before, after, "the image changed while it was read");
