@@ -1,0 +1,27 @@
+# fs-linux-test-harness consumer config (see ../fs-linux-test-harness/README.md).
+#
+# Everything that is Linux happens in here: the reference formatter that
+# builds the fixtures and the reference tools whose view of each image is
+# recorded beside it. None of them is installed on a workstation, and none
+# of them is linked or copied into this repository; they are an oracle at
+# arm's length (docs/clean-room.md).
+
+[project]
+name = "rust-fs-bcachefs"
+
+[setup]
+# Runs as root INSIDE the VM; builds the reference tools in a chroot.
+script = "scripts/vm-setup.sh"
+
+[share]
+dir = ".vm-share"
+
+[vm]
+# The reference tools are built from source on first provision, which is
+# the long part of a cold boot; the deadline only has to outlast that and
+# one fixture run.
+memory = "4G"
+cpus = 4
+disk = "16G"
+ssh_port = 50177
+deadline_minutes = 120
