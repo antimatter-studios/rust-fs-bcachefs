@@ -11,6 +11,8 @@
 
 pub mod bkey;
 pub mod btree;
+#[allow(non_camel_case_types)]
+pub mod capi;
 pub mod compress;
 pub mod csum;
 pub mod error;

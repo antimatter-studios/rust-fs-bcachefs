@@ -12,10 +12,13 @@ images, never from the GPL implementation. MIT-licensed.
 
 | Structure | State |
 |---|---|
-| Superblock (magic, UUIDs, versions, geometry, layout, fields, checksum) | parsed; compared with the reference tools' report of every fixture |
-| Btree nodes, bsets, packed bkeys | see `docs/clean-room.md` for progress and open questions |
-| Inodes, dirents, extents; readdir and read | see `docs/clean-room.md` |
-| Compression, encryption, multiple devices, snapshots | not implemented |
+| Superblock (magic, UUIDs, versions, geometry, layout, fields, members, btree roots; crc32c/crc64/xxhash checksums) | read; every field compared with the reference printer (`tests/oracle_superblock.rs`) |
+| Btree nodes, bsets, packed and unpacked keys, interior nodes | read and checksummed; every key of the inodes, dirents and extents btrees compared with the reference lister (`tests/oracle_tree.rs`) |
+| Inodes (v3), dirents, extents; lookup, readdir, read | every path, listing, inode and file SHA-256 compared with the formatted tree (`tests/oracle_fs.rs`) |
+| Data checksums crc32c, crc64, xxhash; lz4, zstd, gzip | read and verified |
+| C ABI (`include/fs_bcachefs.h`): mount, stat, readdir, read_file | `tests/capi.rs` |
+| `fs.bcachefs` CLI: info, ls, cat | built with `--features cli` |
+| Unclean filesystems (journal replay), snapshots, encryption, multiple devices, erasure coding, reflink, inline data, xattrs | not implemented; see `docs/clean-room.md` open questions |
 | Writing | out of scope: this is a reader |
 
 ## Clean room

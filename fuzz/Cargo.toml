@@ -11,6 +11,10 @@ cargo-fuzz = true
 # the published package.
 [workspace]
 
+[lib]
+name = "fs_bcachefs_fuzz"
+path = "src/lib.rs"
+
 [dependencies]
 libfuzzer-sys = "0.4"
 rust-fs-bcachefs = { path = ".." }

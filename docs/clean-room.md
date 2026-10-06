@@ -25,13 +25,137 @@ be learned this way is an **open question**, not a guess.
 | S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (fetched 2026-10-06) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a 44-bit sector offset and a generation; list of key types and metadata versions in order. |
 | S2 | bcachefs-tools `INSTALL.md` at v1.39.7 (build instructions only) | prose documentation | The reference tools' build dependencies and minimum Rust, used only to build the oracle inside the VM. Contains no format information. |
 | S3 | Reference tools v1.39.7, run in the test VM | black-box oracle | `show-super`, `list`, `fsck` output for each fixture; recorded in `.vm-share/fixtures/*.json` and `*.txt` beside the images. |
-| S4 | Hexdumps of fixture images | black-box observation | See the per-structure notes below. |
+| S4 | Hexdumps of fixture images, and candidate computations over their bytes (checksum conventions) | black-box observation | See the per-structure notes below. |
+| S5 | The LZ4 block format description, https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md (BSD-2-Clause documentation of a public format) | prose documentation | Token, literal-length and match-length encoding, little-endian 16-bit offsets, overlapping matches: the decoder in `src/compress.rs` is written from it. |
+| S6 | Published check values: CRC-32C of "123456789" (0xe3069283), CRC-64/WE of "123456789" (0x62ec59e3f1a4f00a), XXH64 of the empty input with seed 0 (0xef46db3751d8e999) | public reference values | Unit-test anchors for the checksum implementations. |
+| S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
 
 ## Per-structure notes
 
-Each entry: the fact, and which source it came from.
+Each entry: the fact, and which source it came from. "Checked" means an
+oracle test in `tests/oracle_*.rs` compares it against the reference tools for
+all eight fixture sets.
+
+### Superblock (`src/superblock.rs`) -- documented location, inferred layout
+
+- At byte 4096; the layout copy at 3584 (S1). Little-endian throughout (S4).
+- Offsets (S4, checked against the superblock printer): csum[16] @0x00;
+  version u16 @0x10 and oldest-version u16 @0x12, each `major << 10 | minor`
+  (1.39 = 0x427; the version names are S1's version history); magic[16]
+  @0x18; internal UUID @0x28; external UUID @0x38; label[32] @0x48; offset
+  u64 @0x68; seq u64 @0x70; block_size u16 (sectors) @0x78; dev_idx u8
+  @0x7a; nr_devices u8 @0x7b; u64s u32 @0x7c (length of the fields in
+  u64s); time base @0x80..0x90; flags[8] u64 @0x90; features[2] @0xd0;
+  compat[2] @0xe0; embedded layout @0xf0; fields from 0x2f0.
+- Layout: magic[16], type u8, sb_max_size_bits u8 (sectors, log2), nr u8,
+  5 pad, then 61 u64 sector offsets (S4; "up to 61 backup locations" is S1).
+- Fields: u32 u64s, u32 type, body. Type numbers follow S1's list order,
+  confirmed by the printer's "Sections" line.
+- Checksum: covers byte 16 to the end of the fields. Type from flags[0] bits
+  2..5 (inferred): 1 = standard crc32c, 2 = CRC-64/WE (ECMA-182 polynomial,
+  MSB first, init and xorout all ones), 7 = XXH64 seed 0 -- each found by
+  computing candidates over a fixture (S4, S6) and checked.
+- Options (inferred, checked): btree_node_size = flags[0] bits 12..27
+  (sectors); metadata/data checksum option = flags[0] bits 40..43 / 44..47
+  (none 0, crc32c 1, crc64 2, xxhash 3); compression option = flags[1] bits
+  4..7 (none 0, lz4 1, gzip 2, zstd 3).
+- Feature names: the printer lists the names of set bits in ascending order;
+  pairing them gave lz4 0, gzip 1, zstd 2, new_siphash 7, ... (checked).
+- members_v2: u16 member size, 6 pad, then per member uuid, nbuckets u64,
+  first_bucket u16, bucket_size u16, 4 unread bytes, last_mount u64 (S4,
+  checked).
+- clean: flags u32, two u16 clocks, journal_seq u64, then journal entries
+  (u16 u64s, u8 btree_id, u8 level, u8 type, 3 pad); type 1 = btree_root,
+  matching S1's journal entry list order (S4, checked by walking the roots).
+
+### Keys (`src/bkey.rs`) -- documented members, inferred byte order
+
+- `bpos` and `bkey` members are S1's documented declarations. On disk the
+  bpos is snapshot u32, offset u64, inode u64 (reverse of the documented
+  order); an unpacked key is u64s, format (1 = unpacked), type, pad,
+  version (12 bytes), size u32, bpos (S4, checked).
+- Packed keys (format 0): the node's bkey_format is key_u64s u8, nr_fields
+  u8, bits[6] u8, field_offset[6] u64 (S1 names the fields; S4 the layout,
+  confirmed by the lister's `formats` mode). Fields are taken from the most
+  significant bit of the key's words downward (S4; checked on byte-aligned
+  formats only -- see open questions).
+- Key type numbers follow S1's list order: extent 6, dirent 10,
+  btree_ptr_v2 18, inode_v3 29 (checked).
+
+### Btree nodes (`src/btree.rs`) -- documented structure, inferred layout
+
+- Header: csum[16], magic u64 @16, flags u64 @24, min_key @32, max_key @52,
+  8 unread bytes @72, bkey_format @80, first bset @136. Bset: seq u64,
+  journal_seq u64, flags u32 (low 4 bits: checksum type), version u16, u64s
+  u16, keys. Later bsets are `btree_node_entry`s: csum[16] then a bset,
+  starting on block boundaries, with the node's seq (S1 structure; S4
+  layout, checked by key-for-key agreement with the lister).
+- Node magic = 0x90135c78b99e07f5 XOR the first 8 bytes of the internal UUID
+  (S4: the XOR is constant across every fixture).
+- Checksum: from byte 16 of the record to the end of its keys; type 1
+  standard crc32c, 2 CRC-64/WE, 7 XXH64 (S4, checked).
+- btree_ptr_v2 value: mem_ptr u64 (unread), seq u64, sectors_written u16,
+  flags u16, min_key, then extent pointers (S1 names; S4 layout).
+- Btree ids follow S1's list order: extents 0, inodes 1, dirents 2
+  (checked).
+
+### Inodes and dirents (`src/inode.rs`) -- documented fields, inferred encoding
+
+- Inodes are keyed by number in the bpos OFFSET field (S3: the lister
+  prints `0:4096:U32_MAX`). Root is 4096 (S3).
+- inode_v3: journal_seq u64, hash_seed u64, flags u64 (bits 24..31 number of
+  varint fields, bits 20..23 hash type, bits 36..51 mode), then sectors u64,
+  size u64, version u64, then varints in the lister's field order with each
+  time taking two varints (S3 + S4, checked for mode, size, sectors, uid,
+  gid, nlink, atime, ctime, mtime on every inode).
+- Varint: length = trailing one bits of the first byte + 1; 9 bytes = next 8
+  verbatim; else little-endian bytes >> length (S4, checked).
+- Dirent value: inode u64, DT_* type u8, NUL-padded name (S4, checked).
+
+### Extents and data (`src/extent.rs`, `src/fs.rs`, `src/compress.rs`)
+
+- Entry types by lowest set bit (S1); bit layouts in `src/extent.rs` found by
+  hexdump against the lister's printed fields (S3, S4), checked by reading
+  every file of every fixture byte for byte.
+- Data checksums: type 5 = crc32c from zero, not inverted; 6 = CRC-64/WE
+  from zero, not inverted; 7 = XXH64 seed 0 (S4, checked).
+- Compression numbering in crc entries: gzip 2, lz4 3, zstd 4,
+  incompressible 5 (S3 + S4, checked). lz4 = bare LZ4 block; zstd = u32
+  length + standard frame; gzip = raw deflate (S4, checked).
+- Small files and symlink targets were stored as ordinary extents, not
+  inline data, by this formatter (S3).
 
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
-has settled yet.
+has settled yet. Each needs a fixture that exercises it, not a guess.
+
+1. **Packed fields that are not byte-aligned.** Every node format the
+   formatter produced was 64/64/32 bits; the top-down bit order is proven
+   only for that. A filesystem aged by a kernel (narrower formats) is needed.
+2. **Pointer device and generation bits** (assumed 48..55 and 56..63). Every
+   fixture is single-device with generation 0.
+3. **Btree node flags**: where the btree id and level are, and what bit 8 and
+   bit 32 mean. The reader does not need them yet (it trusts the parent).
+4. **Unclean filesystems**: without the `clean` field the roots must come
+   from the journal (`jset`), which is not decoded. Every fixture is clean
+   because nothing here mounts.
+5. **Snapshots and subvolumes**: keys are read at whatever snapshot they
+   carry; visibility rules (S1 9.4) are not implemented.
+6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
+   reflink, inline_data, xattrs, multiple devices and replicas**: not seen in
+   any fixture.
+7. **Varint fields beyond `dev`** (data_checksum ... casefold) are skipped,
+   and the meaning of flags bits 32..35 of an inode's flags word is unknown.
+8. **Whiteouts and deleted keys across bsets** in a node that was written
+   more than once by a mounted kernel; the merge is newest-bset-wins, which
+   needs an aged image to confirm.
+9. **Dirent names longer than one key, casefolded dirents, and the
+   31-bit dirent offset change** (1.30) -- not exercised.
+
+## Confirmation
+
+No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
+snippet derived from them) was read while writing this crate. The only file
+from the tools' repository that was opened is `INSTALL.md` (build
+instructions, S2); the only other access was GitHub API metadata (S7).

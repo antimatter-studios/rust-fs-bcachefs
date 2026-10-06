@@ -64,17 +64,23 @@ tasks:
     desc: Remove the built fixtures (regenerable)
     cmds: ['rm -rf .vm-share/fixtures']
 
+  # BUDGETS AND FLOORS ARE MEASURED (2026-10-06). unit: 39 lines / 2145
+  # bytes warm on macOS arm64, 56 lines / 2729 bytes on a cold CI runner with
+  # fewer dependencies than now; 21 tests executed. oracle: 53 lines / 2086
+  # bytes warm; 9 tests. The line budgets leave room for a cold build's
+  # `Compiling` lines (one per dependency); a floor moves up with its suite
+  # and never down.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 120 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 10'
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 21'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 80 10000 -- cargo test --locked --release --test oracle_superblock --test oracle_tree --test oracle_fs'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 2'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 150 12000 -- cargo test --locked --release --test oracle_superblock --test oracle_tree --test oracle_fs --test capi'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 9'
 
   test:
     desc: 'Unit, then oracle, exactly as CI runs them'
