@@ -6,6 +6,22 @@
 mod common;
 
 use common::{fixture, manifest, read_text, SETS};
+
+/// The clean sets, and the uncleanly unmounted one, read through a replay
+/// of its journal: its manifest is what the reference saw after its own
+/// replay.
+const READ_SETS: &[&str] = &[
+    "default",
+    "lz4",
+    "zstd",
+    "gzip",
+    "nocsum",
+    "xxhash",
+    "crc64",
+    "block4k",
+    "aged",
+    "aged-unclean",
+];
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 use sha2::{Digest, Sha256};
@@ -17,7 +33,7 @@ fn open(set: &str) -> Filesystem<FileDevice> {
 
 #[test]
 fn every_path_resolves_with_the_right_type() {
-    for set in SETS {
+    for set in READ_SETS {
         let fs = open(set);
         for e in manifest(set) {
             let ino = fs
@@ -45,7 +61,7 @@ fn every_path_resolves_with_the_right_type() {
 
 #[test]
 fn every_directory_lists_exactly_its_entries() {
-    for set in SETS {
+    for set in READ_SETS {
         let fs = open(set);
         let m = manifest(set);
         for dir in m
@@ -87,7 +103,7 @@ fn every_directory_lists_exactly_its_entries() {
 
 #[test]
 fn every_file_and_symlink_reads_back_byte_for_byte() {
-    for set in SETS {
+    for set in READ_SETS {
         let fs = open(set);
         for e in manifest(set) {
             let ino = fs.lookup(&e.path).unwrap();

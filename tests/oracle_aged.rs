@@ -51,20 +51,25 @@ fn hard_links_resolve_to_one_inode() {
 }
 
 /// Without a clean shutdown the superblock's btree roots are stale and the
-/// newest keys are only in the journal. Reading the roots anyway would show
-/// an old tree as if it were current; until the journal is replayed
-/// (#5), the image is refused.
+/// newest keys are only in the journal. The image is read through a replay
+/// of the journal, in memory: it shows the burst of changes under /late
+/// that only the journal carries, and the device is not written.
 #[test]
-fn an_uncleanly_unmounted_image_is_refused_not_read_stale() {
-    match open("aged-unclean") {
-        Err(fs_bcachefs::Error::Unsupported(m)) => assert!(
-            m.contains("not cleanly unmounted"),
-            "refused, but for another reason: {m}"
-        ),
-        Err(e) => panic!("refused with the wrong error: {e}"),
-        Ok(fs) => panic!(
-            "read an unclean image from its stale roots: / has {} entries",
-            fs.readdir(4096).map(|d| d.len()).unwrap_or(0)
-        ),
-    }
+fn an_uncleanly_unmounted_image_is_read_through_its_journal() {
+    use sha2::{Digest, Sha256};
+    let path = fixture("aged-unclean.img");
+    let before = Sha256::digest(std::fs::read(&path).unwrap());
+    let fs = open("aged-unclean").unwrap_or_else(|e| panic!("aged-unclean: {e}"));
+    // As many entries under /late as the reference saw after its replay
+    // (what the burst's last writes left of it is the reference's call).
+    let want = manifest("aged-unclean")
+        .iter()
+        .filter(|e| e.path.starts_with("/late/"))
+        .count();
+    assert!(want > 200, "the burst left only {want} entries");
+    let late = fs.lookup("/late").unwrap();
+    assert_eq!(fs.readdir(late).unwrap().len(), want);
+    drop(fs);
+    let after = Sha256::digest(std::fs::read(&path).unwrap());
+    assert_eq!(before, after, "the image changed while it was read");
 }

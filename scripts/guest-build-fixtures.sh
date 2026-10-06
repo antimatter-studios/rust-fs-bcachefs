@@ -160,6 +160,16 @@ fuse_mount() { # IMAGE OPTIONS LOG
     grep -v '^\[<0>\]' "$3" | tail -n 30 >&2
     exit 1
 }
+# The way the burst's mount ends: the daemon is killed, so the filesystem
+# is never shut down, whatever the daemon would have done on unmount.
+fuse_kill() {
+    pkill -KILL -f "bcachefs fusemount" || true
+    for _ in $(seq 1 30); do
+        pgrep -f "bcachefs fusemount" >/dev/null || break
+        sleep 1
+    done
+    fusermount3 -uz "$ROOT$mnt" 2>/dev/null || umount -l "$ROOT$mnt" 2>/dev/null || true
+}
 fuse_unmount() {
     sync
     fusermount3 -u "$ROOT$mnt"
@@ -181,10 +191,11 @@ fuse_mount "$img" rw,noatime "$work/fuse-age.log"
 python3 /repo/scripts/guest-age.py "$ROOT$mnt"
 sync
 manifest "$ROOT$mnt" "$work/aged.mounted.json" live
-# The burst, then the mount is dropped at once: what it did reaches the
-# disk through the journal, and the btree nodes have not caught up.
+# The burst, then the daemon is killed: what the burst did reaches the disk
+# through the journal (it waits for a flush first), and the btree nodes
+# have not all caught up.
 python3 /repo/scripts/guest-age.py "$ROOT$mnt" --burst
-fuse_unmount
+fuse_kill
 
 cp --sparse=always "$ROOT$img" "$out/aged-unclean.img"
 bcachefs-ref show-super "$img" > "$out/aged-unclean.super.txt" 2>&1

@@ -49,13 +49,28 @@ impl Bpos {
 
 impl std::fmt::Display for Bpos {
     /// The reference lister's spelling: `inode:offset:snapshot`, with
-    /// `U32_MAX` for the all-ones snapshot.
+    /// `U64_MAX` and `U32_MAX` for all-ones fields, `POS_MIN` for the
+    /// all-zero position and `SPOS_MAX` for the all-ones one (S3).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.snapshot == u32::MAX {
-            write!(f, "{}:{}:U32_MAX", self.inode, self.offset)
-        } else {
-            write!(f, "{}:{}:{}", self.inode, self.offset, self.snapshot)
+        if self.inode == 0 && self.offset == 0 && self.snapshot == 0 {
+            return write!(f, "POS_MIN");
         }
+        if self.inode == u64::MAX && self.offset == u64::MAX && self.snapshot == u32::MAX {
+            return write!(f, "SPOS_MAX");
+        }
+        let wide = |v: u64| {
+            if v == u64::MAX {
+                "U64_MAX".to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        let snap = if self.snapshot == u32::MAX {
+            "U32_MAX".to_string()
+        } else {
+            self.snapshot.to_string()
+        };
+        write!(f, "{}:{}:{}", wide(self.inode), wide(self.offset), snap)
     }
 }
 
