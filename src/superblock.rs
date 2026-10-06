@@ -107,7 +107,9 @@ pub const FEATURE_NAMES: &[(u32, &str)] = &[
     (0, "lz4"),
     (1, "gzip"),
     (2, "zstd"),
+    (5, "journal_seq_blacklist_v3"),
     (7, "new_siphash"),
+    (8, "inline_data"),
     (9, "new_extent_overwrite"),
     (11, "btree_ptr_v2"),
     (12, "extents_above_btree_updates"),
@@ -325,6 +327,15 @@ impl Superblock {
         let mut b = vec![0u8; total];
         dev.read_at(SB_OFFSET, &mut b)?;
         Self::parse(&b)
+    }
+
+    /// Whether the filesystem was shut down cleanly. INFERRED: flags[0]
+    /// bit 1, set wherever the reference printer says `Clean: 1` (every
+    /// formatter-made fixture and the replayed aged image) and clear on the
+    /// one image a mount left without a clean shutdown (aged-unclean); no
+    /// other bit of flags[0] differs between those two.
+    pub fn is_clean(&self) -> bool {
+        self.flags[0] & 0b10 != 0
     }
 
     /// Checksum type of the superblock itself. INFERRED: flags[0] bits

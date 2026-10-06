@@ -71,6 +71,20 @@ impl Inode {
         self.mode & 0o170000 == 0o100000
     }
 
+    /// The link count a mount reports for this inode (`st_nlink`).
+    /// INFERRED from the aged fixture, where every inode's stored count
+    /// was compared with what the mount reported: a file or symlink stores
+    /// one less than its links (a file with three names stores 2), and a
+    /// directory stores its number of subdirectories, to which the mount
+    /// adds 2 for its own entry and `.`.
+    pub fn link_count(&self) -> u32 {
+        if self.is_dir() {
+            self.nlink.saturating_add(2)
+        } else {
+            self.nlink.saturating_add(1)
+        }
+    }
+
     pub fn from_key(k: &Bkey) -> Result<Self> {
         if k.key_type != key_type::INODE_V3 {
             return Err(Error::Unsupported(format!("inode key type {}", k.key_type)));

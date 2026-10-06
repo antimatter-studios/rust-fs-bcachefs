@@ -8,9 +8,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Every fixture set scripts/guest-build-fixtures.sh builds.
+/// Every clean fixture set scripts/guest-build-fixtures.sh builds: eight
+/// the reference formatter populated, and `aged`, which the reference
+/// implementation mounted and aged (scripts/guest-age.py).
 pub const SETS: &[&str] = &[
-    "default", "lz4", "zstd", "gzip", "nocsum", "xxhash", "crc64", "block4k",
+    "default", "lz4", "zstd", "gzip", "nocsum", "xxhash", "crc64", "block4k", "aged",
 ];
 
 pub fn fixtures_dir() -> PathBuf {
@@ -85,6 +87,9 @@ pub struct Entry {
     pub size: Option<u64>,
     pub sha256: Option<String>,
     pub target: Option<String>,
+    /// The inode number and link count the mount reported (aged sets only).
+    pub ino: Option<u64>,
+    pub nlink: Option<u32>,
 }
 
 /// The manifest, read with a hand-rolled scan of the fixed shape
@@ -103,6 +108,8 @@ pub fn manifest(set: &str) -> Vec<Entry> {
                 size: None,
                 sha256: None,
                 target: None,
+                ino: None,
+                nlink: None,
             });
             continue;
         }
@@ -127,6 +134,8 @@ pub fn manifest(set: &str) -> Vec<Entry> {
             "size" => e.size = Some(s.parse().unwrap()),
             "sha256" => e.sha256 = Some(s),
             "target" => e.target = Some(s),
+            "ino" => e.ino = Some(s.parse().unwrap()),
+            "nlink" => e.nlink = Some(s.parse().unwrap()),
             _ => {}
         }
     }

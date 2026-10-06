@@ -128,7 +128,7 @@ fn every_superblock_field_matches_the_reference_printer() {
         // "Superblock size: 7.25k/1.00M": the used size, and the layout's maximum.
         let (used, max) = r["Superblock size"].split_once('/').unwrap();
         let ours = 0x2f0 + sb.u64s as u64 * 8;
-        assert_eq!(ours, parse_size(used), "{}", ctx("Superblock size"));
+        assert_eq!(human(ours), used.trim(), "{}", ctx("Superblock size"));
         assert_eq!(
             512u64 << sb.layout.sb_max_size_bits,
             parse_size(max),
@@ -186,5 +186,31 @@ fn the_standalone_layout_copy_agrees_with_the_embedded_one() {
             .unwrap();
         let layout = fs_bcachefs::superblock::Layout::parse(&b).unwrap();
         assert_eq!(layout, sb.layout, "{set}");
+    }
+}
+
+/// A byte count as the reference printer writes it: three significant
+/// digits and a binary unit ("7.25k", "8.08k", "1.00M"). Comparing in the
+/// printer's own rounding, not by parsing it back, because 8272 and 8274
+/// bytes both print as "8.08k".
+fn human(n: u64) -> String {
+    let mut v = n as f64;
+    let mut unit = "";
+    for u in ["k", "M", "G", "T"] {
+        if v < 1024.0 {
+            break;
+        }
+        v /= 1024.0;
+        unit = u;
+    }
+    if unit.is_empty() {
+        return n.to_string();
+    }
+    if v < 10.0 {
+        format!("{v:.2}{unit}")
+    } else if v < 100.0 {
+        format!("{v:.1}{unit}")
+    } else {
+        format!("{v:.0}{unit}")
     }
 }

@@ -22,3 +22,14 @@ API, a patch never does.
 - **Fixtures made by the reference formatter in the Linux test VM**, each with
   a JSON record of what the reference tools say is in it.
 - **docs/clean-room.md**, the provenance of every fact about the format.
+- **Inline data**: small files a mounted filesystem stores inside the
+  extents btree read back byte for byte.
+- **An aged fixture**, mounted and aged by the reference implementation in
+  the test VM, with hard links, renames, deletions, overwrites, sparse and
+  fragmented files; every file and listing is compared with the mount's view.
+
+### Fixed
+
+- **An uncleanly unmounted filesystem is refused** instead of being read
+  from roots that are stale until its journal is replayed.
+- **Link counts** are reported as a mount reports them (`Inode::link_count`).
