@@ -71,6 +71,11 @@ impl Inode {
         self.mode & 0o170000 == 0o100000
     }
 
+    /// The link count a mount reports for this inode (`st_nlink`).
+    pub fn link_count(&self) -> u32 {
+        self.nlink
+    }
+
     pub fn from_key(k: &Bkey) -> Result<Self> {
         if k.key_type != key_type::INODE_V3 {
             return Err(Error::Unsupported(format!("inode key type {}", k.key_type)));

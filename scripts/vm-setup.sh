@@ -17,20 +17,27 @@
 # chroot made with debootstrap has every build dependency at a version
 # that works, and the Rust compiler it ships meets the tool's minimum.
 #
-# WHY NO KERNEL. Nothing here mounts. The formatter populates an image
-# from a directory tree itself (`format --source`), and every reading of
-# an image is done by the tool's userspace copy of the filesystem. The
-# guest kernel does not need bcachefs at all.
+# WHY NO KERNEL MODULE. The formatter populates an image from a directory
+# tree itself (`format --source`), and every reading of an image is done by
+# the tool's userspace copy of the filesystem. The AGED fixtures need a
+# running filesystem to write them, and that is the same userspace copy
+# mounted through FUSE (the tool's documented, experimental `fusemount`,
+# built with BCACHEFS_FUSE=1): no guest kernel this harness boots carries
+# bcachefs, which is maintained out of mainline. Every aged image must
+# then pass the reference checker, so a fault of the FUSE path cannot
+# reach a fixture unnoticed.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # The pinned release of the reference tools. Bump deliberately: the
 # fixtures record which version made them.
 REF_VERSION=1.39.7
+# What the build marker records: the version and the build options.
+REF_BUILD="$REF_VERSION fuse"
 ROOT=/srv/ref-trixie
 
 apt-get update -qq
-apt-get install -y -qq debootstrap jq xxd coreutils >/dev/null
+apt-get install -y -qq debootstrap jq xxd coreutils fuse3 >/dev/null
 
 if [ ! -f "$ROOT/.bootstrapped" ]; then
     rm -rf "$ROOT"
@@ -46,23 +53,23 @@ mount_into_chroot() {
 mount_into_chroot
 cp /etc/resolv.conf "$ROOT/etc/resolv.conf"
 
-if [ "$(cat "$ROOT/.ref-version" 2>/dev/null || true)" != "$REF_VERSION" ]; then
+if [ "$(cat "$ROOT/.ref-version" 2>/dev/null || true)" != "$REF_BUILD" ]; then
     chroot "$ROOT" apt-get update -qq
     chroot "$ROOT" apt-get install -y -qq --no-install-recommends \
         build-essential pkg-config ca-certificates curl git \
         libaio-dev libblkid-dev libkeyutils-dev liblz4-dev libsodium-dev \
         libunwind-dev liburcu-dev libzstd-dev uuid-dev zlib1g-dev \
         libudev-dev udev systemd-dev libclang-dev clang valgrind rustc cargo bindgen \
-        python3 >/dev/null
+        python3 libfuse3-dev fuse3 attr >/dev/null
     chroot "$ROOT" bash -euc "
         rm -rf /build && mkdir -p /build && cd /build
         curl -fsSL -o tools.tar.gz https://github.com/koverstreet/bcachefs-tools/archive/refs/tags/v$REF_VERSION.tar.gz
         tar -xzf tools.tar.gz
         cd bcachefs-tools-$REF_VERSION
-        make -j\$(nproc) bcachefs >/build/make.log 2>&1 || { tail -n 60 /build/make.log; exit 1; }
+        BCACHEFS_FUSE=1 make -j\$(nproc) bcachefs >/build/make.log 2>&1 || { tail -n 60 /build/make.log; exit 1; }
         install -m 0755 bcachefs /usr/local/sbin/bcachefs
     "
-    echo "$REF_VERSION" > "$ROOT/.ref-version"
+    echo "$REF_BUILD" > "$ROOT/.ref-version"
 fi
 
 # The one way anything in the guest reaches the reference tool. The share

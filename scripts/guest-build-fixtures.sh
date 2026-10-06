@@ -52,19 +52,30 @@ os.symlink("dir/sub/b.txt", os.path.join(root, "dir/link-to-b"))
 PY
 }
 
+# manifest ROOT DEST [live]: every path under ROOT with its type, mode, size,
+# symlink target and SHA-256. `live` is for a mounted filesystem: it also
+# records each inode number and link count, and leaves out lost+found, which
+# the filesystem made and nobody put there.
 manifest() {
-    local root="$1" dest="$2"
-    python3 - "$root" "$dest" <<'PY'
+    local root="$1" dest="$2" live="${3:-}"
+    python3 - "$root" "$dest" "$live" <<'PY'
 import hashlib, json, os, stat, sys
-root, dest = sys.argv[1], sys.argv[2]
+root, dest, live = sys.argv[1], sys.argv[2], sys.argv[3] == "live"
 entries = []
 for dirpath, dirnames, filenames in os.walk(root):
+    if live and dirpath == root and "lost+found" in dirnames:
+        dirnames.remove("lost+found")
     dirnames.sort()
     for name in sorted(dirnames) + sorted(filenames):
         full = os.path.join(dirpath, name)
         rel = "/" + os.path.relpath(full, root)
+        if live and rel == "/lost+found":
+            continue
         st = os.lstat(full)
         e = {"path": rel, "mode": st.st_mode & 0o7777}
+        if live:
+            e["ino"] = st.st_ino
+            e["nlink"] = st.st_nlink
         if stat.S_ISLNK(st.st_mode):
             e["type"] = "symlink"
             e["target"] = os.readlink(full)
@@ -116,6 +127,98 @@ for entry in "${sets[@]}"; do
         exit 1
     fi
 done
+
+# THE AGED SETS. The formatter writes every node fresh; a disk that has been
+# used looks different -- narrower key formats, nodes split and rewritten,
+# several bsets per node, deletions beside live keys. So one filesystem is
+# mounted by the reference implementation (its userspace copy, through
+# FUSE: scripts/vm-setup.sh says why not a kernel module) and aged by
+# scripts/guest-age.py.
+#
+# The FUSE daemon of the pinned release aborts on unmount (an assertion in
+# its RCU library, after `destroy`), so the filesystem it leaves is never
+# cleanly shut down. That is two fixtures, not a problem:
+#   aged-unclean  the image exactly as the daemon left it: the newest keys
+#                 are in the journal only, and the superblock says unclean;
+#   aged          the same image after the reference checker replayed the
+#                 journal and shut down cleanly (`fsck -y`).
+# The manifest is taken through the mount, after the last write was synced,
+# and taken again from a read-only mount of the replayed image; the two
+# must be identical, or the set fails.
+ROOT=/srv/ref-trixie
+age_dir="$ROOT/var/tmp/age"
+mnt=/mnt/aged
+mkdir -p "$age_dir" "$ROOT$mnt"
+
+fuse_mount() { # IMAGE OPTIONS LOG
+    (bcachefs-ref fusemount -f -o "$2" "$1" "$mnt" >"$3" 2>&1 &)
+    for _ in $(seq 1 60); do
+        mountpoint -q "$ROOT$mnt" && return 0
+        sleep 1
+    done
+    echo "the reference implementation did not mount $1:" >&2
+    grep -v '^\[<0>\]' "$3" | tail -n 30 >&2
+    exit 1
+}
+fuse_unmount() {
+    sync
+    fusermount3 -u "$ROOT$mnt"
+    for _ in $(seq 1 60); do
+        pgrep -f "bcachefs fusemount" >/dev/null || return 0
+        sleep 1
+    done
+    echo "the FUSE daemon did not exit" >&2
+    exit 1
+}
+
+echo "== aged (mounted and aged by the reference implementation)"
+img=/var/tmp/age/aged.img
+rm -f "$ROOT$img"
+truncate -s 256M "$ROOT$img"
+bcachefs-ref format -q "$img" > "$out/aged.format.txt" 2>&1
+fuse_mount "$img" rw "$work/fuse-age.log"
+python3 /repo/scripts/guest-age.py "$ROOT$mnt"
+sync
+manifest "$ROOT$mnt" "$work/aged.mounted.json" live
+fuse_unmount
+
+cp --sparse=always "$ROOT$img" "$out/aged-unclean.img"
+bcachefs-ref show-super "$img" > "$out/aged-unclean.super.txt" 2>&1
+grep -q '^Clean: *0' "$out/aged-unclean.super.txt" || {
+    echo "aged-unclean: the image is marked clean; it was meant to be the unreplayed one" >&2
+    exit 1
+}
+
+bcachefs-ref fsck -y "$img" > "$out/aged.replay.txt" 2>&1 || {
+    echo "the reference checker could not replay the aged image:" >&2
+    tail -n 30 "$out/aged.replay.txt" >&2
+    exit 1
+}
+fuse_mount "$img" ro "$work/fuse-ro.log"
+manifest "$ROOT$mnt" "$work/aged.replayed.json" live
+fuse_unmount
+cmp "$work/aged.mounted.json" "$work/aged.replayed.json" || {
+    echo "aged: the replayed image's tree differs from the tree the mount wrote" >&2
+    diff "$work/aged.mounted.json" "$work/aged.replayed.json" | head -n 40 >&2
+    exit 1
+}
+cp "$work/aged.mounted.json" "$out/aged.json"
+cp "$work/aged.mounted.json" "$out/aged-unclean.json"
+cp --sparse=always "$ROOT$img" "$out/aged.img"
+bcachefs-ref show-super "$img" > "$out/aged.super.txt" 2>&1
+grep -q '^Clean: *1' "$out/aged.super.txt" || {
+    echo "aged: the replayed image is not marked clean" >&2
+    exit 1
+}
+for b in inodes dirents extents; do
+    bcachefs-ref list -b "$b" "$img" > "$out/aged.$b.txt" 2>&1
+    bcachefs-ref list -b "$b" -m formats "$img" > "$out/aged.$b.formats.txt" 2>&1
+done
+if ! bcachefs-ref fsck -n "$img" > "$out/aged.fsck.txt" 2>&1; then
+    echo "the reference checker did not pass aged:" >&2
+    tail -n 30 "$out/aged.fsck.txt" >&2
+    exit 1
+fi
 
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
 rm -rf "$work"
