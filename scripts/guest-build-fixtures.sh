@@ -252,6 +252,22 @@ if ! bcachefs-ref fsck -n "$img" > "$out/aged.fsck.txt" 2>&1; then
     exit 1
 fi
 
+# THE REFUSED SETS: what this reader must recognise and refuse with a clear
+# error rather than misread. An encrypted filesystem (its master key stored
+# unencrypted, so no passphrase is involved), and both members of a
+# two-device filesystem. Only the superblock printer's view is recorded.
+echo "== encrypted (--encrypted --no_passphrase)"
+truncate -s 64M "$out/encrypted.img"
+bcachefs-ref format -q --encrypted --no_passphrase --source="$src" "$out/encrypted.img" \
+    > "$out/encrypted.format.txt" 2>&1
+bcachefs-ref show-super "$out/encrypted.img" > "$out/encrypted.super.txt" 2>&1
+echo "== multi (two devices)"
+truncate -s 64M "$out/multi-0.img" "$out/multi-1.img"
+bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.format.txt" 2>&1
+for i in 0 1; do
+    bcachefs-ref show-super "$out/multi-$i.img" > "$out/multi-$i.super.txt" 2>&1
+done
+
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
 rm -rf "$work"
 ls -l "$out"
