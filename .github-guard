@@ -1,0 +1,15 @@
+# .github-guard -- declarations github-guard reads (see the github-guard skill:
+# https://github.com/antimatter-studios/agent-skills/blob/main/.claude/skills/github-guard/README.md).
+# git-config format: check with `git config -f .github-guard --list`.
+#
+# ONE REQUIRED CHECK: `ci-ok`, ci.yml's always-run aggregate. It `needs:`
+# every other job and fails when any of them failed, was cancelled or was
+# skipped, so jobs can be renamed, split or added without protection
+# noticing. rust-fs-core's ci-gate.sh (run in place) holds both halves to
+# it: every job in ci.yml is in `ci-ok`'s needs, and this file requires
+# `ci-ok` and nothing else.
+#
+# release.yml and fuzz.yml never report on a pull request, so neither may
+# ever be required: a required check that never reports is a permanent block.
+[checks]
+	required = ci-ok

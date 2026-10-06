@@ -1,0 +1,129 @@
+version: "3"
+chore_min_version: 0.10.0
+
+# Every task names a script or a cargo command and nothing else. The family's
+# scripts (tier.sh, test-floor.sh, ci-gate.sh, family-check.sh,
+# agents-core-check.sh, semver-check.sh, release-notes.sh, package-cli.sh)
+# run IN PLACE from the rust-fs-core sibling; this repository keeps no copy.
+vars:
+  TRIPLE: aarch64-apple-darwin
+  LIBNAME: fs_bcachefs
+  FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
+  FS_CORE_REF: v0.3.5
+  LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
+  LINUX_HARNESS_REF: v0.4.0
+
+includes:
+  vm:
+    taskfile: ../fs-linux-test-harness/vm.chores.yml
+    optional: true
+
+# The safety net for a VM nothing cleaned up.
+lifecycle:
+  after_all:
+    - '[ ! -x ../fs-linux-test-harness/scripts/vm.sh ] || ../fs-linux-test-harness/scripts/vm.sh reap'
+
+tasks:
+  siblings:
+    desc: Check out the sibling repos this crate builds and tests against, at their pinned refs
+    cmds:
+      - |
+        set -eu
+        common="$(git rev-parse --path-format=absolute --git-common-dir)"
+        siblings_root="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
+        printf '%s\t%s\t%s\n' \
+          rust-fs-core          '{{.FS_CORE_URL}}'       '{{.FS_CORE_REF}}' \
+          fs-linux-test-harness '{{.LINUX_HARNESS_URL}}' '{{.LINUX_HARNESS_REF}}' \
+        | while IFS="$(printf '\t')" read -r name url ref; do
+            dir="$siblings_root/$name"
+            if [ ! -e "$dir/.git" ]; then
+              echo "siblings: cloning $name at $ref"
+              git init --quiet "$dir"
+              git -C "$dir" remote add origin "$url"
+              git -C "$dir" fetch --quiet origin "$ref"
+              git -C "$dir" checkout --quiet FETCH_HEAD
+              continue
+            fi
+            git -C "$dir" fetch --quiet origin "$ref" || true
+            if git -C "$dir" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then
+              echo "siblings: $name at or ahead of $ref"
+            else
+              echo "siblings: $name is below $ref; this task will not move a shared checkout -- move it yourself." >&2
+              exit 1
+            fi
+          done
+
+  fixtures:
+    desc: 'Build the .vm-share fixtures and their oracle JSON with the reference tools, in the harness VM'
+    timeout: 90m
+    on_timeout:
+      - cmd: '../fs-linux-test-harness/scripts/vm.sh down || true'
+    cmds: ['scripts/build-fixtures.sh']
+
+  fixtures:clean:
+    desc: Remove the built fixtures (regenerable)
+    cmds: ['rm -rf .vm-share/fixtures']
+
+  test:unit:
+    desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
+    cmds:
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 120 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 10'
+
+  test:oracle:
+    desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
+    cmds:
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 80 10000 -- cargo test --locked --release --test oracle_superblock --test oracle_tree'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 2'
+
+  test:
+    desc: 'Unit, then oracle, exactly as CI runs them'
+    cmds:
+      - task: test:unit
+      - task: test:oracle
+
+  fuzz:
+    desc: 'Run every fuzz target for a bounded time: chore fuzz [-- seconds]'
+    cmds: ['scripts/fuzz-all.sh $CLI_ARGS']
+
+  lint:
+    desc: Formatting, clippy and the family's structural checks, exactly as CI runs them
+    cmds:
+      - bash ../rust-fs-core/scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/ci-gate.sh
+      - bash ../rust-fs-core/scripts/family-check.sh
+      - cargo fmt --check
+      - cargo clippy --locked --all-targets --features cli -- -D warnings
+
+  staticlib:
+    desc: Build the static library and its headers into this crate's dist/
+    vars:
+      OUT: 'dist'
+    cmds:
+      - 'rustup target add {{.TRIPLE}}'
+      - 'cargo build --release --target {{.TRIPLE}}'
+      - 'mkdir -p "{{.OUT}}/include"'
+      - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
+      - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
+      - 'cp "../rust-fs-core/include/fs_core.h" "{{.OUT}}/include/fs_core.h"'
+
+  artifact:
+    desc: Print the absolute path of the directory holding the built outputs
+    silent: true
+    cmds:
+      - 'cd "{{.OUT}}" && pwd -P'
+    vars:
+      OUT: 'dist'
+
+  check:semver:
+    desc: Refuse a public-API break the version in Cargo.toml does not declare
+    cmds:
+      - 'bash ../rust-fs-core/scripts/tier.sh semver semver 40 4000 -- bash ../rust-fs-core/scripts/semver-check.sh'
+
+  build:
+    desc: Debug build
+    cmds: ['cargo build']
+
+  clean:
+    desc: Remove this crate's cargo output
+    cmds: ['cargo clean']

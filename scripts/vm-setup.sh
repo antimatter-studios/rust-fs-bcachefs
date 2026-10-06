@@ -52,7 +52,7 @@ if [ "$(cat "$ROOT/.ref-version" 2>/dev/null || true)" != "$REF_VERSION" ]; then
         build-essential pkg-config ca-certificates curl git \
         libaio-dev libblkid-dev libkeyutils-dev liblz4-dev libsodium-dev \
         libunwind-dev liburcu-dev libzstd-dev uuid-dev zlib1g-dev \
-        libudev-dev libclang-dev clang valgrind rustc cargo bindgen \
+        libudev-dev udev systemd-dev libclang-dev clang valgrind rustc cargo bindgen \
         python3 >/dev/null
     chroot "$ROOT" bash -euc "
         rm -rf /build && mkdir -p /build && cd /build
