@@ -30,6 +30,13 @@ pub struct Filesystem<D: BlockRead> {
 impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
+        if sb.is_encrypted() {
+            // Its btree nodes and data are encrypted; how the keys and
+            // nonces are derived has no clean-room source yet.
+            return Err(Error::Unsupported(
+                "the filesystem is encrypted: encrypted filesystems are not read".into(),
+            ));
+        }
         if sb.nr_devices != 1 {
             return Err(Error::Unsupported(format!(
                 "{} devices: only single-device filesystems are read",

@@ -51,6 +51,7 @@ pub const FIELD_NAMES: &[&str] = &[
     "errors_v2",
 ];
 
+pub const FIELD_CRYPT: u32 = 2;
 pub const FIELD_CLEAN: u32 = 6;
 pub const FIELD_MEMBERS_V2: u32 = 11;
 
@@ -327,6 +328,13 @@ impl Superblock {
         let mut b = vec![0u8; total];
         dev.read_at(SB_OFFSET, &mut b)?;
         Self::parse(&b)
+    }
+
+    /// Whether the filesystem is encrypted: it carries a `crypt` field
+    /// (type 2). INFERRED: the reference formatter's `--encrypted` adds
+    /// exactly that section, and no other fixture has it (S3).
+    pub fn is_encrypted(&self) -> bool {
+        self.field(FIELD_CRYPT).is_some()
     }
 
     /// Whether the filesystem was shut down cleanly. INFERRED: flags[0]

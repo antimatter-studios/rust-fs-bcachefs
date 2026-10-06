@@ -184,6 +184,14 @@ all eight fixture sets.
   deleted key or whiteout removing one. Checked: the uncleanly unmounted
   `aged-unclean` reads exactly as the reference sees it after its own
   replay, every path, listing and file byte.
+### Refused filesystems
+
+- Encryption: the formatter's `--encrypted --no_passphrase` adds a `crypt`
+  field (type 2, S1's field order; the printer's `Sections` line) and the
+  btree nodes no longer parse (S3, S4). The reader refuses any image with
+  that field. Key derivation and nonces remain open question 6.
+- Multiple devices: each member's superblock carries `nr_devices` 2 (the
+  printer's `Devices`, checked); the reader refuses it.
 
 ### Extended attributes (`src/xattr.rs`, S8)
 
