@@ -9,8 +9,11 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod bkey;
+pub mod btree;
 pub mod csum;
 pub mod error;
+pub mod extent;
 pub mod superblock;
 pub(crate) mod util;
 
