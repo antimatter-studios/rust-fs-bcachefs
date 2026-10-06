@@ -176,10 +176,14 @@ img=/var/tmp/age/aged.img
 rm -f "$ROOT$img"
 truncate -s 256M "$ROOT$img"
 bcachefs-ref format -q "$img" > "$out/aged.format.txt" 2>&1
-fuse_mount "$img" rw "$work/fuse-age.log"
+# noatime: reading the tree back for the manifest must not itself write.
+fuse_mount "$img" rw,noatime "$work/fuse-age.log"
 python3 /repo/scripts/guest-age.py "$ROOT$mnt"
 sync
 manifest "$ROOT$mnt" "$work/aged.mounted.json" live
+# The burst, then the mount is dropped at once: what it did reaches the
+# disk through the journal, and the btree nodes have not caught up.
+python3 /repo/scripts/guest-age.py "$ROOT$mnt" --burst
 fuse_unmount
 
 cp --sparse=always "$ROOT$img" "$out/aged-unclean.img"
@@ -188,22 +192,32 @@ grep -q '^Clean: *0' "$out/aged-unclean.super.txt" || {
     echo "aged-unclean: the image is marked clean; it was meant to be the unreplayed one" >&2
     exit 1
 }
+# The journal as the reference reads it: every entry's header, and the keys
+# of the entries a replay applies.
+bcachefs-ref list_journal -a -H "$img" > "$out/aged-unclean.journal-headers.txt" 2>&1
+bcachefs-ref list_journal -d -V false "$img" > "$out/aged-unclean.journal-dirty.txt" 2>&1
 
 bcachefs-ref fsck -y "$img" > "$out/aged.replay.txt" 2>&1 || {
     echo "the reference checker could not replay the aged image:" >&2
     tail -n 30 "$out/aged.replay.txt" >&2
     exit 1
 }
-fuse_mount "$img" ro "$work/fuse-ro.log"
+fuse_mount "$img" ro,noatime "$work/fuse-ro.log"
 manifest "$ROOT$mnt" "$work/aged.replayed.json" live
 fuse_unmount
-cmp "$work/aged.mounted.json" "$work/aged.replayed.json" || {
-    echo "aged: the replayed image's tree differs from the tree the mount wrote" >&2
-    diff "$work/aged.mounted.json" "$work/aged.replayed.json" | head -n 40 >&2
-    exit 1
-}
-cp "$work/aged.mounted.json" "$out/aged.json"
-cp "$work/aged.mounted.json" "$out/aged-unclean.json"
+# What the reference sees after its own replay is the expected view of both
+# images. Everything outside /late must also be what the mount wrote.
+python3 - "$work/aged.mounted.json" "$work/aged.replayed.json" <<'PY'
+import json, sys
+before = json.load(open(sys.argv[1]))["entries"]
+after = [e for e in json.load(open(sys.argv[2]))["entries"]
+         if e["path"] != "/late" and not e["path"].startswith("/late/")]
+if before != after:
+    print("aged: the replayed tree differs from what the mount wrote, outside /late", file=sys.stderr)
+    sys.exit(1)
+PY
+cp "$work/aged.replayed.json" "$out/aged.json"
+cp "$work/aged.replayed.json" "$out/aged-unclean.json"
 cp --sparse=always "$ROOT$img" "$out/aged.img"
 bcachefs-ref show-super "$img" > "$out/aged.super.txt" 2>&1
 grep -q '^Clean: *1' "$out/aged.super.txt" || {

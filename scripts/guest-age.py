@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""guest-age.py MOUNTPOINT -- age a mounted bcachefs, deterministically.
+"""guest-age.py MOUNTPOINT [--burst] -- age a mounted bcachefs, deterministically.
 
 Runs INSIDE the harness VM (scripts/guest-build-fixtures.sh), against a
 filesystem the reference implementation has mounted. Every operation a real
@@ -18,6 +18,10 @@ leaves them rather than the way a formatter writes them:
 
 Seeded, so the same image contents come out on every run; only the
 filesystem's own choices (allocation, timestamps) differ.
+
+--burst is the last thing done before the mount is dropped: a quick run of
+creates, renames, deletes and overwrites under /late, synced and then left
+for the journal alone to carry, because the unmount follows at once.
 """
 
 import os
@@ -25,7 +29,8 @@ import random
 import sys
 
 root = sys.argv[1]
-rng = random.Random(20261007)
+burst = sys.argv[2:] == ["--burst"]
+rng = random.Random(20261008 if burst else 20261007)
 
 
 def p(*parts):
@@ -41,6 +46,21 @@ def write(path, data):
 def blob(n):
     return bytes(rng.getrandbits(8) for _ in range(n))
 
+
+if burst:
+    late = os.path.join(root, "late")
+    os.makedirs(late)
+    for i in range(300):
+        write(os.path.join(late, f"n{i:04d}"), blob(100 + i * 37))
+    for i in range(0, 300, 6):
+        os.rename(os.path.join(late, f"n{i:04d}"), os.path.join(late, f"r{i:04d}"))
+    for i in range(1, 300, 6):
+        os.unlink(os.path.join(late, f"n{i:04d}"))
+    for i in range(2, 300, 6):
+        write(os.path.join(late, f"n{i:04d}"), blob(5000 + i))
+    write(os.path.join(late, "big.bin"), blob(700_000))
+    os.sync()
+    sys.exit(0)
 
 # Many small files in one directory: enough entries to split nodes.
 for i in range(4000):
