@@ -1,0 +1,59 @@
+[package]
+name = "rust-fs-bcachefs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure-Rust, read-only bcachefs reader, written clean-room from documentation and black-box observation. Exposes a C ABI (fs_bcachefs_*)."
+repository = "https://github.com/antimatter-studios/rust-fs-bcachefs"
+# The fuzz crate is its own package on its own (nightly) toolchain.
+exclude = ["fuzz"]
+
+# What the release tarball ships, read by rust-fs-core's
+# scripts/package-cli.sh (run in place as ../rust-fs-core/scripts/package-cli.sh).
+[package.metadata.package-cli]
+names = { "fs.bcachefs" = 1 }
+licenses = ["LICENSE"]
+
+[lib]
+name = "fs_bcachefs"
+crate-type = ["staticlib", "rlib"]
+
+# The command-line tools: one multi-call binary, named for the repository,
+# answering to each dotted name it is linked as (`fs.bcachefs`). Behind the
+# `cli` feature so the static library gains no dependency.
+[[bin]]
+name = "rust-fs-bcachefs"
+path = "src/cli/main.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["dep:clap", "rust-fs-core/cli"]
+
+[dependencies]
+# Block-device trait surface shared with the sister fs-* drivers.
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.5" }
+# CRC32C (Castagnoli), the default metadata and data checksum. MIT OR Apache-2.0.
+crc32c = "0.6"
+# XXH64 (seed 0), checksum type 7. MIT.
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
+# zstd-compressed extents: a pure-Rust decoder. MIT.
+ruzstd = "0.9.0"
+# gzip-compressed extents (raw deflate). MIT OR Zlib OR Apache-2.0.
+miniz_oxide = "0.9.1"
+# The command-line tools' argument parser, behind `cli`. MIT OR Apache-2.0.
+clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
+
+[dev-dependencies]
+# Test-only: file contents are compared with the SHA-256 the reference
+# tools' guest computed. MIT OR Apache-2.0.
+sha2 = "0.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "unwind"  # required for catch_unwind at the FFI boundary
+
+[profile.dev]
+opt-level = 1
+panic = "unwind"

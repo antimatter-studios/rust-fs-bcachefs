@@ -1,0 +1,235 @@
+name: release
+
+# Publishing runs only for a version tag, and only after the same gate
+# that guards the branch.
+#
+# This workflow deliberately owns almost nothing. It used to carry its
+# own copy of the full test and kernel-validation gate — roughly 150
+# duplicated lines — and the two copies drifted three separate times:
+# the release gate lost the root-inode dumps its own test required, then
+# the dmesg allowlist, then the shared fixture builder. Each time the
+# release gate was quietly checking less than the branch gate while still
+# reporting green, which is worse than having no release gate at all.
+#
+# So it calls ci.yml instead. There is now exactly one definition of what
+# "this driver is validated" means, and it cannot drift from itself.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# THE ONE PLACE THIS VERSION IS WRITTEN IN THIS FILE. `ci.yml` has its
+# own copy for the branch gate; they must be raised together, and the
+# `rust-deps-pinned` pre-commit hook refuses a lock that names a version
+# no workflow pins, which is what catches them being raised apart.
+env:
+  FS_CORE_REF: v0.3.5
+
+jobs:
+  # Cheap and release-specific: a tag that disagrees with Cargo.toml
+  # would publish a version nobody asked for, and a version number taken
+  # by mistake cannot be reclaimed.
+  verify-tag:
+    name: verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: compare tag against the manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = //; s/"//g')"
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "tag and Cargo.toml agree on $version"
+
+  # The whole branch gate, unmodified: fmt, clippy, every test tier, and
+  # the fixtures built by the reference tools inside the
+  # fs-linux-test-harness VM, so the release gate and the branch gate are
+  # graded by the same oracle.
+  gate:
+    name: branch gate
+    uses: ./.github/workflows/ci.yml
+
+  # THE COMMAND-LINE TOOLS, AS A DOWNLOADABLE PREFIX. The CLI rides the
+  # library's release, at the same version: one tag, one CHANGELOG, and no
+  # binary that could wrap a library other than the one it was tagged with.
+  #
+  # Packaged, attested and attached by rust-fs-core's release-cli workflow,
+  # the family's one copy of those jobs: a native leg per platform builds
+  # the binary and runs core's package-cli.sh, which lays the tarball out
+  # as an install prefix and checks it, and one job attests both tarballs
+  # and attaches them to the release `publish` made. What the tarball
+  # ships is this repository's, declared in Cargo.toml under
+  # [package.metadata.package-cli]. This repository used to carry its own
+  # copy of all of it, and ten such copies had drifted
+  # (antimatter-studios/rust-fs-core#193).
+  #
+  # PINNED BY COMMIT SHA, with the tag beside it, at the core release
+  # FS_CORE_REF names; `with:` cannot read `env`, so core-ref repeats it,
+  # and tests/release_attestation.rs holds the three to one value. Anyone
+  # can check a download with
+  #
+  #   gh attestation verify <tarball> --repo <owner>/<repo> \
+  #       --signer-workflow antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml
+  cli:
+    name: the tools
+    needs: [verify-tag, gate, publish]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@943a3136cd9bc3f8e2ca55ce3bd624adba9f40b7 # v0.3.6
+    with:
+      core-ref: v0.3.5
+      toolchain: 1.95.0
+
+  publish:
+    name: publish to crates.io
+    needs: [verify-tag, gate]
+    runs-on: ubuntu-latest
+    environment: release
+    # The only job with any write grant, because it is the only one that
+    # needs one: an OIDC token for crates.io trusted publishing and for
+    # signing the attestation, the attestation store, and the release the
+    # .crate is attached to.
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-27
+        with:
+          toolchain: 1.95.0
+
+      # Clone the sibling repo that satisfies the rust-fs-core path
+      # dependency. `cargo publish` rewrites the path into its registry
+      # equivalent, but the manifest still has to resolve locally first.
+      # PINNED THROUGH THE SHARED VARIABLE, not a literal. This line
+      # said v0.2.7 while the manifest had moved to ^0.2.10, and nothing
+      # noticed: the branch gate reads FS_CORE_REF and was raised with
+      # the manifest, while this one kept a number somebody had typed
+      # once. A drift like that only ever surfaces at the moment of a
+      # release, from a job that has never run against the current
+      # manifest, with a message about a candidate version that did not
+      # match rather than about a stale pin.
+      - name: clone rust-fs-core sibling
+        shell: bash
+        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+
+      # A version already on crates.io cannot be published again, and a
+      # re-tag — or a first release published by hand before trusted
+      # publishing could be configured — would otherwise fail this job
+      # every time. Skip instead, so the workflow is idempotent and a red
+      # run means something actually went wrong.
+      - name: skip if this version is already on crates.io
+        id: already
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$(grep -m1 '^name = ' Cargo.toml | sed 's/name = //; s/"//g')"
+          version="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = //; s/"//g')"
+          if curl -sf "https://crates.io/api/v1/crates/$name/$version" \
+               -H 'User-Agent: release-workflow' >/dev/null 2>&1; then
+            echo "$name $version is already published; nothing to do."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$name $version is not on crates.io; publishing."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # PROVENANCE. A version on crates.io says nothing about where it was
+      # built, so the crate is packaged here, checked after the publish
+      # against the checksum crates.io serves, and only then attested and
+      # attached to the GitHub release for the tag. Packaged on every run,
+      # published or not, so a re-run of a tag whose publish succeeded but
+      # whose attestation did not can still finish the job. The same
+      # packaging `cargo publish` does, and cargo's archive is
+      # reproducible: the file `cargo publish` uploads is this one.
+      # A tag the CHANGELOG does not describe stops before crates.io has
+      # anything (rust-fs-core#209).
+      - name: the CHANGELOG describes this version
+        uses: antimatter-studios/agent-skills/.github/actions/changelog-notes@ed0b96812c5908478dcd84543debf4d5f8bf87e3
+        with:
+          tag: ${{ github.ref_name }}
+
+      - name: package the crate
+        shell: bash
+        run: cargo package --no-verify
+
+      - uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        if: steps.already.outputs.published == 'false'
+        id: auth
+
+      - name: cargo publish
+        if: steps.already.outputs.published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        # No `--locked`: publish must rewrite the rust-fs-core path
+        # dependency into its registry equivalent in the packaged
+        # lockfile, which `--locked` forbids. The verify build resolves
+        # rust-fs-core from crates.io through the `version` constraint, so
+        # the published artifact is pinned by that constraint rather than
+        # by the local path checkout.
+        run: cargo publish
+
+      # Nothing is attested on trust: the file is compared with the
+      # checksum crates.io records for this version, so the attestation
+      # speaks for the crates.io download, not merely for a file that was
+      # on this runner. The index can trail the upload by a few seconds.
+      - name: the packaged crate is the one crates.io serves
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$(grep -m1 '^name = ' Cargo.toml | sed 's/name = //; s/"//g')"
+          version="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = //; s/"//g')"
+          crate="target/package/$name-$version.crate"
+          local_sum="$(sha256sum "$crate" | cut -d' ' -f1)"
+          remote_sum=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            remote_sum="$(curl -sf "https://crates.io/api/v1/crates/$name/$version" \
+              -H 'User-Agent: release-workflow' | jq -r '.version.checksum')" && break
+            sleep 6
+          done
+          if [ "$local_sum" != "$remote_sum" ]; then
+            echo "::error::$crate is sha256 $local_sum but crates.io records ${remote_sum:-nothing} for $name $version; the file here is not the published one, so it is not attested"
+            exit 1
+          fi
+          echo "$crate is the crates.io download: sha256 $local_sum"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: target/package/*.crate
+
+      # So `gh attestation verify` has a file to check that anyone can
+      # fetch beside the tag, and so the crates.io download can be
+      # compared with it.
+      # The release body is this version's CHANGELOG section, from github-guard's
+      # changelog extraction through agent-skills' changelog-notes action.
+      - name: the release notes are this version's CHANGELOG section
+        uses: antimatter-studios/agent-skills/.github/actions/changelog-notes@ed0b96812c5908478dcd84543debf4d5f8bf87e3
+        with:
+          tag: ${{ github.ref_name }}
+          output-file: ${{ runner.temp }}/release-notes.md
+      - name: attach the crate to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$GITHUB_REF_NAME" target/package/*.crate --clobber

@@ -1,0 +1,34 @@
+[package]
+name = "fs-bcachefs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: the fuzz crate builds on nightly and is not part of
+# the published package.
+[workspace]
+
+[lib]
+name = "fs_bcachefs_fuzz"
+path = "src/lib.rs"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rust-fs-bcachefs = { path = ".." }
+
+[[bin]]
+name = "superblock"
+path = "fuzz_targets/superblock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "btree_node"
+path = "fuzz_targets/btree_node.rs"
+test = false
+doc = false
+bench = false

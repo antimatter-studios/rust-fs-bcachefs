@@ -1,0 +1,189 @@
+name: CI
+
+# The gate. Every tier runs through the chore task a developer runs, and
+# every family script runs in place from the rust-fs-core sibling.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # Callable so release.yml runs THIS gate rather than a copy of it.
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CHORE_VERSION: "0.11.0"
+
+jobs:
+  unit:
+    name: unit (no tools, no fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-unit-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # The unit tier must prove it needs no fixture.
+      - name: No fixtures are present
+        run: |
+          set -euo pipefail
+          if [ -d .vm-share/fixtures ]; then
+            echo "::error::.vm-share/fixtures exists; this job must prove the unit tier needs none"
+            exit 1
+          fi
+      - name: chore test:unit
+        run: chore test:unit
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-unit
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  lint:
+    name: lint (fmt, clippy, family-check, agents-core, ci-gate)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: chore lint
+        run: chore lint
+
+  # The reference tools build the fixtures, inside the harness VM, on an
+  # x86_64 runner with KVM. Nothing of theirs ever runs on the runner.
+  fixtures:
+    name: fixtures (harness VM, x86_64 KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore fixtures
+        run: chore fixtures
+      - name: chore vm:status (the VM is down again)
+        run: '! chore vm:status'
+      - name: Pack the fixtures, keeping their holes
+        run: |
+          set -euo pipefail
+          du -sh .vm-share/fixtures
+          tar --sparse -czf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share fixtures
+          ls -lh "$RUNNER_TEMP/fixtures.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}/fixtures.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # This crate reads every fixture and must agree with what the reference
+  # tools recorded about it, field by field and byte by byte.
+  oracle:
+    name: oracle (fixtures vs the reference tools' record)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-oracle-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -l .vm-share/fixtures
+      - name: chore test:oracle
+        run: chore test:oracle
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-oracle
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [unit, lint, fixtures, oracle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran and succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad (failed, cancelled or skipped)"
+            exit 1
+          fi
+          echo "all required jobs succeeded"
