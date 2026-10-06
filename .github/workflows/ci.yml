@@ -420,10 +420,57 @@ jobs:
         shell: bash
         run: chore check:semver
 
+  # Line coverage of the unit and oracle tiers, failing under a measured
+  # floor (chores.yml, task `coverage`).
+  coverage:
+    name: coverage (unit and oracle tiers)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+      - name: chore coverage
+        id: tier
+        run: chore coverage
+      - name: Keep the tier logs
+        if: always() && steps.tier.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-coverage
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver]
+    needs: [unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
