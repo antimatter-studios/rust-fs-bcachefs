@@ -192,6 +192,37 @@ all eight fixture sets.
   that field. Key derivation and nonces remain open question 6.
 - Multiple devices: each member's superblock carries `nr_devices` 2 (the
   printer's `Devices`, checked); the reader refuses it.
+### What each write changes (the write study, `fixtures/write-study`, S8)
+
+Each pair is the same settled base image before and after one operation
+through the reference implementation's mount; every btree of both is dumped
+by the reference lister (scripts/guest-write-study.sh). Keys that changed,
+by operation (positions `inode:offset:snapshot`):
+
+- **create a small file** (6 bytes): extents + `inline_data` at
+  `ino:1`; inodes + the new `inode_v3` (`bi_dir` = parent, `bi_dir_offset`
+  = the dirent's offset, a fresh `hash_seed`) and the parent's
+  `bi_ctime`/`bi_mtime`/`journal_seq` updated; dirents + `dirent` at
+  `parent:hash(name)`; accounting `nr_inodes` +1 and the per-btree
+  counters of extents, inodes and dirents; logged_ops' `inode_alloc_cursor`
+  `consumed` +1 and `idx` = the next inode number.
+- **create an empty file**: as above without the extents key.
+- **mkdir**: as create-empty, the inode 19 u64s (a directory carries one
+  more field).
+- **unlink**: the dirent, the inode and its inline data are deleted;
+  accounting down; here the filesystem also allocated a node for the
+  deleted_inodes btree (alloc, freespace, backpointers and the btree
+  accounting changed with it).
+- **rename** within a directory: one dirent deleted, one added at the new
+  name's hash; the dirents counter's bytes change.
+- **truncate to 0 / overwrite** of an inline file: the inline_data key is
+  removed / replaced; the extents counter changes.
+- **create a 300000-byte file**: ten `extent` keys of up to 64 sectors,
+  alloc_v4 keys for the buckets used, freespace ranges shrunk, an lru
+  entry, backpointers, accounting.
+- The per-btree accounting key (`snapshot id=... btree=NAME a b 0`) holds
+  the number of leaf keys and their total size in bytes (u64s * 8): every
+  pair adds or removes exactly the keys it changed (inferred, every pair).
 
 ### Extended attributes (`src/xattr.rs`, S8)
 
