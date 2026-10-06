@@ -79,7 +79,7 @@ tasks:
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 150 12000 -- cargo test --locked --release --test oracle_superblock --test oracle_tree --test oracle_fs --test oracle_aged --test oracle_journal --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 150 12000 -- cargo test --locked --release --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 9'
 
   test:vm:

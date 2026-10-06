@@ -90,6 +90,9 @@ pub struct Entry {
     /// The inode number and link count the mount reported (aged sets only).
     pub ino: Option<u64>,
     pub nlink: Option<u32>,
+    /// Extended attributes as the mount listed them: `name=hex;...`, sorted
+    /// by name (aged sets only, and only where there are any).
+    pub xattrs: Option<String>,
 }
 
 /// The manifest, read with a hand-rolled scan of the fixed shape
@@ -110,6 +113,7 @@ pub fn manifest(set: &str) -> Vec<Entry> {
                 target: None,
                 ino: None,
                 nlink: None,
+                xattrs: None,
             });
             continue;
         }
@@ -136,6 +140,7 @@ pub fn manifest(set: &str) -> Vec<Entry> {
             "target" => e.target = Some(s),
             "ino" => e.ino = Some(s.parse().unwrap()),
             "nlink" => e.nlink = Some(s.parse().unwrap()),
+            "xattrs" => e.xattrs = Some(s),
             _ => {}
         }
     }
