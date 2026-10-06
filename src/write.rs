@@ -118,11 +118,6 @@ impl<D: BlockDevice> Writer<D> {
     /// (a key of type `deleted` removes it). Keys going to the same leaf are
     /// appended as one bset; the new lengths are carried up to the root.
     pub fn insert(&mut self, id: u8, mut keys: Vec<Bkey>) -> Result<()> {
-        if !keys.is_empty() {
-            return Err(Error::Unsupported(
-                "inserting keys is not implemented yet".into(),
-            ));
-        }
         keys.sort_by_key(|k| k.pos);
         let (root_level, root_key) = self.root(id)?;
         let new_root = self.insert_at(&root_key, root_level, &keys)?;
