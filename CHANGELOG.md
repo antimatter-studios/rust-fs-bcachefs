@@ -28,6 +28,8 @@ API, a patch never does.
   without writing to the device.
 - **Extended attributes** (`Filesystem::xattrs`, `xattr::Xattr`): the
   user and trusted namespaces, read through a journal replay too.
+- **`fs.bcachefs stat` and `tree`**: one path's inode (number, type, mode,
+  owner, links, size, sectors, times) and every path under a directory.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in
