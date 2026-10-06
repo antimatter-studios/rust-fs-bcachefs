@@ -18,8 +18,10 @@ set -euo pipefail
     { echo "guest-suite.sh runs INSIDE the harness VM ('chore test:vm')." >&2; exit 1; }
 
 cd /repo
-FS_CORE_ROOT=/share/siblings/rust-fs-core exec bash /share/siblings/rust-fs-core/scripts/core.sh \
-    guest-rust-run fs-bcachefs /share rust-fs-core -- bash -c '
+# FS_CORE_CALLER names this repository: run directly rather than through
+# core's core.sh, the script would otherwise take core for the caller.
+FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-run.sh \
+    fs-bcachefs /share rust-fs-core -- bash -c '
         set -euo pipefail
         EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib --test fuzz_decoders "$@"
         cargo test --locked --release --test oracle_superblock --test oracle_tree \

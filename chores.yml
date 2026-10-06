@@ -103,8 +103,8 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 400 40000 -- \
-          bash ../rust-fs-core/scripts/core.sh stage-siblings "$share" rust-fs-core -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 400 40000 -- \
+          bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 30'
 
