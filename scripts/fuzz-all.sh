@@ -16,7 +16,8 @@ budget="${1:-60}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
-targets=$(sed -n 's/^name = "\(.*\)"$/\1/p' fuzz/Cargo.toml | tail -n +2)
+# The [[bin]] targets only: the package and the [lib] have names too.
+targets=$(awk '/^\[\[bin\]\]/ { bin = 1; next } /^\[/ { bin = 0 } bin && /^name = / { gsub(/"/, "", $3); print $3 }' fuzz/Cargo.toml)
 [ -n "$targets" ] || { echo "no fuzz targets declared in fuzz/Cargo.toml" >&2; exit 1; }
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/bcachefs-fuzz-scratch.XXXXXX")"
