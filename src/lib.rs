@@ -9,8 +9,10 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod csum;
 pub mod error;
 pub mod superblock;
+pub(crate) mod util;
 
 pub use error::{Error, Result};
 

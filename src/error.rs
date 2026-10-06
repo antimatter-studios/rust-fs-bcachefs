@@ -10,7 +10,11 @@ pub enum Error {
     /// A magic number did not match; the bytes are not what was expected.
     BadMagic { what: &'static str },
     /// A stored checksum did not match the bytes it covers.
-    BadChecksum { what: &'static str, stored: u64, computed: u64 },
+    BadChecksum {
+        what: &'static str,
+        stored: u64,
+        computed: u64,
+    },
     /// A structure is shorter than its own header says, or a field is out of range.
     Corrupt(String),
     /// A valid structure using something this reader does not implement.
@@ -26,8 +30,15 @@ impl fmt::Display for Error {
         match self {
             Error::Io(m) => write!(f, "I/O error: {m}"),
             Error::BadMagic { what } => write!(f, "{what}: bad magic"),
-            Error::BadChecksum { what, stored, computed } => {
-                write!(f, "{what}: checksum mismatch (stored {stored:#x}, computed {computed:#x})")
+            Error::BadChecksum {
+                what,
+                stored,
+                computed,
+            } => {
+                write!(
+                    f,
+                    "{what}: checksum mismatch (stored {stored:#x}, computed {computed:#x})"
+                )
             }
             Error::Corrupt(m) => write!(f, "corrupt: {m}"),
             Error::Unsupported(m) => write!(f, "unsupported: {m}"),
