@@ -240,3 +240,52 @@ fn a_file_created_in_the_aged_image_is_read_by_the_reference() {
         assert!(std::fs::read_dir(m.join("many")).unwrap().count() > 1000);
     });
 }
+
+/// mkdir, unlink, rmdir, rename and rewriting a file, judged by the
+/// reference checker and read back through the reference mount.
+#[test]
+fn namespace_operations_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "namespace");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let sub = w.mkdir(d, b"sub", 0o750).unwrap();
+    w.create_file(sub, b"inner.txt", b"inside\n", 0o644)
+        .unwrap();
+    w.create_file(d, b"doomed", b"soon gone", 0o644).unwrap();
+    w.unlink(d, b"doomed").unwrap();
+    w.rename(d, b"existing", sub, b"moved").unwrap();
+    let f = w
+        .create_file(d, b"rewritten", b"first version, rather long\n", 0o644)
+        .unwrap();
+    w.write_file(f, b"second\n").unwrap();
+    w.mkdir(d, b"empty-dir", 0o755).unwrap();
+    w.rmdir(d, b"empty-dir").unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        let mut names: Vec<String> = std::fs::read_dir(m.join("d"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["rewritten", "sub"]);
+        assert_eq!(
+            std::fs::read(m.join("d/sub/inner.txt")).unwrap(),
+            b"inside\n"
+        );
+        assert_eq!(
+            std::fs::read(m.join("d/sub/moved")).unwrap(),
+            b"an existing file\n"
+        );
+        assert_eq!(std::fs::read(m.join("d/rewritten")).unwrap(), b"second\n");
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let md = std::fs::metadata(m.join("d/sub")).unwrap();
+        assert!(md.is_dir());
+        assert_eq!(md.permissions().mode() & 0o7777, 0o750);
+        assert_eq!(md.nlink(), 2);
+        assert_eq!(std::fs::metadata(m.join("d")).unwrap().nlink(), 3);
+    });
+}

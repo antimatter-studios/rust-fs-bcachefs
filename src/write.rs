@@ -563,3 +563,48 @@ impl<D: BlockDevice> Writer<D> {
         Ok(out)
     }
 }
+
+impl<D: BlockDevice> Writer<D> {
+    /// Create a directory named `name` in `parent`. Returns its inode
+    /// number.
+    pub fn mkdir(&mut self, parent: u64, name: &[u8], mode: u32) -> Result<u64> {
+        Err(Error::Unsupported(format!(
+            "mkdir is not implemented yet ({parent}, {}, {mode:o})",
+            name.len()
+        )))
+    }
+
+    /// Remove the file or symlink `name` from `parent`.
+    pub fn unlink(&mut self, parent: u64, name: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "unlink is not implemented yet ({parent}, {})",
+            name.len()
+        )))
+    }
+
+    /// Remove the empty directory `name` from `parent`.
+    pub fn rmdir(&mut self, parent: u64, name: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "rmdir is not implemented yet ({parent}, {})",
+            name.len()
+        )))
+    }
+
+    /// Move `name` in `from` to `to_name` in `to`.
+    pub fn rename(&mut self, from: u64, name: &[u8], to: u64, to_name: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "rename is not implemented yet ({from}, {}, {to}, {})",
+            name.len(),
+            to_name.len()
+        )))
+    }
+
+    /// Replace a file's whole contents with `data` (inline; at most
+    /// [`INLINE_MAX`] bytes; empty truncates it).
+    pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "write_file is not implemented yet ({ino}, {})",
+            data.len()
+        )))
+    }
+}

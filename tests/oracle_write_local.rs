@@ -119,3 +119,62 @@ fn what_is_refused_is_refused_before_anything_is_written() {
         "an unclean image"
     );
 }
+
+/// mkdir, unlink, rmdir, rename and rewriting a file's contents, read back
+/// by this crate.
+#[test]
+fn namespace_operations_read_back() {
+    let img = scratch("write-study/base.img", "local-namespace");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let sub = w.mkdir(d, b"sub", 0o750).unwrap();
+    w.create_file(sub, b"inner.txt", b"inside\n", 0o644)
+        .unwrap();
+    w.create_file(d, b"doomed", b"soon gone", 0o644).unwrap();
+    w.unlink(d, b"doomed").unwrap();
+    w.rename(d, b"existing", sub, b"moved").unwrap();
+    let f = w
+        .create_file(d, b"rewritten", b"first version, rather long\n", 0o644)
+        .unwrap();
+    w.write_file(f, b"second\n").unwrap();
+    let e = w.mkdir(d, b"empty-dir", 0o755).unwrap();
+    w.rmdir(d, b"empty-dir").unwrap();
+    assert!(w.rmdir(d, b"sub").is_err(), "a directory that is not empty");
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let mut names: Vec<String> = fs
+        .readdir(d)
+        .unwrap()
+        .iter()
+        .map(|x| String::from_utf8_lossy(&x.name).into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["rewritten", "sub"]);
+    assert_eq!(
+        fs.read(fs.lookup("/d/sub/inner.txt").unwrap()).unwrap(),
+        b"inside\n"
+    );
+    assert_eq!(
+        fs.read(fs.lookup("/d/sub/moved").unwrap()).unwrap(),
+        b"an existing file\n"
+    );
+    assert_eq!(
+        fs.read(fs.lookup("/d/rewritten").unwrap()).unwrap(),
+        b"second\n"
+    );
+    let s = fs.inode(sub).unwrap();
+    assert!(s.is_dir());
+    assert_eq!((s.mode & 0o7777, s.link_count()), (0o750, 2));
+    assert_eq!(
+        fs.inode(d).unwrap().link_count(),
+        3,
+        "/d holds one subdirectory"
+    );
+    assert!(
+        fs.inode(e).is_err(),
+        "the removed directory's inode is gone"
+    );
+}
