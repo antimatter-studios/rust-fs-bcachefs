@@ -70,6 +70,23 @@ pub fn xxhash64(data: &[u8]) -> u64 {
     twox_hash::XxHash64::oneshot(0, data)
 }
 
+/// The checksum of `data` of the given type, for writing one.
+pub fn compute(csum_type: u8, data: &[u8]) -> crate::Result<u64> {
+    Ok(match csum_type {
+        0 => 0,
+        1 => crc32c_nonzero(data) as u64,
+        2 => crc64_nonzero(data),
+        5 => crc32c_zero(data) as u64,
+        6 => crc64_zero(data),
+        7 => xxhash64(data),
+        t => {
+            return Err(crate::Error::Unsupported(format!(
+                "checksum type {t} cannot be written"
+            )))
+        }
+    })
+}
+
 /// Verify `data` against a stored checksum of the given type. Returns the
 /// computed value on a mismatch.
 pub fn verify(csum_type: u8, data: &[u8], stored: u64) -> Result<(), u64> {

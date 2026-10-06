@@ -25,6 +25,8 @@ pub mod siphash;
 pub mod superblock;
 pub(crate) mod util;
 pub mod xattr;
+#[cfg(feature = "write")]
+pub mod write;
 
 pub use error::{Error, Result};
 pub use fs::Filesystem;

@@ -31,6 +31,9 @@ required-features = ["cli"]
 # stop, so mutated input reaches the decoders behind them. Never part of a
 # normal build; tests/fuzz_decoders.rs proves the default still verifies.
 fuzzing = []
+# Writing (src/write.rs): off by default, and nothing in the default build
+# can write to a device.
+write = []
 cli = ["dep:clap", "rust-fs-core/cli"]
 
 [dependencies]

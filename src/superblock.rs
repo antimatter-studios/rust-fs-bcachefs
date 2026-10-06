@@ -262,6 +262,15 @@ impl Superblock {
     /// Parse a superblock from `b`, which starts at the superblock and holds
     /// at least its header and fields. Verifies magic and checksum.
     pub fn parse(b: &[u8]) -> Result<Self> {
+        let sb = Self::parse_unchecked(b)?;
+        let end = SB_HEADER_BYTES + sb.u64s as usize * 8;
+        sb.verify_checksum(&b[..end])?;
+        Ok(sb)
+    }
+
+    /// [`Superblock::parse`] without verifying the checksum: for a writer
+    /// that has changed the bytes and has not checksummed them yet.
+    pub fn parse_unchecked(b: &[u8]) -> Result<Self> {
         if b.len() < SB_HEADER_BYTES {
             return Err(Error::Corrupt("superblock shorter than its header".into()));
         }
@@ -310,7 +319,6 @@ impl Superblock {
             layout: Layout::parse(&b[0xf0..SB_HEADER_BYTES])?,
             fields: parse_fields(&b[SB_HEADER_BYTES..end])?,
         };
-        sb.verify_checksum(&b[..end])?;
         Ok(sb)
     }
 
