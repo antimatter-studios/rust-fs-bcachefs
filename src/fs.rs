@@ -100,6 +100,16 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(ino)
     }
 
+    /// The extended attributes of an inode, in btree order.
+    pub fn xattrs(&self, ino: u64) -> Result<Vec<crate::xattr::Xattr>> {
+        self.inode(ino)?;
+        btree::walk_replayed(&self.dev, &self.sb, btree_id::XATTRS, self.replay.as_ref())?
+            .iter()
+            .filter(|k| k.pos.inode == ino && k.key_type == crate::bkey::key_type::XATTR)
+            .map(crate::xattr::Xattr::from_key)
+            .collect()
+    }
+
     /// The whole contents of a file (or a symlink's target).
     pub fn read(&self, ino: u64) -> Result<Vec<u8>> {
         let inode = self.inode(ino)?;

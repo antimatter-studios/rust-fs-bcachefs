@@ -76,6 +76,12 @@ for dirpath, dirnames, filenames in os.walk(root):
         if live:
             e["ino"] = st.st_ino
             e["nlink"] = st.st_nlink
+            # Extended attributes as one flat, sorted "name=hex;..." string.
+            names = sorted(os.listxattr(full, follow_symlinks=False))
+            if names:
+                e["xattrs"] = ";".join(
+                    n + "=" + os.getxattr(full, n, follow_symlinks=False).hex() for n in names
+                )
         if stat.S_ISLNK(st.st_mode):
             e["type"] = "symlink"
             e["target"] = os.readlink(full)
@@ -235,6 +241,7 @@ grep -q '^Clean: *1' "$out/aged.super.txt" || {
     echo "aged: the replayed image is not marked clean" >&2
     exit 1
 }
+bcachefs-ref list -b xattrs "$img" > "$out/aged.xattrs.txt" 2>&1
 for b in inodes dirents extents; do
     bcachefs-ref list -b "$b" "$img" > "$out/aged.$b.txt" 2>&1
     bcachefs-ref list -b "$b" -m formats "$img" > "$out/aged.$b.formats.txt" 2>&1

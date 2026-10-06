@@ -139,6 +139,24 @@ write(os.path.join(deep, "leaf.txt"), b"at the bottom\n")
 os.symlink("d0/d1/d2", p("shortcut"))
 os.symlink("x" * 200, p("long-dangling-link"))
 
+# Extended attributes: small and large values, many on one file, one on a
+# directory, and in the user and trusted namespaces (the guest runs as
+# root). Set through the mount like everything else.
+os.makedirs(p("xattr"), exist_ok=True)
+write(p("xattr", "one.txt"), b"one attribute")
+os.setxattr(p("xattr", "one.txt"), "user.greeting", b"hello")
+write(p("xattr", "many.txt"), b"many attributes")
+for i in range(40):
+    os.setxattr(p("xattr", "many.txt"), f"user.attr{i:02d}", b"v" * (i * 3))
+write(p("xattr", "large.txt"), b"a large attribute")
+os.setxattr(p("xattr", "large.txt"), "user.large", blob(1800))
+os.setxattr(p("xattr", "large.txt"), "trusted.marker", b"\x00\x01binary\xff")
+os.setxattr(p("xattr"), "user.on-a-directory", b"dir")
+write(p("xattr", "removed.txt"), b"attribute removed")
+os.setxattr(p("xattr", "removed.txt"), "user.gone", b"x")
+os.setxattr(p("xattr", "removed.txt"), "user.kept", b"y")
+os.removexattr(p("xattr", "removed.txt"), "user.gone")
+
 # A file removed after being written, and a directory removed after being
 # filled and emptied: neither must appear.
 write(p("gone.txt"), b"soon deleted")

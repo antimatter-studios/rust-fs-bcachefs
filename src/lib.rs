@@ -22,6 +22,7 @@ pub mod inode;
 pub mod journal;
 pub mod superblock;
 pub(crate) mod util;
+pub mod xattr;
 
 pub use error::{Error, Result};
 pub use fs::Filesystem;
