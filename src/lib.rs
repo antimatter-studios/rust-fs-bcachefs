@@ -11,13 +11,17 @@
 
 pub mod bkey;
 pub mod btree;
+pub mod compress;
 pub mod csum;
 pub mod error;
 pub mod extent;
+pub mod fs;
+pub mod inode;
 pub mod superblock;
 pub(crate) mod util;
 
 pub use error::{Error, Result};
+pub use fs::Filesystem;
 
 #[cfg(test)]
 mod overflow_checks {
