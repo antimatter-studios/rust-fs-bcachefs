@@ -82,6 +82,46 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 150 12000 -- cargo test --locked --release --test oracle_superblock --test oracle_tree --test oracle_fs --test oracle_aged --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 9'
 
+  test:vm:
+    desc: 'The unit and oracle tiers compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
+    # scripts/guest-suite.sh, through the harness's [test] guest_command.
+    # The siblings are staged on the share from their pinned HEAD first
+    # (rust-fs-core's stage-siblings, run in place); the toolchain and the
+    # build live on the VM's own disk, so later runs are incremental.
+    # BUDGET: not yet measured on CI; set generously for a cold guest build
+    # (one `Compiling` line per dependency, twice: debug and release) and
+    # to be lowered to the measurement the first green suite-in-vm run
+    # records. FLOOR: the unit and oracle floors together.
+    timeout: 120m
+    on_timeout:
+      - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
+    cmds:
+      - |
+        set -eu
+        [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
+          echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+          exit 1
+        }
+        share="$(../fs-linux-test-harness/scripts/vm.sh share)"
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 400 40000 -- \
+          bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
+          ../fs-linux-test-harness/scripts/vm.sh guest-test
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 30'
+
+  # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
+  # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks.
+  # Budget half as much again plus room for a runner's longer paths; the
+  # floor is about 95% of the checks.
+  cli:install:
+    desc: 'Build the command-line tools (release, --features cli) and stage them as an install prefix in tmp/cli'
+    cmds: ['scripts/cli-install.sh']
+
+  test:cli:
+    desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
+    cmds:
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 20 1000 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 2370'
+
   test:
     desc: 'Unit, then oracle, exactly as CI runs them'
     cmds:
@@ -124,7 +164,7 @@ tasks:
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh semver semver 40 4000 -- bash ../rust-fs-core/scripts/semver-check.sh'
+      - 'bash ../rust-fs-core/scripts/tier.sh semver semver 40 4000 -- scripts/check-semver.sh'
 
   build:
     desc: Debug build

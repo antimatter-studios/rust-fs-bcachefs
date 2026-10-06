@@ -13,6 +13,10 @@ name = "rust-fs-bcachefs"
 # Runs as root INSIDE the VM; builds the reference tools in a chroot.
 script = "scripts/vm-setup.sh"
 
+[test]
+# `chore test:vm`: the unit and oracle tiers, compiled and run in here.
+guest_command = "scripts/guest-suite.sh"
+
 [share]
 dir = ".vm-share"
 

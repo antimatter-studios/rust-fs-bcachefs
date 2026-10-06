@@ -169,10 +169,261 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  # GitHub's arm64 runners have no /dev/kvm, so no VM starts here; nothing
+  # in the oracle tier needs one -- it reads the images and the reference
+  # tools' recorded view of them, which are the same bytes on every
+  # architecture.
+  test-arm64:
+    name: test (aarch64, no KVM on this runner)
+    needs: fixtures
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
+      - name: chore lint
+        run: chore lint
+      - name: chore test:unit
+        run: chore test:unit
+      - name: chore test:oracle
+        run: chore test:oracle
+      - name: Keep the tier logs
+        # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
+        # verdict naming it; the runner is thrown away minutes later.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-aarch64
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  test-darwin:
+    name: test-darwin
+    needs: fixtures
+    # arm64 by label: the tests built for aarch64-apple-darwin run on the host.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-apple-darwin
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-darwin-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
+      # The static library a macOS consumer links. A break here would ship
+      # while every Linux job stayed green.
+      - name: Build the shipped staticlib for aarch64-apple-darwin
+        run: cargo build --locked --release --lib --target aarch64-apple-darwin
+      - name: chore test:unit
+        run: chore test:unit
+      - name: chore test:oracle
+        run: chore test:oracle
+      - name: chore cli:install
+        run: chore cli:install
+      - name: The staged tools first on PATH
+        run: scripts/cli-install.sh --print-bin-dir >> "$GITHUB_PATH"
+      - name: chore test:cli
+        run: chore test:cli
+      - name: Keep the tier logs
+        # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
+        # verdict naming it; the runner is thrown away minutes later.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-darwin
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  # The whole suite compiled and run INSIDE the harness guest: the path a
+  # Mac takes for the Linux tests. No Rust on the runner; the guest installs
+  # the toolchain rust-toolchain.toml pins.
+  suite-in-vm:
+    name: suite in the guest (the macOS path)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
+      - name: chore test:vm
+        run: chore test:vm
+      - name: Keep the tier logs
+        # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
+        # verdict naming it; the runner is thrown away minutes later.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-suite-in-vm
+          path: tmp/logs/*.log
+          if-no-files-found: error
+      - name: chore vm:status (the VM is down again)
+        run: '! chore vm:status'
+
+  cli:
+    name: cli (the installed tools, on PATH)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
+      - name: chore cli:install
+        run: chore cli:install
+      # FIRST on PATH, so the tier tests these and not anything else of the
+      # same name; `rust-fs-bcachefs doctor` proves it before any test runs.
+      - name: The staged tools first on PATH
+        run: scripts/cli-install.sh --print-bin-dir >> "$GITHUB_PATH"
+      - name: chore test:cli
+        id: tier
+        run: chore test:cli
+      # The release tarball's layout, on every pull request rather than
+      # after a tag: rust-fs-core's package-cli.sh, run in place, is what
+      # the release's CLI workflow runs on each platform.
+      - name: Package the release tarball and check its layout
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          tarball="$(bash ../rust-fs-core/scripts/package-cli.sh "$version" linux-x86_64 | tail -n 1)"
+          tar -tvzf "$tarball"
+      - name: Keep the tier logs
+        # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
+        # verdict naming it; the runner is thrown away minutes later.
+        if: always() && steps.tier.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-cli
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  semver:
+    # `chore check:semver`: this tree's public API against its baseline,
+    # refusing a break the version in Cargo.toml does not declare. See
+    # scripts/check-semver.sh for which baseline, and why.
+    name: semver (public API against its baseline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_SEMVER_CHECKS_VERSION: "0.50.0"
+      # Here the tail IS the answer -- which items broke.
+      OUTPUT_BUDGET_FAIL_TAIL: "200"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The baseline before publication is main, so it must be fetched.
+          fetch-depth: 0
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
+      - name: chore check:semver
+        shell: bash
+        run: chore check:semver
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, lint, fixtures, oracle]
+    needs: [unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
