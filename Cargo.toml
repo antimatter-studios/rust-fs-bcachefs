@@ -36,6 +36,10 @@ rust-fs-core = { path = "../rust-fs-core", version = "0.3.5" }
 crc32c = "0.6"
 # XXH64 (seed 0), checksum type 7. MIT.
 twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
+# zstd-compressed extents: a pure-Rust decoder. MIT.
+ruzstd = "0.9.0"
+# gzip-compressed extents (raw deflate). MIT OR Zlib OR Apache-2.0.
+miniz_oxide = "0.9.1"
 # The command-line tools' argument parser, behind `cli`. MIT OR Apache-2.0.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 

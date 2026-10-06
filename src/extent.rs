@@ -52,14 +52,16 @@ pub enum ExtentEntry {
     Crc(Crc),
 }
 
-/// Compression types as stored in a crc entry. INFERRED: 0 none, 3 lz4,
-/// 4 gzip, 5 zstd (from the lz4, gzip and zstd fixtures) -- not the
-/// numbering of the filesystem option.
+/// Compression types as stored in a crc entry. INFERRED from the lz4,
+/// gzip and zstd fixtures against the lister's `compress` column: 0 none,
+/// 2 gzip, 3 lz4, 4 zstd, 5 incompressible (stored raw) -- not the
+/// numbering of the filesystem option. Type 1 never appeared.
 pub mod compression {
     pub const NONE: u8 = 0;
+    pub const GZIP: u8 = 2;
     pub const LZ4: u8 = 3;
-    pub const GZIP: u8 = 4;
-    pub const ZSTD: u8 = 5;
+    pub const ZSTD: u8 = 4;
+    pub const INCOMPRESSIBLE: u8 = 5;
 }
 
 fn bits(w: u64, lo: u32, n: u32) -> u64 {

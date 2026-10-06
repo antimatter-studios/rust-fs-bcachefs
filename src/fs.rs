@@ -146,7 +146,7 @@ impl<D: BlockRead> Filesystem<D> {
             }
         })?;
         let plain = match crc.compression_type {
-            compression::NONE => raw,
+            compression::NONE | compression::INCOMPRESSIBLE => raw,
             t => crate::compress::decompress(t, &raw, crc.uncompressed_size as usize * 512)?,
         };
         let from = e.skip as usize * 512;

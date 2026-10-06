@@ -15,11 +15,6 @@ fn open(set: &str) -> Filesystem<FileDevice> {
         .unwrap_or_else(|e| panic!("{set}: {e}"))
 }
 
-/// Sets whose data this reader can decompress.
-fn readable(set: &str) -> bool {
-    !matches!(set, "lz4" | "zstd" | "gzip")
-}
-
 #[test]
 fn every_path_resolves_with_the_right_type() {
     for set in SETS {
@@ -92,7 +87,7 @@ fn every_directory_lists_exactly_its_entries() {
 
 #[test]
 fn every_file_and_symlink_reads_back_byte_for_byte() {
-    for set in SETS.iter().filter(|s| readable(s)) {
+    for set in SETS {
         let fs = open(set);
         for e in manifest(set) {
             let ino = fs.lookup(&e.path).unwrap();
