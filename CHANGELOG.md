@@ -30,6 +30,9 @@ API, a patch never does.
   user and trusted namespaces, read through a journal replay too.
 - **`fs.bcachefs stat` and `tree`**: one path's inode (number, type, mode,
   owner, links, size, sectors, times) and every path under a directory.
+- **C ABI**: `fs_bcachefs_last_error`, `_mount_with_fs_core_device`,
+  `_get_volume_info`, `_stat_ino`, a directory iterator (`_dir_open`,
+  `_dir_next`, `_dir_close`), `_readlink`, `_listxattr` and `_getxattr`.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in
@@ -41,6 +44,9 @@ API, a patch never does.
   and `clean`.
 
 ### Fixed
+
+- **`fs_bcachefs_stat` reports the link count as a mount does**, not the
+  stored count.
 
 - **An uncleanly unmounted filesystem is no longer read from its stale
   superblock roots**: `btree::walk` refuses it, and `Filesystem::open`

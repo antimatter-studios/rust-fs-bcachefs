@@ -236,9 +236,6 @@ pub unsafe extern "C" fn fs_bcachefs_mount_with_fs_core_device(
     dev: *const FsCoreDevice,
 ) -> *mut fs_bcachefs_fs {
     ffi_guard_or(std::ptr::null_mut(), || {
-        if not_yet() {
-            return std::ptr::null_mut();
-        }
         if dev.is_null() {
             set_last_error("dev is NULL");
             return std::ptr::null_mut();
@@ -297,9 +294,6 @@ pub unsafe extern "C" fn fs_bcachefs_get_volume_info(
     out: *mut fs_bcachefs_volume_info_t,
 ) -> c_int {
     ffi_guard_or(-1, || {
-        if not_yet() {
-            return -1;
-        }
         if fs.is_null() || out.is_null() {
             set_last_error("fs or out is NULL");
             return -1;
@@ -346,9 +340,6 @@ pub unsafe extern "C" fn fs_bcachefs_stat_ino(
     out: *mut fs_bcachefs_attr_t,
 ) -> c_int {
     ffi_guard_or(-1, || {
-        if not_yet() {
-            return -1;
-        }
         if fs.is_null() || out.is_null() {
             set_last_error("fs or out is NULL");
             return -1;
@@ -396,9 +387,6 @@ pub unsafe extern "C" fn fs_bcachefs_dir_open(
     path: *const c_char,
 ) -> *mut fs_bcachefs_dir_iter {
     ffi_guard_or(std::ptr::null_mut(), || {
-        if not_yet() {
-            return std::ptr::null_mut();
-        }
         if fs.is_null() {
             set_last_error("fs is NULL");
             return std::ptr::null_mut();
@@ -497,9 +485,6 @@ pub unsafe extern "C" fn fs_bcachefs_readlink(
     len: u64,
 ) -> i64 {
     ffi_guard_or(-1, || {
-        if not_yet() {
-            return -1;
-        }
         if fs.is_null() {
             set_last_error("fs is NULL");
             return -1;
@@ -539,9 +524,6 @@ pub unsafe extern "C" fn fs_bcachefs_listxattr(
     len: u64,
 ) -> i64 {
     ffi_guard_or(-1, || {
-        if not_yet() {
-            return -1;
-        }
         if fs.is_null() {
             set_last_error("fs is NULL");
             return -1;
@@ -583,9 +565,6 @@ pub unsafe extern "C" fn fs_bcachefs_getxattr(
     len: u64,
 ) -> i64 {
     ffi_guard_or(-1, || {
-        if not_yet() {
-            return -1;
-        }
         if fs.is_null() || name.is_null() {
             set_last_error("fs or name is NULL");
             return -1;
@@ -612,10 +591,4 @@ pub unsafe extern "C" fn fs_bcachefs_getxattr(
             }
         }
     })
-}
-
-/// Red until the new entry points are implemented: each fails at once.
-fn not_yet() -> bool {
-    set_last_error("not implemented yet");
-    true
 }
