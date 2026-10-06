@@ -11,7 +11,13 @@ use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
 fn scratch(name: &str, test: &str) -> std::path::PathBuf {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp/write-local");
+    // The system's temporary directory, not the checkout's tmp/: these
+    // images are tens of megabytes each, and a checkout on slow storage
+    // made copying them most of the run (measured: 384 s on an SD card).
+    let dir = std::env::temp_dir().join(format!(
+        "rust-fs-bcachefs-write-local-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join(format!("{test}.img"));
     std::fs::copy(fixture(name), &img).unwrap();

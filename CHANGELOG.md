@@ -47,7 +47,8 @@ API, a patch never does.
 - **Writing, behind the `write` feature (off by default)**:
   `write::Writer` appends bsets to btree nodes and carries their length to
   the superblock, and `Writer::create_file` creates a small (inline) file in
-  an existing directory. Every image it writes in the tests passes the
+  an existing directory; `mkdir`, `unlink`, `rmdir`, `rename` and
+  `write_file` (whole inline contents) follow. Every image it writes in the tests passes the
   reference checker and reads back through the reference implementation.
 - **Encoders**: `inode::InodeV3Raw`, `inode::varint_encode`,
   `Dirent::encode_value`, `inode::dirent_hash` and `siphash::siphash24`.
