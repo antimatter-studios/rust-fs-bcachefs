@@ -99,6 +99,15 @@ impl<D: BlockDevice> Writer<D> {
                 "writing needs a single-device, unencrypted filesystem".into(),
             ));
         }
+        // Inode times are stored in units of the superblock's time
+        // precision; this writer stamps nanoseconds, which is right only
+        // when the precision is 1 (S8: every fixture; open question).
+        if sb.time_precision != 1 {
+            return Err(Error::Unsupported(format!(
+                "time precision {} is not nanoseconds: the times this writer stamps would be wrong",
+                sb.time_precision
+            )));
+        }
         let len = SB_HEADER_BYTES + sb.u64s as usize * 8;
         let mut sb_raw = vec![0u8; len];
         dev.read_at(SB_OFFSET, &mut sb_raw)?;

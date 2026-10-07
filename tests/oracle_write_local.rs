@@ -353,3 +353,44 @@ fn links_attributes_and_xattrs_read_back() {
         .collect();
     assert_eq!(x, vec![(b"user.colour".to_vec(), b"green".to_vec())]);
 }
+
+/// A superblock whose time precision is not nanoseconds: the times this
+/// writer stamps would be in the wrong unit, so it refuses before writing.
+#[test]
+fn a_time_precision_other_than_nanoseconds_is_refused_before_writing() {
+    use fs_bcachefs::superblock::{Superblock, SB_HEADER_BYTES, SB_OFFSET};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let img = scratch("write-study/base.img", "precision");
+    let sb = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(sb.time_precision, 1, "the fixture stamps nanoseconds");
+    // Every copy: the reader takes the highest seq, and they all share one.
+    for &sector in &sb.layout.sb_offsets {
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&img)
+            .unwrap();
+        f.seek(SeekFrom::Start(sector * 512)).unwrap();
+        let mut b = vec![0u8; SB_HEADER_BYTES + sb.u64s as usize * 8];
+        f.read_exact(&mut b).unwrap();
+        b[0x8c..0x90].copy_from_slice(&1000u32.to_le_bytes());
+        let c = fs_bcachefs::csum::compute(sb.csum_type(), &b[16..]).unwrap();
+        b[0..16].fill(0);
+        b[0..8].copy_from_slice(&c.to_le_bytes());
+        f.seek(SeekFrom::Start(sector * 512)).unwrap();
+        f.write_all(&b).unwrap();
+    }
+    let _ = SB_OFFSET;
+    let before = std::fs::read(&img).unwrap();
+    match Writer::open(FileDevice::open_rw(&img).unwrap()) {
+        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("precision") => {}
+        Ok(_) => panic!("a writer opened a filesystem whose time unit it does not stamp"),
+        Err(e) => panic!("{e}"),
+    }
+    assert!(
+        std::fs::read(&img).unwrap() == before,
+        "refused, but written"
+    );
+    // The reader is unaffected: times are reported in the superblock's unit.
+    Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+}
