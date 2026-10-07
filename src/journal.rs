@@ -171,7 +171,7 @@ pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
 
 /// Parse one jset at the start of `b`; `None` when it is not one (wrong
 /// magic, impossible length or a checksum that does not hold).
-fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
+pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
     if b.len() < JSET_HEADER || le64(b, 16) != magic {
         return Ok(None);
     }
