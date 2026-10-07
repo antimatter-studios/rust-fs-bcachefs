@@ -111,6 +111,10 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **Extent pointers are judged before they are read** (#59): the bucket's
+  generation from its `alloc_v4` key must match (a stale pointer is
+  refused), the device must be this one, and a pointer with any flag set
+  (cached, unwritten) is refused; the checker reports `extent_pointer`.
 - **An `error` extent reads as an I/O error naming the lost range** and the
   checker reports `data_lost` (#61); an `extent_whiteout` reads as a hole;
   an `inode` or `inode_v2` key is refused as an older encoding instead of

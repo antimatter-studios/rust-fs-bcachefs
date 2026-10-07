@@ -30,6 +30,9 @@ pub struct Filesystem<D: BlockRead> {
     cache: crate::btree::NodeCache,
     /// The one snapshot every key is read at: the root inode's.
     snapshot: u32,
+    /// This device's index and bucket size (sectors), for judging pointers.
+    dev_idx: u8,
+    bucket_size: u64,
 }
 
 impl<D: BlockRead> Filesystem<D> {
@@ -58,7 +61,17 @@ impl<D: BlockRead> Filesystem<D> {
         };
         // The root inode must be there: a filesystem without it is not
         // one to read. Its snapshot is the one every other key must carry.
+        let member = sb
+            .members()?
+            .into_iter()
+            .nth(sb.dev_idx as usize)
+            .ok_or_else(|| Error::Corrupt("no member entry for this device".into()))?;
+        if member.bucket_size == 0 {
+            return Err(Error::Corrupt("bucket size 0".into()));
+        }
         let mut fs = Filesystem {
+            dev_idx: sb.dev_idx,
+            bucket_size: u64::from(member.bucket_size),
             dev,
             sb,
             replay,
@@ -320,8 +333,32 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(out)
     }
 
+    /// The generation the allocator records for the bucket holding
+    /// `sector`: byte 4 of the second word of the `alloc_v4` key at
+    /// `dev:bucket` (docs/clean-room.md, "Allocating space"), or `None`
+    /// when the bucket has no alloc key.
+    fn bucket_gen(&self, sector: u64) -> Result<Option<u8>> {
+        let bucket = sector / self.bucket_size;
+        let mut c = self.cursor(btree_id::ALLOC)?;
+        c.seek(Bpos {
+            inode: u64::from(self.dev_idx),
+            offset: bucket,
+            snapshot: 0,
+        })?;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != u64::from(self.dev_idx) || k.pos.offset != bucket {
+                break;
+            }
+            if k.key_type == crate::bkey::key_type::ALLOC_V4 {
+                return Ok(crate::extent::alloc_v4_gen(&k.value));
+            }
+        }
+        Ok(None)
+    }
+
     /// The `len` live sectors of one extent, decompressed and checked.
     fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
+        e.ptr.check(self.dev_idx, self.bucket_gen(e.ptr.offset)?)?;
         let (stored_sectors, crc) = match e.crc {
             Some(c) => (c.compressed_size as u64, c),
             None => {

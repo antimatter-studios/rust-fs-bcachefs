@@ -253,6 +253,22 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
 
+    // Pointers are judged against the allocator: the bucket's generation
+    // from its alloc_v4 key, this device's index, and no flags.
+    let bucket_size = sb
+        .members()
+        .ok()
+        .and_then(|m| m.get(sb.dev_idx as usize).map(|d| u64::from(d.bucket_size)))
+        .filter(|&b| b > 0);
+    let gens: BTreeMap<u64, u8> = trees
+        .get(&btree_id::ALLOC)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+        .filter_map(|k| crate::extent::alloc_v4_gen(&k.value).map(|g| (k.pos.offset, g)))
+        .collect();
+    let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
+
     // Extents: their inode, their bounds, their neighbours, their data.
     let have_inodes = trees.contains_key(&btree_id::INODES);
     // (inode, snapshot, end sector) of the last extent-like key seen: an
@@ -308,7 +324,21 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             );
         }
         if k.key_type == key_type::EXTENT {
-            if let Err(e) = DataExtent::from_key(k).and_then(|e| verify_data(dev, &e)) {
+            let e = match DataExtent::from_key(k) {
+                Ok(e) => e,
+                Err(e) => {
+                    r.add("extent_data", format!("extent {}: {e}", k.pos));
+                    continue;
+                }
+            };
+            if have_alloc {
+                let gen = bucket_size.and_then(|b| gens.get(&(e.ptr.offset / b)).copied());
+                if let Err(err) = e.ptr.check(sb.dev_idx, gen) {
+                    r.add("extent_pointer", format!("extent {}: {err}", k.pos));
+                    continue;
+                }
+            }
+            if let Err(e) = verify_data(dev, &e) {
                 r.add("extent_data", format!("extent {}: {e}", k.pos));
             }
         }
