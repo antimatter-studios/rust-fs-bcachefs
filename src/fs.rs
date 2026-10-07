@@ -198,6 +198,12 @@ impl<D: BlockRead> Filesystem<D> {
     /// The entry named `name` in directory `dir`: at its name's hash, or
     /// (a collision moved it) anywhere in the directory.
     fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
+        // The slot is SipHash's; a directory hashed with crc32c or crc64
+        // (S1 7.7, never seen in a fixture) is scanned instead, which
+        // finds the name at the cost of reading the whole directory.
+        if dir.hash_type() != crate::inode::HASH_TYPE_SIPHASH {
+            return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
+        }
         let at = crate::inode::dirent_hash(dir.hash_seed, name);
         let mut c = self.cursor(btree_id::DIRENTS)?;
         c.seek(Bpos {

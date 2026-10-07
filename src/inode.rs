@@ -31,6 +31,14 @@ use crate::util::le64;
 /// under it).
 pub const ROOT_INO: u64 = 4096;
 
+/// The string hash type an inode uses for its directory entries and
+/// extended attributes (flags bits 20..23). S1 (7.7) names three,
+/// `crc32c`, `crc64` and `siphash` (the default); SipHash is 3 by
+/// observation (S3, S4: every inode of every fixture carries 3 and the
+/// lister prints `hash_type=siphash` for each). The other two numbers are
+/// open question 17 in docs/clean-room.md.
+pub const HASH_TYPE_SIPHASH: u8 = 3;
+
 /// The varint fields of an `inode_v3`, after the fixed part, in order.
 /// Times take two varints each.
 const FIELDS: &[(&str, usize)] = &[
@@ -71,6 +79,12 @@ impl Inode {
     }
     pub fn is_file(&self) -> bool {
         self.mode & 0o170000 == 0o100000
+    }
+
+    /// The string hash type of this inode's names: [`HASH_TYPE_SIPHASH`] on
+    /// every fixture.
+    pub fn hash_type(&self) -> u8 {
+        ((self.flags >> 20) & 0xf) as u8
     }
 
     /// The link count a mount reports for this inode (`st_nlink`).
@@ -314,6 +328,11 @@ impl InodeV3Raw {
 
     pub fn mode(&self) -> u32 {
         ((self.flags >> 36) & 0xffff) as u32
+    }
+
+    /// The string hash type (flags bits 20..23), see [`HASH_TYPE_SIPHASH`].
+    pub fn hash_type(&self) -> u8 {
+        ((self.flags >> 20) & 0xf) as u8
     }
 
     /// The value bytes, zero-padded to a whole u64.
