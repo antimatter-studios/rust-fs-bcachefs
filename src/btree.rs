@@ -530,6 +530,29 @@ impl Walk<'_> {
         let mut merged: std::collections::BTreeMap<Bpos, Bkey> =
             keys.into_iter().map(|k| (k.pos, k)).collect();
         for k in overlay.iter().filter(|k| k.pos >= min && k.pos <= max) {
+            if self.id == ACCOUNTING && k.key_type == ACCOUNTING_KEY {
+                // The journal carries accounting as deltas, applied once:
+                // only one newer than the key it adds to (by version, journal
+                // sequence first) counts (S8: signed counters in the
+                // journal's accounting keys, totals in the btree's).
+                match merged.get_mut(&k.pos) {
+                    Some(old)
+                        if (k.version_lo, k.version_hi) <= (old.version_lo, old.version_hi) => {}
+                    Some(old) => {
+                        let n = old.value.len().min(k.value.len()) / 8;
+                        for i in 0..n {
+                            let v = le64(&old.value, i * 8).wrapping_add(le64(&k.value, i * 8));
+                            old.value[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+                        }
+                        old.version_lo = k.version_lo;
+                        old.version_hi = k.version_hi;
+                    }
+                    None => {
+                        merged.insert(k.pos, k.clone());
+                    }
+                }
+                continue;
+            }
             if k.key_type == key_type::DELETED || k.key_type == key_type::WHITEOUT {
                 merged.remove(&k.pos);
             } else {
@@ -539,6 +562,10 @@ impl Walk<'_> {
         merged.into_values().collect()
     }
 }
+
+/// The accounting btree and its key type (S1's orders; S8).
+const ACCOUNTING: u8 = 20;
+const ACCOUNTING_KEY: u8 = 34;
 
 pub fn read_node(dev: &dyn BlockRead, sb: &Superblock, ptr: &NodePtr) -> Result<Node> {
     read_node_upto(dev, sb, ptr, u64::MAX)

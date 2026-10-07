@@ -387,3 +387,46 @@ fn freed_space_is_accepted_by_the_reference() {
         assert!(std::fs::read(m.join("d/grown")).unwrap() == big[..100_000]);
     });
 }
+
+/// Journalled commits: the reference replays the entries this crate wrote
+/// and its checker finds nothing to fix; after its own replay its mount
+/// reads the result. An entry written without marking the superblock is
+/// not replayed at all.
+#[test]
+fn journalled_commits_are_replayed_by_the_reference() {
+    let img = scratch("write-study/base.img", "journal");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let big = pattern(300_000, 3);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.journal_commits().unwrap();
+    w.create_file(d, b"small", b"journalled\n", 0o644).unwrap();
+    w.create_file(d, b"big", &big, 0o644).unwrap();
+    w.mkdir(d, b"sub", 0o755).unwrap();
+    w.unlink(d, b"existing").unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    let (ok, text) = reference(&["fsck", "-y", img.to_str().unwrap()]);
+    assert!(ok, "the reference's replay failed:\n{text}");
+    with_reference_mount(&img, |m| {
+        assert_eq!(std::fs::read(m.join("d/small")).unwrap(), b"journalled\n");
+        assert!(std::fs::read(m.join("d/big")).unwrap() == big);
+        assert!(m.join("d/sub").is_dir());
+        assert!(!m.join("d/existing").exists());
+    });
+
+    let img = scratch("write-study/base.img", "journal-crash");
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.journal_commits().unwrap();
+    w.crash_before_superblock();
+    w.create_file(d, b"lost", b"never committed\n", 0o644)
+        .unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(!m.join("d/lost").exists());
+        assert!(m.join("d/existing").exists());
+    });
+}

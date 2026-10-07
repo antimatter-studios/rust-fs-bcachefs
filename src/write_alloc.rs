@@ -80,7 +80,7 @@ pub(super) struct Planned {
 }
 
 impl<D: BlockDevice> Writer<D> {
-    fn bucket_sectors(&self) -> Result<u64> {
+    pub(super) fn bucket_sectors(&self) -> Result<u64> {
         let members = self.sb.members()?;
         let m = members
             .first()
@@ -439,8 +439,15 @@ impl<D: BlockDevice> Writer<D> {
             pos: SPOS_MAX,
             value: v,
         };
-        self.add_root_entry(id, &super::encode_key(&root)?)?;
-        self.mark_btree_bitmap(dev_sector, node_sectors)?;
+        if self.session.is_some() {
+            // Journalled: every entry from now on records the new root.
+            self.session_add_root(id, 0, root);
+            self.mark_btree_bitmap(dev_sector, node_sectors)?;
+            self.write_superblock()?;
+        } else {
+            self.add_root_entry(id, &super::encode_key(&root)?)?;
+            self.mark_btree_bitmap(dev_sector, node_sectors)?;
+        }
 
         let clock = self.write_clock()?;
         let mut a = Vec::with_capacity(64);

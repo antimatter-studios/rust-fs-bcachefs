@@ -25,9 +25,11 @@ use fs_core::BlockDevice;
 
 #[path = "write_alloc.rs"]
 mod alloc;
+#[path = "write_journal.rs"]
+mod journal_commit;
 
 const SB_OFFSET: u64 = 4096;
-const SB_HEADER_BYTES: usize = 0x2f0;
+pub(crate) const SB_HEADER_BYTES: usize = 0x2f0;
 const HEADER_BSET: usize = 136;
 const BSET_HEADER: usize = 24;
 
@@ -80,6 +82,8 @@ pub struct Writer<D: BlockDevice> {
     /// The journal sequence number new bsets carry: the one the clean
     /// field records as the last.
     journal_seq: u64,
+    /// Set by [`Writer::journal_commits`]: commits go to the journal.
+    session: Option<journal_commit::Session>,
 }
 
 impl<D: BlockDevice> Writer<D> {
@@ -110,6 +114,7 @@ impl<D: BlockDevice> Writer<D> {
             sb,
             sb_raw,
             journal_seq,
+            session: None,
         })
     }
 
@@ -232,6 +237,13 @@ impl<D: BlockDevice> Writer<D> {
 
     /// The root of btree `id` from the clean field: its level and key.
     fn root(&self, id: u8) -> Result<(u8, Bkey)> {
+        if let Some(s) = &self.session {
+            return s
+                .roots
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| Error::NotFound(format!("btree {id} has no root")));
+        }
         let r = self
             .sb
             .btree_roots()?
@@ -467,7 +479,10 @@ fn valid_name(name: &[u8]) -> Result<()> {
 impl<D: BlockDevice> Writer<D> {
     /// Every leaf key of btree `id`, as it stands.
     fn keys(&self, id: u8) -> Result<Vec<Bkey>> {
-        btree::walk(&self.dev, &self.sb, id)
+        match &self.session {
+            Some(s) => btree::walk_replayed(&self.dev, &self.sb, id, Some(&s.replay)),
+            None => btree::walk(&self.dev, &self.sb, id),
+        }
     }
 
     fn key_at(&self, id: u8, pos: Bpos) -> Result<Option<Bkey>> {
@@ -648,6 +663,9 @@ impl<D: BlockDevice> Writer<D> {
     /// the keys as they stand, every btree checked for room, then each
     /// btree's keys, then accounting.
     fn commit(&mut self, mut t: Txn) -> Result<()> {
+        if self.session.is_some() {
+            return self.commit_journal(t);
+        }
         let accounting = self.accounting_deltas(&t.acct)?;
         // Every btree is checked for room before any is written.
         for (id, keys) in &t.keys {
