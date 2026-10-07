@@ -150,11 +150,6 @@ impl<D: BlockDevice> Writer<D> {
     /// the reference's: the new entries continue that journal, so one
     /// replay applies them all.
     pub fn open_journalled(dev: D) -> Result<Self> {
-        if dev.size_bytes() > 0 {
-            return Err(Error::Unsupported(
-                "open_journalled is not implemented yet".into(),
-            ));
-        }
         let sb = crate::superblock::Superblock::read(&dev)?;
         if sb.is_clean() {
             let mut w = Self::open(dev)?;
