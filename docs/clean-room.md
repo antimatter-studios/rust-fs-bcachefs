@@ -370,6 +370,27 @@ checker judged each attempt and named what was missing until nothing was.
   reference checker with nothing to fix and read back through its mount;
   an entry left unmarked is ignored by both.
 
+### Links, attributes and extended attributes (`Writer::symlink`, `link`, `set_attributes`, `set_xattr`) -- judged
+
+- A symlink is an inode of mode 120777 whose target is its inline data,
+  size the target's length, dirent type 10 (S8: the aged fixture's
+  symlinks).
+- A hard link adds a dirent; the inode's stored count rises and its
+  `dir`/`dir_offset` back-reference moves to the newest name (S8: the aged
+  fixture's three-name file points at the last one made).
+- Permissions are the mode bits in the flags word; owner and group the uid
+  and gid varints (S8 field order, above).
+- An xattr's key sits at SipHash-2-4 keyed `(inode hash_seed, 0)` over the
+  namespace byte then the name, shifted right by one (S4: 43 of the aged
+  fixture's 45 xattrs; open question 15). The first xattr of a filesystem
+  without an xattrs btree makes its root, as for lru.
+- An empty bset is rejected by the reference checker ("empty bset"), so
+  nothing is appended when an operation leaves a btree unchanged (S8,
+  measured on the first attempt).
+- Judged: a symlink, a second name, chmod and chown, and xattrs set,
+  replaced and removed pass the reference checker, in place and through
+  the journal, and the reference mount and `getfattr` show them.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
@@ -411,6 +432,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
     accounting keys' versions: copied and left unchanged by the writer;
     the reference checker accepts both.
+15. **Two of the aged fixture's xattrs** (`user.on-a-directory`,
+    `user.greeting`, the first set in the session) are not at the computed
+    slot, and no candidate tried places them; the writer puts new ones at
+    the computed slot, where the reference's own lookups find them.
 
 ## Confirmation
 

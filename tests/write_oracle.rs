@@ -464,14 +464,18 @@ fn links_attributes_and_xattrs_are_read_by_the_reference() {
             (a.permissions().mode() & 0o7777, a.uid(), a.gid(), a.nlink()),
             (0o600, 1000, 1000, 2)
         );
-        let out = Command::new("getfattr")
+        // getfattr is installed in the reference tools' chroot
+        // (scripts/vm-setup.sh), where the mount is at MNT.
+        let out = Command::new("chroot")
             .args([
+                REF_ROOT,
+                "getfattr",
                 "-d",
                 "--absolute-names",
-                m.join("d/existing").to_str().unwrap(),
+                &format!("{MNT}/d/existing"),
             ])
             .output()
-            .expect("getfattr (the attr package) in the guest");
+            .expect("chroot into the reference tools' root");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("user.colour=\"green\""), "{text}");
         assert!(!text.contains("user.shape"), "{text}");

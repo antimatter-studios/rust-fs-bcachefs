@@ -91,7 +91,7 @@ impl<D: BlockDevice> Writer<D> {
     /// Take `n` whole free buckets, lowest first, from the freespace btree's
     /// runs (keys of type `set` at `dev:end`, `size` buckets long, S8).
     /// Returns the buckets and the keys that shrink the runs.
-    fn take_buckets(&self, n: u64, t: &mut Txn) -> Result<Vec<u64>> {
+    pub(super) fn take_buckets(&self, n: u64, t: &mut Txn) -> Result<Vec<u64>> {
         let runs: Vec<Bkey> = self
             .keys(aids::FREESPACE)?
             .into_iter()
@@ -381,7 +381,7 @@ impl<D: BlockDevice> Writer<D> {
     /// POS_MIN, max key SPOS_MAX, the 64/64/32 unpacked key format. The
     /// root key goes into the superblock's clean field; the bucket's alloc
     /// key, its backpointer and the accounting go into `t`.
-    fn create_root(&mut self, id: u8, bucket: u64, t: &mut Txn) -> Result<()> {
+    pub(super) fn create_root(&mut self, id: u8, bucket: u64, t: &mut Txn) -> Result<()> {
         if id >= 16 {
             return Err(Error::Unsupported(format!(
                 "a root for btree {id}: where ids of 16 and more go in a node's flags is not known"
