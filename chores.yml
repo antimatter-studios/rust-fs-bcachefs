@@ -137,13 +137,15 @@ tasks:
     cmds: ['scripts/fuzz-all.sh $CLI_ARGS']
 
   lint:
-    desc: Formatting, clippy and the family's structural checks, exactly as CI runs them
+    desc: Formatting, clippy, the family's structural checks and the licence gate, exactly as CI runs them
     cmds:
       - bash ../rust-fs-core/scripts/agents-core-check.sh
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
       - cargo clippy --locked --all-targets --features cli,write -- -D warnings
+      # The licence gate: every crate in the graph is permissive (deny.toml).
+      - scripts/licenses.sh
 
   staticlib:
     desc: Build the static library and its headers into this crate's dist/

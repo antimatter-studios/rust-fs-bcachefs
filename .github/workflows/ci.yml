@@ -63,7 +63,7 @@ jobs:
           if-no-files-found: error
 
   lint:
-    name: lint (fmt, clippy, family-check, agents-core, ci-gate)
+    name: lint (fmt, clippy, family-check, agents-core, ci-gate, licences)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +84,12 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-lint-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # The licence gate (scripts/licenses.sh) needs cargo-deny; a prebuilt
+      # binary, not a 5-minute `cargo install`.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: chore lint
         run: chore lint
 
@@ -207,6 +213,12 @@ jobs:
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
           ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
+      # The licence gate (scripts/licenses.sh) needs cargo-deny; a prebuilt
+      # binary, not a 5-minute `cargo install`.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: chore lint
         run: chore lint
       - name: chore test:unit

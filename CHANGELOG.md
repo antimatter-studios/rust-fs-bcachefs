@@ -14,6 +14,10 @@ API, a patch never does.
   lookup reads only the nodes on its path; a name is found at its hash.
   `Filesystem::inode` and `Filesystem::readdir` return owned values, and
   `Inode` carries `hash_seed`: the minor version moves to 0.2.
+- **The crate describes itself as read-only by default with an optional
+  `write` feature**, rather than read-only outright.
+- **The test VM deletes the reference tools' source tree** as soon as their
+  binary is installed, so nothing in the guest can open it by accident.
 
 ### Added
 
@@ -29,7 +33,12 @@ API, a patch never does.
   corpus of real blocks replayed on every pull request.
 - **Fixtures made by the reference formatter in the Linux test VM**, each with
   a JSON record of what the reference tools say is in it.
-- **docs/clean-room.md**, the provenance of every fact about the format.
+- **docs/clean-room.md**, the provenance of every fact about the format,
+  the licence position on the specification it was learned from, and the
+  open questions.
+- **A licence gate**: `chore lint` runs `cargo deny check licenses` against
+  `deny.toml`, which allows permissive licences only; CI installs cargo-deny
+  for it.
 - **Journal replay, in memory**: a filesystem that was not cleanly unmounted
   is read through its journal (`journal::read_entries`, `journal::replay`,
   `btree::walk_replayed`), as the reference sees it after its own replay,
@@ -83,3 +92,5 @@ API, a patch never does.
 - **Key positions print as the reference lister prints them** (`POS_MIN`,
   `SPOS_MAX`, `U64_MAX`).
 - **Link counts** are reported as a mount reports them (`Inode::link_count`).
+- **The error for a superblock without a `clean` field** no longer says
+  journal replay is not implemented; it points at the journal.

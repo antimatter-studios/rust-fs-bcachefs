@@ -7,6 +7,7 @@
 # GPL-licensed. It is built here, inside the disposable guest, from the
 # upstream release tarball, and it never leaves the guest: nothing in this
 # repository links it, copies it or reads its source (docs/clean-room.md).
+# Its source tree is deleted as soon as the binary is installed.
 # Fixture scripts reach it only through the `bcachefs-ref` wrapper this
 # script installs, by role: "the reference formatter", "the reference
 # lister".
@@ -71,6 +72,11 @@ if [ "$(cat "$ROOT/.ref-version" 2>/dev/null || true)" != "$REF_BUILD" ]; then
         cd bcachefs-tools-$REF_VERSION
         BCACHEFS_FUSE=1 make -j\$(nproc) bcachefs >/build/make.log 2>&1 || { tail -n 60 /build/make.log; exit 1; }
         install -m 0755 bcachefs /usr/local/sbin/bcachefs
+        # The binary is all the oracle needs. The unpacked source tree goes
+        # at once, so nobody working in this guest (where this crate is also
+        # built and tested, scripts/guest-suite.sh) can open it by accident:
+        # the clean-room rule is never to read it (docs/clean-room.md).
+        cd / && rm -rf /build
     "
     echo "$REF_BUILD" > "$ROOT/.ref-version"
 fi

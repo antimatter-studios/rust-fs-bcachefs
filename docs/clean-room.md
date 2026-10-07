@@ -25,7 +25,7 @@ be learned this way is an **open question**, not a guess.
 
 | # | Source | Kind | What it told us |
 |---|---|---|---|
-| S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (fetched 2026-10-06) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a 44-bit sector offset and a generation; list of key types and metadata versions in order. |
+| S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (fetched 2026-10-06; title page "Revision 1.39.7+915c4e1" -- see "The specification's own licence" below) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a 44-bit sector offset and a generation; list of key types and metadata versions in order. |
 | S2 | bcachefs-tools `INSTALL.md` at v1.39.7 (build instructions only) | prose documentation | The reference tools' build dependencies, minimum Rust and the `BCACHEFS_FUSE=1` switch for their FUSE mount, used only to build the oracle inside the VM. Contains no format information. |
 | S3 | Reference tools v1.39.7, run in the test VM | black-box oracle | `show-super`, `list`, `fsck` output for each fixture; recorded in `.vm-share/fixtures/*.json` and `*.txt` beside the images. |
 | S4 | Hexdumps of fixture images, and candidate computations over their bytes (checksum conventions) | black-box observation | See the per-structure notes below. |
@@ -34,6 +34,41 @@ be learned this way is an **open question**, not a guess.
 | S8 | The reference implementation mounted through FUSE in the test VM (tools v1.39.7 built with `BCACHEFS_FUSE=1`, per S2), driven by ordinary file operations (`scripts/guest-age.py`) | black-box oracle | The `aged` and `aged-unclean` fixtures: what a running filesystem writes (inline data, narrow key formats, nodes of many bsets, link counts, an unclean shutdown), with the inode numbers and link counts the mount reported. |
 | S9 | J.-P. Aumasson and D. J. Bernstein, "SipHash: a fast short-input PRF" (2012), https://www.aumasson.jp/siphash/siphash.pdf, and its published test vector | prose documentation | The SipHash-2-4 algorithm `src/siphash.rs` is written from. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
+
+## The specification's own licence
+
+S1 is produced from the bcachefs-tools repository: its title page carries
+the tools' revision ("1.39.7+915c4e1"), and it reproduces a few C
+declarations from the implementation's headers (`struct bpos`, `struct
+bkey`). That repository's code is GPL-2.0.
+
+Reading it is not a GPL violation. The GPL is a copyright licence: it sets
+conditions on copying, modifying and distributing the covered work, and
+none on reading it. What copyright protects is *expression* -- the text of
+the code and the prose -- not the facts a specification states: an offset,
+a bit width, a field order, the name of a type or a feature bit. A reader
+written from a specification is the ordinary clean-room route, and this
+repository follows it. The exposure to manage is transcription, not
+reading, so the rule for S1 is:
+
+- **Facts, names and numbers only.** A field's position, width, order and
+  name may be taken from S1 and are recorded in the per-structure notes.
+- **Never transcribe.** No declaration, comment, table or passage of prose
+  from S1 is copied into this crate's code, comments or docs. The Rust types
+  here are field-level restatements of documented facts -- a `bpos` has
+  three members in a documented order -- and nothing more.
+- **Identifiers are the format's, not the implementation's.** Where this
+  crate uses a name S1 uses (`bkey_format`, `btree_ptr_v2`, `inode_v3`,
+  `KEY_FORMAT_CURRENT`), it is because that name is how the reference tools
+  and their documentation refer to the on-disk thing, and matching the
+  oracle's vocabulary is what makes the oracle tests legible.
+- **Everything else is observation** (S3, S4, S8), as the notes record.
+
+This is the authors' understanding of the position, not legal advice.
+
+The *dependency graph* is held to the same standard mechanically:
+`chore lint` runs `cargo deny check licenses` against `deny.toml`, which
+allows MIT, Apache-2.0, BSD, ISC, Zlib and 0BSD and fails on anything else.
 
 ## Per-structure notes
 
@@ -407,9 +442,15 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 4. **Unclean filesystems**: SETTLED for single-device images (see Journal
    above). Still open: the superblock's `journal_seq_blacklist` field
    (type 8; pairs of u64, e.g. 313..4409 after a replay) on a clean image
-   -- whether its end is inclusive, and whether a clean image can still
-   hold bsets from a blacklisted sequence. The reader does not consult it
-   yet; every clean fixture reads correctly without it.
+   -- whether its end is inclusive. S1 (1.3, 9.7.5) answers the other
+   half: bsets referencing a blacklisted sequence "are ignored until the
+   btree node is next rewritten", and after an unclean shutdown 64
+   sequence numbers past the last journal entry read are blacklisted too
+   -- so a clean image CAN hold bsets from a blacklisted sequence, and a
+   reader that does not consult the field would take their keys. This
+   reader does not consult it yet (issue #50); every
+   clean fixture reads correctly without it, which says only that none of
+   them holds such a bset.
 5. **Snapshots and subvolumes**: keys are read at whatever snapshot they
    carry; visibility rules (S1 9.4) are not implemented.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
@@ -427,8 +468,12 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     slot is taken (none occurred in any fixture). The writer refuses.
 13. **Node flags for btree ids of 16 and more**: the writer only makes
     roots for ids under 16 (the lru btree, 10).
-11. **The inline-data limit**: inline was seen up to 248 bytes and not at
-    2024; where between the reference switches to extents is unknown.
+11. **The inline-data limit**: SETTLED by S1 (9.1.7): the end of a file
+    being written is stored inline when it is smaller than
+    min(block_size / 2, 1024) bytes. Observed: inline up to 248 bytes and
+    not at 2024, consistent with that. The writer's 248-byte limit stays
+    inside the documented bound; raising it needs an observation at the
+    bound, not only the sentence.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
     accounting keys' versions: copied and left unchanged by the writer;
     the reference checker accepts both.
@@ -436,6 +481,28 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     `user.greeting`, the first set in the session) are not at the computed
     slot, and no candidate tried places them; the writer puts new ones at
     the computed slot, where the reference's own lookups find them.
+16. **Superblock copies.** S1 (9.5.1): the copy with the highest valid
+    `seq` is authoritative, and the standalone layout at sector 7 is
+    consulted when the primary cannot be read. This reader reads the
+    primary only (issue #49); a fixture with a torn
+    primary and a fixture whose backup carries a higher `seq` are needed.
+17. **The string hash.** S1 (7.7): the `str_hash` option is one of crc32c,
+    crc64 or siphash (the default), for dirents and xattrs alike; the
+    inode's flags bits 20..23 carry a hash type (inferred, above). Every
+    fixture uses siphash, and the reader and writer assume it (issue #51). Which type
+    number is which, and the crc-based hashes' exact inputs, need a
+    `--str_hash=crc32c` fixture.
+18. **Casefolded directories.** S1 (2.7): a casefolded directory stores
+    both the original name and its casefolded form in each dirent, and
+    looks up by the folded form. The dirent layout this reader decodes is
+    the non-casefolded one (issue #54); which inode flag marks a casefolded directory,
+    and the two-name layout, need a fixture (the reference FUSE mount may
+    not support the option).
+19. **Extent entries beyond ptr, crc32 and crc64.** S1 (9.1.3, 9.1.12)
+    names crc128 (24 bytes, required under encryption), stripe pointers
+    (erasure coding) and a `reconcile` entry recording IO options, e.g.
+    `[crc32, ptr, ptr, reconcile]`. Their sizes are not observed, so the
+    reader refuses any extent carrying one rather than skipping it (issue #52).
 
 ## Confirmation
 
