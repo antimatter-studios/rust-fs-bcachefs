@@ -23,6 +23,8 @@ pub struct Filesystem<D: BlockRead> {
     /// What a replay of the journal adds, when the filesystem was not shut
     /// down cleanly.
     replay: Option<Replay>,
+    /// The nodes lookups pass through, read once.
+    cache: crate::btree::NodeCache,
 }
 
 impl<D: BlockRead> Filesystem<D> {
@@ -51,7 +53,12 @@ impl<D: BlockRead> Filesystem<D> {
         };
         // The root inode must be there: a filesystem without it is not
         // one to read.
-        let fs = Filesystem { dev, sb, replay };
+        let fs = Filesystem {
+            dev,
+            sb,
+            replay,
+            cache: Default::default(),
+        };
         fs.inode(ROOT_INO)?;
         Ok(fs)
     }
@@ -61,7 +68,7 @@ impl<D: BlockRead> Filesystem<D> {
     }
 
     fn cursor(&self, id: u8) -> Result<Cursor<'_>> {
-        Cursor::new(&self.dev, &self.sb, id, self.replay.as_ref())
+        Ok(Cursor::new(&self.dev, &self.sb, id, self.replay.as_ref())?.with_cache(&self.cache))
     }
 
     /// Every key of btree `id` whose position's inode field is `inode`, in

@@ -321,6 +321,7 @@ const SPOS_MAX: Bpos = Bpos {
 /// does.
 pub struct Cursor<'a> {
     walk: Walk<'a>,
+    cache: Option<&'a NodeCache>,
     root_level: u8,
     root: NodePtr,
     /// The leaf being read, from where the cursor stands.
@@ -350,10 +351,18 @@ impl<'a> Cursor<'a> {
             },
             root_level,
             root: NodePtr::from_key(&root_key)?,
+            cache: None,
             leaf: Vec::new().into_iter(),
             leaf_max: SPOS_MAX,
             started: false,
         })
+    }
+
+    /// Read nodes through `cache`, so the root and interior nodes every
+    /// lookup passes through are read once.
+    pub fn with_cache(mut self, cache: &'a NodeCache) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// Stand before the first key at or after `pos`.
@@ -362,7 +371,10 @@ impl<'a> Cursor<'a> {
         let mut level = self.root_level;
         let mut max = SPOS_MAX;
         loop {
-            let node = read_node_upto(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?;
+            let node = match self.cache {
+                Some(c) => c.get(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?,
+                None => read_node_upto(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?,
+            };
             let keys = self
                 .walk
                 .apply(node.keys, level, node.min_key, node.max_key);
@@ -401,6 +413,40 @@ impl<'a> Cursor<'a> {
             let from = successor(self.leaf_max);
             self.seek(from)?;
         }
+    }
+}
+
+/// Parsed nodes, by where they are and how much of them is written: the
+/// root and the interior nodes are what every lookup reads, and they do not
+/// change under a reader. Bounded: it starts over past a few hundred nodes.
+#[derive(Default)]
+pub struct NodeCache {
+    nodes: std::sync::Mutex<std::collections::HashMap<(u64, u64, u16, u64), Node>>,
+}
+
+/// How many nodes a cache holds before it starts over.
+const NODE_CACHE_CAP: usize = 512;
+
+impl NodeCache {
+    fn get(
+        &self,
+        dev: &dyn BlockRead,
+        sb: &Superblock,
+        ptr: &NodePtr,
+        max_seq: u64,
+    ) -> Result<Node> {
+        let key = (ptr.ptrs[0].offset, ptr.seq, ptr.sectors_written, max_seq);
+        if let Some(n) = self.nodes.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return Ok(n);
+        }
+        let node = read_node_upto(dev, sb, ptr, max_seq)?;
+        if let Ok(mut m) = self.nodes.lock() {
+            if m.len() >= NODE_CACHE_CAP {
+                m.clear();
+            }
+            m.insert(key, node.clone());
+        }
+        Ok(node)
     }
 }
 
