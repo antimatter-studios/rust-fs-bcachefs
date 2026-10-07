@@ -49,6 +49,7 @@ pub mod btree_id {
     pub const INODES: u8 = 1;
     pub const DIRENTS: u8 = 2;
     pub const XATTRS: u8 = 3;
+    pub const ALLOC: u8 = 4;
 }
 
 /// A pointer to a btree node: a `btree_ptr_v2` value.

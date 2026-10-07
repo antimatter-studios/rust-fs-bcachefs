@@ -135,6 +135,9 @@ pub mod key_type {
     pub const XATTR: u8 = 11;
     pub const INLINE_DATA: u8 = 17;
     pub const BTREE_PTR_V2: u8 = 18;
+    /// Per-bucket allocation metadata, current form (S1 11.5; layout in
+    /// docs/clean-room.md, "Allocating space").
+    pub const ALLOC_V4: u8 = 27;
     /// The v2 inode encoding (0.18 to 0.22, S1 11.6); not decoded here.
     pub const INODE_V2: u8 = 23;
     pub const INODE_V3: u8 = 29;

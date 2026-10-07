@@ -438,8 +438,15 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    narrower (8, 16 and 32 bits, with field offsets) and are read correctly,
    but every width seen is still a whole number of bytes; the top-down bit
    order is proven only for those.
-2. **Pointer device and generation bits** (assumed 48..55 and 56..63). Every
-   fixture is single-device with generation 0.
+2. **Pointer device and generation bits** (48..55 and 56..63): the
+   generation bits are now checked -- every pointer of every fixture,
+   including the aged image's nine pointers of generation 1 into reused
+   buckets, carries the generation its bucket's `alloc_v4` key records
+   (`tests/oracle_pointers.rs`); the device bits are only ever 0. The
+   reader refuses a pointer whose generation is not the bucket's (stale,
+   S1 9.1.3.1), one for another device, or one with any flag bit set (bits
+   1..3; cached and unwritten pointers, never observed). Btree node
+   pointers are not yet judged the same way.
 3. **Btree node flags**: where the btree id and level are, and what bit 8 and
    bit 32 mean. The reader does not need them yet (it trusts the parent).
 4. **Unclean filesystems**: SETTLED for single-device images (see Journal

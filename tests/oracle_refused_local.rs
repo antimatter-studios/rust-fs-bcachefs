@@ -164,3 +164,92 @@ fn an_error_extent_reads_as_lost_data_and_is_named_by_the_checker() {
         report.problems
     );
 }
+
+/// `key`'s first pointer word with its device and generation replaced.
+fn repoint(key: &Bkey, dev: u8, gen: u8) -> Bkey {
+    let mut k = key.clone();
+    let mut p = 0;
+    while p + 8 <= k.value.len() {
+        let w = u64::from_le_bytes(k.value[p..p + 8].try_into().unwrap());
+        if w == 0 {
+            break;
+        }
+        match w.trailing_zeros() {
+            0 => {
+                let w = (w & 0x0000_ffff_ffff_ffff) | u64::from(dev) << 48 | u64::from(gen) << 56;
+                k.value[p..p + 8].copy_from_slice(&w.to_le_bytes());
+                return k;
+            }
+            1 => p += 8,
+            2 => p += 16,
+            _ => break,
+        }
+    }
+    panic!("no pointer in {key:?}");
+}
+
+/// The first allocated (non-inline) extent of the fixture and its pointer.
+/// The base image's one file is stored inline, so these tests use the
+/// write study's `create-large` image, whose 300000-byte file is not.
+fn an_extent(img: &std::path::Path) -> (Bkey, fs_bcachefs::extent::Ptr) {
+    let k = keys(img, btree_id::EXTENTS)
+        .into_iter()
+        .find(|k| k.key_type == key_type::EXTENT)
+        .expect("an allocated extent in the fixture");
+    let ptr = fs_bcachefs::extent::DataExtent::from_key(&k).unwrap().ptr;
+    (k, ptr)
+}
+
+#[test]
+fn a_pointer_to_another_device_is_refused_and_named() {
+    let img = scratch("write-study/create-large.img", "pointer-device");
+    let (k, ptr) = an_extent(&img);
+    insert(&img, btree_id::EXTENTS, repoint(&k, 1, ptr.gen));
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    match fs.read(k.pos.inode) {
+        Err(Error::Corrupt(m)) if m.contains("device 1") => {}
+        other => panic!(
+            "a pointer to device 1 was read: {:?}",
+            other.map(|b| b.len())
+        ),
+    }
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == "extent_pointer" && p.detail.contains("device")),
+        "{:?}",
+        report.problems
+    );
+}
+
+#[test]
+fn a_stale_pointer_is_refused_and_named() {
+    let img = scratch("write-study/create-large.img", "pointer-stale");
+    let (k, ptr) = an_extent(&img);
+    {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.read(k.pos.inode)
+            .expect("the file reads with its own generation");
+    }
+    insert(
+        &img,
+        btree_id::EXTENTS,
+        repoint(&k, ptr.dev, ptr.gen.wrapping_add(1)),
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    match fs.read(k.pos.inode) {
+        Err(Error::Corrupt(m)) if m.contains("stale") => {}
+        other => panic!("a stale pointer was read: {:?}", other.map(|b| b.len())),
+    }
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == "extent_pointer" && p.detail.contains("stale")),
+        "{:?}",
+        report.problems
+    );
+}
