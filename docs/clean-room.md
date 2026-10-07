@@ -341,6 +341,15 @@ checker judged each attempt and named what was missing until nothing was.
 - Judged: files of 249 bytes to 1 MB on the write-study base and on the
   aged image pass the reference checker with nothing to fix and read back
   through the reference mount byte for byte.
+- Freeing (an unlink-large pair made in the guest from create-large, S8):
+  an emptied bucket's alloc key becomes data type need_discard (9), gen and
+  oldest_gen one higher, need_inc_gen cleared, journal_seq_empty (word 6)
+  set; the need_discard btree (id 12) gets a `set` key at
+  `journal_seq_empty:bucket`; bucket_gens records the new generation;
+  backpointers and lru entries go; accounting moves the bucket from user to
+  `dev_data_type need_discard` (and keeps zeroed keys, as the reference
+  does). Judged: unlinking, shrinking and growing large files passes the
+  reference checker and the mount reads what remains (S8 checker run).
 
 ## Open questions
 
@@ -378,8 +387,6 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     slot is taken (none occurred in any fixture). The writer refuses.
 13. **Node flags for btree ids of 16 and more**: the writer only makes
     roots for ids under 16 (the lru btree, 10).
-14. **Freeing allocated space** (unlink and rewrite of a large file): not
-    studied yet.
 11. **The inline-data limit**: inline was seen up to 248 bytes and not at
     2024; where between the reference switches to extents is unknown.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the

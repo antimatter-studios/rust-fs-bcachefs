@@ -515,19 +515,12 @@ impl<D: BlockDevice> Writer<D> {
 
     /// The extents of an inode, all of which must be inline: freeing
     /// allocated space is not implemented.
-    fn inline_extents(&self, ino: u64) -> Result<Vec<Bkey>> {
-        let keys: Vec<Bkey> = self
+    fn extents_of(&self, ino: u64) -> Result<Vec<Bkey>> {
+        Ok(self
             .keys(ids::EXTENTS)?
             .into_iter()
             .filter(|k| k.pos.inode == ino && k.key_type != key_type::DELETED)
-            .collect();
-        if let Some(k) = keys.iter().find(|k| k.key_type != key_type::INLINE_DATA) {
-            return Err(Error::Unsupported(format!(
-                "inode {ino} has an allocated extent (type {}): freeing space is not implemented",
-                k.key_type
-            )));
-        }
-        Ok(keys)
+            .collect())
     }
 
     /// Nanoseconds since the filesystem's time base, the unit inode times
@@ -777,9 +770,8 @@ impl<D: BlockDevice> Writer<D> {
             i.raw.journal_seq = self.journal_seq;
             t.put(ids::INODES, Some(&old), i.rekey());
         } else {
-            for k in self.inline_extents(target)? {
-                t.delete(ids::EXTENTS, &k);
-            }
+            let extents = self.extents_of(target)?;
+            self.free_extents(target, &extents, &mut t)?;
             t.delete(ids::INODES, &i.key);
             t.inodes(-1);
         }
@@ -853,34 +845,29 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// Replace a file's whole contents with `data` (inline; at most
-    /// [`INLINE_MAX`] bytes; empty truncates it).
+    /// Replace a file's whole contents with `data`: inline up to
+    /// [`INLINE_MAX`] bytes, in allocated buckets beyond; empty truncates it.
+    /// The old contents' space is freed.
     pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
-        if data.len() > INLINE_MAX {
-            return Err(Error::Unsupported(format!(
-                "files over {INLINE_MAX} bytes need allocation, which is not implemented"
-            )));
-        }
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
             return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
         }
         let now = self.now();
         let mut t = Txn::default();
-        let old_extents = self.inline_extents(ino)?;
-        let new = Self::inline_key(ino, data);
-        for k in &old_extents {
-            if new.as_ref().map(|n| n.pos) != Some(k.pos) {
-                t.delete(ids::EXTENTS, k);
+        let old_extents = self.extents_of(ino)?;
+        self.free_extents(ino, &old_extents, &mut t)?;
+        let sectors = if data.len() > INLINE_MAX {
+            self.allocate_data(ino, data, &mut t)?
+        } else {
+            if let Some(n) = Self::inline_key(ino, data) {
+                t.put(ids::EXTENTS, None, n);
             }
-        }
-        if let Some(n) = new {
-            let old = old_extents.iter().find(|k| k.pos == n.pos);
-            t.put(ids::EXTENTS, old, n);
-        }
+            (data.len() as u64).div_ceil(512)
+        };
         let old = i.key.clone();
         i.raw.size = data.len() as u64;
-        i.raw.sectors = (data.len() as u64).div_ceil(512);
+        i.raw.sectors = sectors;
         self.touch(&mut i, now);
         t.put(ids::INODES, Some(&old), i.rekey());
         self.commit(t)

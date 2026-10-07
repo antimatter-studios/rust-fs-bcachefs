@@ -603,6 +603,227 @@ fn acct_replicas(data_type: u8, dev: u8) -> Bpos {
     }
 }
 
+/// Data type of a bucket emptied and waiting for a discard (S3: the lister
+/// names 9 need_discard).
+const DATA_NEED_DISCARD: u8 = 9;
+const NEED_DISCARD: u8 = 12;
+
+impl<D: BlockDevice> Writer<D> {
+    /// Remove an inode's extents -- inline ones and allocated ones -- and
+    /// give allocated space back the way the reference does (the write
+    /// study's unlink-large pair, S8): each bucket loses the extent's
+    /// sectors; an emptied bucket becomes need_discard with its generation
+    /// and oldest generation one higher, its journal_seq_empty set and
+    /// need_inc_gen cleared, gets a need_discard key at
+    /// `journal_seq_empty:bucket`, and its generation is recorded in
+    /// bucket_gens; backpointers and lru entries go; accounting moves the
+    /// buckets from user to need_discard.
+    pub(super) fn free_extents(&mut self, ino: u64, extents: &[Bkey], t: &mut Txn) -> Result<()> {
+        let bucket = self.bucket_sectors()?;
+        let mut freed: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+        let mut nr = 0i64;
+        for k in extents {
+            t.delete(ids::EXTENTS, k);
+            if k.key_type == key_type::INLINE_DATA {
+                continue;
+            }
+            if k.key_type != key_type::EXTENT {
+                return Err(Error::Unsupported(format!(
+                    "freeing an extent of key type {}",
+                    k.key_type
+                )));
+            }
+            let e = crate::extent::DataExtent::from_key(k)?;
+            if e.ptr.dev != 0 {
+                return Err(Error::Unsupported("extents on another device".into()));
+            }
+            let sectors = e.crc.map(|c| u64::from(c.compressed_size)).unwrap_or(e.len);
+            if e.crc
+                .is_some_and(|c| c.offset != 0 || u64::from(c.uncompressed_size) != e.len)
+            {
+                return Err(Error::Unsupported(
+                    "freeing part of a checksummed extent is not implemented".into(),
+                ));
+            }
+            t.delete_uncounted(
+                aids::BACKPOINTERS,
+                Bpos {
+                    inode: 0,
+                    offset: e.ptr.offset << 16,
+                    snapshot: 0,
+                },
+            );
+            *freed.entry(e.ptr.offset / bucket).or_default() += sectors;
+            t.count(
+                super::btree_counter_pos(ids::EXTENTS),
+                3,
+                2,
+                -(sectors as i64),
+            );
+            nr += 1;
+        }
+        if freed.is_empty() {
+            return Ok(());
+        }
+        let total: u64 = freed.values().sum();
+
+        let allocs: std::collections::BTreeMap<u64, Bkey> = self
+            .keys(aids::ALLOC)?
+            .into_iter()
+            .filter(|k| k.pos.inode == 0 && freed.contains_key(&k.pos.offset))
+            .map(|k| (k.pos.offset, k))
+            .collect();
+        let emptied: Vec<u64> = freed
+            .iter()
+            .filter(|(b, s)| {
+                allocs
+                    .get(b)
+                    .is_some_and(|a| le64(&a.value, 16) as u32 as u64 == **s)
+            })
+            .map(|(b, _)| *b)
+            .collect();
+        // Roots the emptied buckets need, made in buckets taken now.
+        let mut need_roots = Vec::new();
+        if !emptied.is_empty() {
+            for id in [NEED_DISCARD, aids::BUCKET_GENS] {
+                if self.root(id).is_err() {
+                    need_roots.push(id);
+                }
+            }
+        }
+        let mut node_buckets = self.take_buckets(need_roots.len() as u64, t)?;
+        for id in need_roots {
+            let b = node_buckets.pop().expect("taken");
+            self.create_root(id, b, t)?;
+        }
+
+        let mut frag_delta = 0i64;
+        let mut gens_updates: std::collections::BTreeMap<u64, Vec<(usize, u8)>> =
+            std::collections::BTreeMap::new();
+        for (&b, &s) in &freed {
+            let a = allocs
+                .get(&b)
+                .ok_or_else(|| Error::Corrupt(format!("bucket {b} has data and no alloc key")))?;
+            let mut v = a.value.clone();
+            let old = le64(&v, 16) & 0xffff_ffff;
+            let new = old
+                .checked_sub(s)
+                .ok_or_else(|| Error::Corrupt(format!("bucket {b} frees more than it holds")))?;
+            if old < bucket {
+                t.delete_uncounted(
+                    aids::LRU,
+                    Bpos {
+                        inode: (1 << 61) | ((old << 31) / bucket),
+                        offset: b,
+                        snapshot: 0,
+                    },
+                );
+            }
+            v[16..20].copy_from_slice(&(new as u32).to_le_bytes());
+            if new == 0 {
+                let w1 = le64(&v, 8);
+                let gen = ((w1 >> 32) as u8).wrapping_add(1);
+                let flags = (w1 & 0xff) & !0b10;
+                let w1 = u64::from(DATA_NEED_DISCARD) << 48
+                    | u64::from(gen) << 40
+                    | u64::from(gen) << 32
+                    | flags;
+                v[8..16].copy_from_slice(&w1.to_le_bytes());
+                v[48..56].copy_from_slice(&self.journal_seq.to_le_bytes());
+                t.put_uncounted(
+                    NEED_DISCARD,
+                    Bkey {
+                        key_type: aids::SET,
+                        size: 0,
+                        version_hi: 0,
+                        version_lo: 0,
+                        pos: Bpos {
+                            inode: self.journal_seq,
+                            offset: b,
+                            snapshot: 0,
+                        },
+                        value: Vec::new(),
+                    },
+                );
+                gens_updates
+                    .entry(b >> 8)
+                    .or_default()
+                    .push(((b & 0xff) as usize, gen));
+                frag_delta -= (bucket - old) as i64;
+            } else {
+                t.put_uncounted(
+                    aids::LRU,
+                    Bkey {
+                        key_type: aids::SET,
+                        size: 0,
+                        version_hi: 0,
+                        version_lo: 0,
+                        pos: Bpos {
+                            inode: (1 << 61) | ((new << 31) / bucket),
+                            offset: b,
+                            snapshot: 0,
+                        },
+                        value: Vec::new(),
+                    },
+                );
+                frag_delta += (old - new) as i64;
+            }
+            t.put_uncounted(
+                aids::ALLOC,
+                Bkey {
+                    value: v,
+                    ..a.clone()
+                },
+            );
+        }
+        if !gens_updates.is_empty() {
+            let existing = match self.keys(aids::BUCKET_GENS) {
+                Err(Error::NotFound(_)) => Vec::new(),
+                r => r?,
+            };
+            for (group, sets) in gens_updates {
+                let mut k = existing
+                    .iter()
+                    .find(|k| {
+                        k.key_type == aids::BUCKET_GENS_KEY
+                            && k.pos.inode == 0
+                            && k.pos.offset == group
+                    })
+                    .cloned()
+                    .unwrap_or(Bkey {
+                        key_type: aids::BUCKET_GENS_KEY,
+                        size: 0,
+                        version_hi: 0,
+                        version_lo: 0,
+                        pos: Bpos {
+                            inode: 0,
+                            offset: group,
+                            snapshot: 0,
+                        },
+                        value: vec![0; 256],
+                    });
+                for (i, g) in sets {
+                    k.value[i] = g;
+                }
+                t.put_uncounted(aids::BUCKET_GENS, k);
+            }
+        }
+
+        let n_emptied = emptied.len() as i64;
+        t.count(acct_replicas_user(0), 1, 0, -(total as i64));
+        let user = acct_dev_data_type(0, DATA_USER);
+        t.count(user, 3, 0, -n_emptied);
+        t.count(user, 3, 1, -(total as i64));
+        t.count(user, 3, 2, frag_delta);
+        t.count(acct_dev_data_type(0, DATA_NEED_DISCARD), 3, 0, n_emptied);
+        let inum = acct_inum(ino);
+        t.count(inum, 3, 0, -nr);
+        t.count(inum, 3, 1, -(total as i64));
+        t.count(inum, 3, 2, -(total as i64));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
