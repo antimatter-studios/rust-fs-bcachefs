@@ -460,6 +460,29 @@ checker judged each attempt and named what was missing until nothing was.
   replaced and removed pass the reference checker, in place and through
   the journal, and the reference mount and `getfattr` show them.
 
+### Rewriting and splitting full nodes (`src/write_nodes.rs`) -- judged
+
+- A full node is rewritten into a fresh bucket with its live keys in one
+  bset, or split in two when they would fill more than two thirds of a
+  node; the parent's pointer keeps its position (the node's max key), a
+  split adds one before it, and a root that splits gets a new root one
+  level up (its level byte in the clean field's entry follows). The old
+  bucket is freed as an emptied data bucket is (need_discard, a new
+  generation), its backpointer removed.
+- Node header flags: the btree id's low four bits in bits 0..4, the level in
+  bits 4..8, bit 8 set, the id's higher bits from bit 9 (S4: every root of
+  the aged fixture, ids 0 to 20; id 16 is 0x300, id 20 is 0x304).
+- The btree-allocated bitmap covers 64 regions of 2^shift sectors; a node
+  beyond them doubles the regions (shift + 1, bits folded pairwise) until
+  it fits. The reference checker accepts the superset and schedules its
+  own bitmap pass ("has 672k btree buckets and 3.25M marked in bitmap").
+- The per-btree accounting key's third counter counts interior nodes (the
+  checker's "btree btree=inodes ... should be 256 4 1" after a root split;
+  the aged fixture's two-level btrees carry 1).
+- Judged: 400 one-operation creates, 134 unlinks and ten 50 KB files on the
+  write-study base (32 KiB nodes) pass the reference checker and read back
+  through its mount.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
