@@ -30,7 +30,8 @@ required-features = ["cli"]
 # Writing (src/write.rs): off by default, and nothing in the default build
 # can write to a device.
 write = []
-cli = ["dep:clap", "rust-fs-core/cli"]
+# The tools carry the write verbs, marked experimental in their help.
+cli = ["dep:clap", "rust-fs-core/cli", "write"]
 
 [dependencies]
 # Block-device trait surface shared with the sister fs-* drivers.

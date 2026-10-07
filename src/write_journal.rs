@@ -62,14 +62,40 @@ impl<D: BlockDevice> Writer<D> {
                 "journalled commits start on a clean filesystem".into(),
             ));
         }
-        let mut roots = BTreeMap::new();
         let mut replay_roots = Vec::new();
         for r in self.sb.btree_roots()? {
             let k = crate::bkey::decode(&r.key, &super::UNPACKED)?;
-            replay_roots.push((r.btree_id, r.level, k.clone()));
-            roots.insert(r.btree_id, (r.level, k));
+            replay_roots.push((r.btree_id, r.level, k));
         }
         let entries = journal::read_entries(&self.dev, &self.sb)?;
+        let newest = entries.iter().map(|j| j.seq).max().unwrap_or(0);
+        let first = newest.max(self.journal_seq) + 1;
+        let fresh = Replay {
+            seq: u64::MAX,
+            roots: replay_roots,
+            ..Replay::default()
+        };
+        self.journal_commits_from(fresh, &entries, first, first)?;
+        if let Some(s) = self.session.as_mut() {
+            s.marked = false;
+        }
+        Ok(())
+    }
+
+    /// Start a session over `replay` (what is already committed): new
+    /// entries need everything from `first_seq` and start at `next_seq`.
+    fn journal_commits_from(
+        &mut self,
+        replay: Replay,
+        entries: &[journal::Jset],
+        first_seq: u64,
+        next_seq: u64,
+    ) -> Result<()> {
+        let roots: BTreeMap<u8, (u8, Bkey)> = replay
+            .roots
+            .iter()
+            .map(|(id, level, k)| (*id, (*level, k.clone())))
+            .collect();
         let members = self.sb.members()?;
         let bucket_bytes = members
             .first()
@@ -104,23 +130,56 @@ impl<D: BlockDevice> Writer<D> {
             }
             None => (0, 0),
         };
-        let newest = entries.iter().map(|j| j.seq).max().unwrap_or(0);
-        let first = newest.max(self.journal_seq) + 1;
         self.session = Some(Session {
             roots,
-            replay: Replay {
-                seq: u64::MAX,
-                roots: replay_roots,
-                ..Replay::default()
-            },
-            first_seq: first,
-            next_seq: first,
+            replay,
+            first_seq,
+            next_seq,
             buckets,
             at,
-            marked: false,
+            // An unclean filesystem already says "replay me".
+            marked: true,
             crash_before_superblock: false,
         });
         Ok(())
+    }
+
+    /// A writer that commits through the journal, on a clean filesystem
+    /// ([`Writer::journal_commits`]) or on one whose journal holds entries
+    /// not yet replayed -- this writer's own from an earlier session, or
+    /// the reference's: the new entries continue that journal, so one
+    /// replay applies them all.
+    pub fn open_journalled(dev: D) -> Result<Self> {
+        if dev.size_bytes() > 0 {
+            return Err(Error::Unsupported(
+                "open_journalled is not implemented yet".into(),
+            ));
+        }
+        let sb = crate::superblock::Superblock::read(&dev)?;
+        if sb.is_clean() {
+            let mut w = Self::open(dev)?;
+            w.journal_commits()?;
+            return Ok(w);
+        }
+        let entries = journal::read_entries(&dev, &sb)?;
+        let rp = journal::replay(&dev, &sb)?;
+        let newest = entries
+            .iter()
+            .rev()
+            .find(|j| j.flush)
+            .ok_or_else(|| Error::Corrupt("the journal holds no flush entry".into()))?;
+        if entries.iter().any(|j| j.seq > newest.seq) {
+            // Entries after the last flush are not committed; a flush entry
+            // written after them would commit them.
+            return Err(Error::Unsupported(
+                "the journal ends in entries that were never flushed".into(),
+            ));
+        }
+        let (window_start, newest_seq) = (newest.last_seq, newest.seq);
+        let mut w = Self::open_any(dev, sb)?;
+        w.journal_seq = newest_seq;
+        w.journal_commits_from(rp, &entries, window_start, newest_seq + 1)?;
+        Ok(w)
     }
 
     /// Write one transaction as a journal entry.

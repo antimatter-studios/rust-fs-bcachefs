@@ -5,6 +5,7 @@
 
 mod fs;
 mod fsck;
+mod fs_write;
 
 use fs_core::cli;
 use std::process::ExitCode;
