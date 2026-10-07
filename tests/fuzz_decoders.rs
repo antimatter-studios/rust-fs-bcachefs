@@ -72,3 +72,73 @@ fn every_btree_node_seed_parses_and_mutations_never_panic() {
         }
     }
 }
+
+/// The fuzzing switch: built with the `fuzzing` feature (the fuzz targets
+/// only), a checksum that does not match is not a reason to stop, so
+/// mutated input reaches the decoders behind it. In every other build a
+/// corrupted superblock is refused for its checksum. Both builds run this:
+/// the unit tier once each way.
+#[test]
+fn checksums_are_verified_unless_built_for_fuzzing() {
+    for (name, mut data) in seeds("superblock") {
+        // A byte of the label: inside the checksummed range, harmless to the
+        // parse otherwise.
+        data[0x48] ^= 0x5a;
+        let r = fs_bcachefs::superblock::Superblock::parse(&data);
+        if cfg!(feature = "fuzzing") {
+            assert!(
+                r.is_ok(),
+                "seed {name}: the fuzzing build refused it: {:?}",
+                r.err()
+            );
+        } else {
+            assert!(
+                matches!(r, Err(fs_bcachefs::Error::BadChecksum { .. })),
+                "seed {name}: a corrupted superblock was not refused for its checksum: {:?}",
+                r.map(|_| ())
+            );
+        }
+    }
+}
+
+/// The jset target's seeds: real journal entries of the uncleanly unmounted
+/// fixture, which must parse, and whose truncations must be refused cleanly.
+#[test]
+fn every_jset_seed_parses_and_every_truncation_is_refused_cleanly() {
+    for (name, data) in seeds("jset") {
+        let magic = u64::from_le_bytes(data[16..24].try_into().unwrap());
+        let j = fs_bcachefs::journal::parse_jset(&data, magic)
+            .unwrap_or_else(|e| panic!("seed {name}: {e}"))
+            .unwrap_or_else(|| panic!("seed {name}: not a jset"));
+        assert!(!j.entries.is_empty(), "seed {name}");
+        for n in (0..data.len()).step_by(13) {
+            let _ = fs_bcachefs::journal::parse_jset(&data[..n], magic);
+        }
+    }
+}
+
+/// The key_values target's seeds: one unpacked key of each kind from the
+/// aged fixture, which must decode as that kind.
+#[test]
+fn every_key_seed_decodes() {
+    let fmt = fs_bcachefs::bkey::BkeyFormat {
+        key_u64s: 5,
+        nr_fields: 6,
+        bits: [0; 6],
+        field_offset: [0; 6],
+    };
+    for (name, data) in seeds("key_values") {
+        let k =
+            fs_bcachefs::bkey::decode(&data, &fmt).unwrap_or_else(|e| panic!("seed {name}: {e}"));
+        let ok = match k.key_type {
+            6 => fs_bcachefs::extent::DataExtent::from_key(&k).is_ok(),
+            // Inline data: the value is the bytes themselves.
+            17 => !k.value.is_empty(),
+            10 => fs_bcachefs::inode::Dirent::from_key(&k).is_ok(),
+            11 => fs_bcachefs::xattr::Xattr::from_key(&k).is_ok(),
+            29 => fs_bcachefs::inode::Inode::from_key(&k).is_ok(),
+            t => panic!("seed {name}: key type {t}"),
+        };
+        assert!(ok, "seed {name} does not decode");
+    }
+}

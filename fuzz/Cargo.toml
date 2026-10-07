@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rust-fs-bcachefs = { path = ".." }
+rust-fs-bcachefs = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
 name = "superblock"
@@ -29,6 +29,20 @@ bench = false
 [[bin]]
 name = "btree_node"
 path = "fuzz_targets/btree_node.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jset"
+path = "fuzz_targets/jset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "key_values"
+path = "fuzz_targets/key_values.rs"
 test = false
 doc = false
 bench = false
