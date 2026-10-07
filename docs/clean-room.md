@@ -520,10 +520,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     copy that does not read (`tests/oracle_superblock_copies.rs`).
 17. **The string hash.** S1 (7.7): the `str_hash` option is one of crc32c,
     crc64 or siphash (the default), for dirents and xattrs alike; the
-    inode's flags bits 20..23 carry a hash type (inferred, above). Every
-    fixture uses siphash, and the reader and writer assume it (issue #51). Which type
-    number is which, and the crc-based hashes' exact inputs, need a
-    `--str_hash=crc32c` fixture.
+    inode's flags bits 20..23 carry the hash type. SipHash is 3 (S3, S4:
+    every inode of every fixture, and the lister's `hash_type=siphash`).
+    The reader scans a directory of any other type instead of hashing
+    (`Filesystem::find`), the writer refuses to place a name in one
+    (`siphash_only`), and the `strhash` fixture (`--str_hash=crc32c`) is
+    read whole by scanning (`tests/oracle_strhash.rs`, which prints the
+    number crc32c carries). Still open: the crc-based hashes' exact
+    inputs, so that such a directory could be looked up without a scan.
 18. **Casefolded directories.** S1 (2.7): a casefolded directory stores
     both the original name and its casefolded form in each dirent, and
     looks up by the folded form. The dirent layout this reader decodes is

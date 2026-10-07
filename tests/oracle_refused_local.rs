@@ -253,3 +253,38 @@ fn a_stale_pointer_is_refused_and_named() {
         report.problems
     );
 }
+
+#[test]
+fn a_directory_hashed_with_another_string_hash_is_refused_by_the_writer_and_scanned_by_the_reader()
+{
+    use fs_bcachefs::inode::{InodeV3Raw, HASH_TYPE_SIPHASH, ROOT_INO};
+    let img = scratch("write-study/base.img", "str-hash");
+    let root = keys(&img, btree_id::INODES)
+        .into_iter()
+        .find(|k| k.pos.inode == 0 && k.pos.offset == ROOT_INO && k.key_type == key_type::INODE_V3)
+        .expect("the root inode key");
+    let mut raw = InodeV3Raw::parse(&root.value).unwrap();
+    assert_eq!(raw.hash_type(), HASH_TYPE_SIPHASH);
+    // The root, declaring another string hash (1: whichever of crc32c and
+    // crc64 that is, it is not SipHash).
+    raw.flags = (raw.flags & !(0xf << 20)) | (1 << 20);
+    insert(
+        &img,
+        btree_id::INODES,
+        Bkey {
+            value: raw.encode(),
+            ..root.clone()
+        },
+    );
+
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.inode(ROOT_INO).unwrap().hash_type(), 1);
+    fs.lookup("/d")
+        .expect("a name in a directory with another hash is still found");
+    drop(fs);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    match w.create_file(ROOT_INO, b"misplaced", b"", 0o644) {
+        Err(Error::Unsupported(m)) if m.contains("hash") => {}
+        other => panic!("a name was placed in a directory with another hash: {other:?}"),
+    }
+}

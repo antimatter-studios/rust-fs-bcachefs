@@ -109,6 +109,10 @@ sets=(
     "xxhash|--data_checksum=xxhash --metadata_checksum=xxhash"
     "crc64|--data_checksum=crc64 --metadata_checksum=crc64"
     "block4k|--block_size=4096"
+    # Names hashed with crc32c instead of SipHash (S1 7.7): the reader must
+    # still find every name (by scanning), the writer must refuse to place
+    # one, and the lister's `hash_type=` pairs the number with the name.
+    "strhash|--str_hash=crc32c"
 )
 
 src="$work/src"

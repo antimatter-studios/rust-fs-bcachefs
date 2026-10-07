@@ -514,6 +514,7 @@ impl<D: BlockDevice> Writer<D> {
         if !i.is_dir() {
             return Err(Error::Corrupt(format!("inode {ino} is not a directory")));
         }
+        siphash_only(&i)?;
         Ok(i)
     }
 
@@ -1064,6 +1065,7 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Set the extended attribute `name` (with its namespace, `user.x`).
     pub fn set_xattr(&mut self, ino: u64, name: &[u8], value: &[u8]) -> Result<()> {
+        siphash_only(&self.inode(ino)?)?;
         let (ns, short) = xattr_namespace(name)?;
         if value.len() > 0xffff {
             return Err(Error::Unsupported("xattr values over 65535 bytes".into()));
@@ -1116,6 +1118,7 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Remove the extended attribute `name`.
     pub fn remove_xattr(&mut self, ino: u64, name: &[u8]) -> Result<()> {
+        siphash_only(&self.inode(ino)?)?;
         let (ns, short) = xattr_namespace(name)?;
         let mut i = self.inode(ino)?;
         let at = self.xattr_pos(&i, ns, short);
@@ -1135,5 +1138,22 @@ impl<D: BlockDevice> Writer<D> {
         i.raw.journal_seq = self.journal_seq;
         t.put(ids::INODES, Some(&old), i.rekey());
         self.commit(t)
+    }
+}
+
+/// Names are placed at their SipHash slot, the only string hash observed
+/// (`inode::HASH_TYPE_SIPHASH`); a directory or inode hashed with crc32c or
+/// crc64 (S1 7.7) would get its names at positions the reference never
+/// looks at, so it is refused (open question 17).
+fn siphash_only(i: &InodeRef) -> Result<()> {
+    let t = i.raw.hash_type();
+    if t == crate::inode::HASH_TYPE_SIPHASH {
+        Ok(())
+    } else {
+        Err(Error::Unsupported(format!(
+            "inode {} uses string hash type {t}, not SipHash ({}): names cannot be placed",
+            i.key.pos.offset,
+            crate::inode::HASH_TYPE_SIPHASH
+        )))
     }
 }

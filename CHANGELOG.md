@@ -114,6 +114,11 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **Directories hashed with crc32c or crc64 are scanned, not mis-hashed**
+  (#51): `Inode::hash_type` reads the inode's string hash type, the reader
+  falls back to a scan for any type but SipHash, and the writer refuses to
+  place a name in such a directory. A `strhash` fixture (`--str_hash=crc32c`)
+  exercises the scan.
 - **A cursor past the last key stands before nothing** (#56): the end of a
   btree is the root key's position, not an assumed all-ones one, and a seek
   beyond it is not an error.
