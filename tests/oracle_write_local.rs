@@ -27,36 +27,6 @@ fn scratch(name: &str, test: &str) -> std::path::PathBuf {
 /// The two files the create test makes, in order.
 const CREATES: [(&[u8], &[u8], u32); 2] = [(b"one", b"first\n", 0o644), (b"two", b"", 0o600)];
 
-/// Whether making `CREATES` in `dir`, on a copy of `img`, is refused
-/// because a node one of them would go in is full; when one is, the copy
-/// must be byte for byte what it was before that create. Every create the
-/// test makes is probed: a leaf with room for one entry passes a probe of
-/// one and fails the test's second (measured in CI on an aged image).
-fn refused_as_full(img: &std::path::Path, dir: u64) -> bool {
-    let probe = img.with_extension("probe.img");
-    std::fs::copy(img, &probe).unwrap();
-    let mut refused = false;
-    for (name, data, mode) in CREATES {
-        let before = std::fs::read(&probe).unwrap();
-        let mut w = Writer::open(FileDevice::open_rw(&probe).unwrap()).unwrap();
-        match w.create_file(dir, name, data, mode) {
-            Ok(_) => {}
-            Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
-                drop(w);
-                assert!(
-                    std::fs::read(&probe).unwrap() == before,
-                    "refused, but written"
-                );
-                refused = true;
-                break;
-            }
-            Err(e) => panic!("{e}"),
-        }
-    }
-    std::fs::remove_file(&probe).unwrap();
-    refused
-}
-
 #[test]
 fn created_files_read_back_and_the_old_ones_are_untouched() {
     for (set, dir_path, test) in [
@@ -69,12 +39,6 @@ fn created_files_read_back_and_the_old_ones_are_untouched() {
             let dir = fs.lookup(dir_path).unwrap();
             (dir, fs.readdir(dir).unwrap().len())
         };
-        // The aged image is aged by a live mount, so how full its leaves are
-        // differs from one fixture build to the next. Until nodes are split,
-        // a full leaf must be refused before anything is written.
-        if test == "local-aged" && refused_as_full(&img, dir) {
-            continue;
-        }
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         let [(n1, d1, m1), (n2, d2, m2)] = CREATES;
         let a = w.create_file(dir, n1, d1, m1).unwrap();
@@ -212,21 +176,7 @@ fn large_files_read_back() {
         };
         let data: Vec<u8> = (0..700_001u32).map(|i| (i % 253) as u8).collect();
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
-        // How full the aged image's leaves are differs from one fixture
-        // build to the next. Until nodes are split, a create that finds one
-        // full is refused with no metadata written: the name must not exist.
-        match w.create_file(dir, b"large", &data, 0o644) {
-            Ok(_) => {}
-            Err(fs_bcachefs::Error::Unsupported(m))
-                if test == "local-large-aged" && m.contains("the node is full") =>
-            {
-                drop(w);
-                let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
-                assert!(fs.lookup(&format!("{dir_path}/large")).is_err(), "{test}");
-                continue;
-            }
-            Err(e) => panic!("{test}: {e}"),
-        }
+        w.create_file(dir, b"large", &data, 0o644).unwrap();
         drop(w);
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         let ino = fs.lookup(&format!("{dir_path}/large")).unwrap();
