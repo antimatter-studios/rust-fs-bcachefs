@@ -282,6 +282,15 @@ by operation (positions `inode:offset:snapshot`):
   at inode `0x05ffffffff000000 | id << 16` (value: keys, bytes, 0), bytes
   counted at the unpacked size (S8, every pair).
 - The largest inline file written is 248 bytes, the largest seen inline.
+- mkdir: a 25-field directory inode with `depth` one more than its
+  parent's, and the parent's stored subdirectory count raised; unlink and
+  rmdir: deleted keys over the dirent, the inode and its inline data (or
+  one link fewer when another name remains); rename: the old dirent
+  deleted, the new one at the new name's hash, the inode's `dir`,
+  `dir_offset` and ctime; rewriting an inline file: the inline key
+  replaced or deleted, size, sectors and times (S8, the write study's
+  mkdir, unlink, rename, truncate and overwrite pairs). Judged by the
+  reference checker and mount (tests/write_oracle.rs).
 - Judged: four files in the write-study base and one in the aged image
   pass the reference checker with nothing to fix, and the reference mount
   lists them and reads back their bytes, sizes and modes
