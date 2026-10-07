@@ -23,6 +23,9 @@ use crate::superblock::{Superblock, FIELD_CLEAN};
 use crate::util::{le16, le32, le64};
 use fs_core::BlockDevice;
 
+#[path = "write_alloc.rs"]
+mod alloc;
+
 const SB_OFFSET: u64 = 4096;
 const SB_HEADER_BYTES: usize = 0x2f0;
 const HEADER_BSET: usize = 136;
@@ -368,37 +371,61 @@ fn unpacked_bytes(k: &Bkey) -> i64 {
 #[derive(Default)]
 struct Txn {
     keys: std::collections::BTreeMap<u8, Vec<Bkey>>,
-    /// Per btree: (keys added, bytes added), negative for removals.
-    counters: std::collections::BTreeMap<u8, (i64, i64)>,
-    inodes: i64,
+    /// Accounting: per accounting key position, a delta per counter.
+    acct: std::collections::BTreeMap<Bpos, Vec<i64>>,
 }
 
 impl Txn {
+    /// Add `delta` to counter `i` of the accounting key at `pos`, which
+    /// holds `n` counters.
+    fn count(&mut self, pos: Bpos, n: usize, i: usize, delta: i64) {
+        let v = self.acct.entry(pos).or_insert_with(|| vec![0; n]);
+        if v.len() < n {
+            v.resize(n, 0);
+        }
+        v[i] += delta;
+    }
+
+    /// The per-btree counter: keys, bytes, data sectors.
+    fn count_key(&mut self, id: u8, key: &Bkey, sign: i64) {
+        self.count(btree_counter_pos(id), 3, 0, sign);
+        self.count(btree_counter_pos(id), 3, 1, sign * unpacked_bytes(key));
+    }
+
     /// Add `new` where `old` was (either may be absent).
     fn put(&mut self, id: u8, old: Option<&Bkey>, new: Bkey) {
-        let c = self.counters.entry(id).or_default();
         if let Some(o) = old {
-            c.0 -= 1;
-            c.1 -= unpacked_bytes(o);
+            self.count_key(id, o, -1);
         }
-        c.0 += 1;
-        c.1 += unpacked_bytes(&new);
+        self.count_key(id, &new, 1);
+        self.keys.entry(id).or_default().push(new);
+    }
+
+    /// A key in a btree the per-btree counters do not cover (alloc,
+    /// freespace, backpointers, lru, logged_ops).
+    fn put_uncounted(&mut self, id: u8, new: Bkey) {
         self.keys.entry(id).or_default().push(new);
     }
 
     /// Remove `old`.
     fn delete(&mut self, id: u8, old: &Bkey) {
-        let c = self.counters.entry(id).or_default();
-        c.0 -= 1;
-        c.1 -= unpacked_bytes(old);
+        self.count_key(id, old, -1);
+        self.delete_uncounted(id, old.pos);
+    }
+
+    fn delete_uncounted(&mut self, id: u8, at: Bpos) {
         self.keys.entry(id).or_default().push(Bkey {
             key_type: key_type::DELETED,
             size: 0,
             version_hi: 0,
             version_lo: 0,
-            pos: old.pos,
+            pos: at,
             value: Vec::new(),
         });
+    }
+
+    fn inodes(&mut self, delta: i64) {
+        self.count(Bpos::default(), 1, 0, delta);
     }
 }
 
@@ -628,13 +655,7 @@ impl<D: BlockDevice> Writer<D> {
     /// the keys as they stand, every btree checked for room, then each
     /// btree's keys, then accounting.
     fn commit(&mut self, mut t: Txn) -> Result<()> {
-        let counters: Vec<(u8, i64, i64)> = t
-            .counters
-            .iter()
-            .filter(|(_, (k, b))| *k != 0 || *b != 0)
-            .map(|(&id, &(k, b))| (id, k, b))
-            .collect();
-        let accounting = self.accounting_deltas(t.inodes, &counters)?;
+        let accounting = self.accounting_deltas(&t.acct)?;
         // Every btree is checked for room before any is written.
         for (id, keys) in &t.keys {
             self.check_fits(*id, keys)?;
@@ -655,11 +676,6 @@ impl<D: BlockDevice> Writer<D> {
         is_dir: bool,
     ) -> Result<u64> {
         valid_name(name)?;
-        if data.len() > INLINE_MAX {
-            return Err(Error::Unsupported(format!(
-                "files over {INLINE_MAX} bytes need allocation, which is not implemented"
-            )));
-        }
         let mut p = self.dir(parent)?;
         let (at, existing) = self.dirent(&p, name)?;
         if existing.is_some() {
@@ -670,11 +686,9 @@ impl<D: BlockDevice> Writer<D> {
         }
         let (ino, cursor) = self.next_ino()?;
         let now = self.now();
-        let mut t = Txn {
-            inodes: 1,
-            ..Txn::default()
-        };
-        let new = self.new_inode(
+        let mut t = Txn::default();
+        t.inodes(1);
+        let mut new = self.new_inode(
             ino,
             &p,
             at.offset,
@@ -684,6 +698,12 @@ impl<D: BlockDevice> Writer<D> {
             now,
             name,
         );
+        if data.len() > INLINE_MAX {
+            let sectors = self.allocate_data(ino, data, &mut t)?;
+            let mut raw = crate::inode::InodeV3Raw::parse(&new.value)?;
+            raw.sectors = sectors;
+            new.value = raw.encode();
+        }
         t.put(ids::INODES, None, new);
         let old_parent = p.key.clone();
         self.touch(&mut p, now);
@@ -698,11 +718,13 @@ impl<D: BlockDevice> Writer<D> {
             None,
             Self::dirent_key(at, name, ino, if is_dir { 4 } else { 8 }),
         );
-        if let Some(k) = Self::inline_key(ino, data) {
-            t.put(ids::EXTENTS, None, k);
+        if data.len() <= INLINE_MAX {
+            if let Some(k) = Self::inline_key(ino, data) {
+                t.put(ids::EXTENTS, None, k);
+            }
         }
         // The cursor replaces itself; logged_ops has no counter.
-        t.keys.entry(ids::LOGGED_OPS).or_default().push(cursor);
+        t.put_uncounted(ids::LOGGED_OPS, cursor);
         self.commit(t)?;
         Ok(ino)
     }
@@ -759,7 +781,7 @@ impl<D: BlockDevice> Writer<D> {
                 t.delete(ids::EXTENTS, &k);
             }
             t.delete(ids::INODES, &i.key);
-            t.inodes = -1;
+            t.inodes(-1);
         }
         let old_parent = p.key.clone();
         self.touch(&mut p, now);
@@ -864,40 +886,44 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// The accounting keys after adding `inodes` to the inode count and
-    /// `(btree, keys, bytes)` to each btree's counter.
-    fn accounting_deltas(&self, inodes: i64, counters: &[(u8, i64, i64)]) -> Result<Vec<Bkey>> {
+    /// The accounting keys with `deltas` applied. A key that does not exist
+    /// yet is created with zero counters (S8: a first data write created
+    /// the user replicas and inode keys).
+    fn accounting_deltas(
+        &self,
+        deltas: &std::collections::BTreeMap<Bpos, Vec<i64>>,
+    ) -> Result<Vec<Bkey>> {
         let all = self.keys(ids::ACCOUNTING)?;
-        let find = |p: Bpos| {
-            all.iter()
-                .find(|k| k.pos == p && k.key_type == ids::ACCOUNTING_KEY)
-                .cloned()
-                .ok_or_else(|| Error::Unsupported(format!("no accounting key at {p}")))
-        };
-        let add = |k: &mut Bkey, i: usize, d: i64| -> Result<()> {
-            let at = i * 8;
-            if k.value.len() < at + 8 {
-                return Err(Error::Corrupt(format!(
-                    "accounting key {} too short",
-                    k.pos
-                )));
-            }
-            let v = le64(&k.value, at)
-                .checked_add_signed(d)
-                .ok_or_else(|| Error::Corrupt("an accounting counter would go negative".into()))?;
-            k.value[at..at + 8].copy_from_slice(&v.to_le_bytes());
-            Ok(())
-        };
         let mut out = Vec::new();
-        if inodes != 0 {
-            let mut nr = find(Bpos::default())?;
-            add(&mut nr, 0, inodes)?;
-            out.push(nr);
-        }
-        for &(id, keys, bytes) in counters {
-            let mut k = find(btree_counter_pos(id))?;
-            add(&mut k, 0, keys)?;
-            add(&mut k, 1, bytes)?;
+        for (&at, d) in deltas {
+            if d.iter().all(|&x| x == 0) {
+                continue;
+            }
+            let mut k = match all
+                .iter()
+                .find(|k| k.pos == at && k.key_type == ids::ACCOUNTING_KEY)
+            {
+                Some(k) => k.clone(),
+                None => Bkey {
+                    key_type: ids::ACCOUNTING_KEY,
+                    size: 0,
+                    version_hi: 0,
+                    version_lo: self.journal_seq,
+                    pos: at,
+                    value: vec![0; d.len() * 8],
+                },
+            };
+            if k.value.len() < d.len() * 8 {
+                return Err(Error::Corrupt(format!("accounting key {at} is too short")));
+            }
+            for (i, &delta) in d.iter().enumerate() {
+                let v = le64(&k.value, i * 8)
+                    .checked_add_signed(delta)
+                    .ok_or_else(|| {
+                        Error::Corrupt(format!("accounting counter {i} of {at} would go negative"))
+                    })?;
+                k.value[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+            }
             out.push(k);
         }
         Ok(out)

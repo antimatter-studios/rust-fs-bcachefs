@@ -98,9 +98,12 @@ fn what_is_refused_is_refused_before_anything_is_written() {
         fs.lookup("/d").unwrap()
     };
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    // Larger than the 64 MiB image's free space: refused while planning,
+    // before any data is written.
     assert!(
-        w.create_file(dir, b"big", &[0u8; 249], 0o644).is_err(),
-        "over the inline limit"
+        w.create_file(dir, b"big", &vec![0u8; 80 << 20], 0o644)
+            .is_err(),
+        "larger than the free space"
     );
     assert!(
         w.create_file(dir, b"existing", b"x", 0o644).is_err(),
@@ -183,4 +186,45 @@ fn namespace_operations_read_back() {
         fs.inode(e).is_err(),
         "the removed directory's inode is gone"
     );
+}
+
+/// Large files read back by this crate, byte for byte.
+#[test]
+fn large_files_read_back() {
+    for (set, dir_path, test) in [
+        ("write-study/base.img", "/d", "local-large-base"),
+        ("aged.img", "/many", "local-large-aged"),
+    ] {
+        let img = scratch(set, test);
+        let dir = {
+            let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+            fs.lookup(dir_path).unwrap()
+        };
+        let data: Vec<u8> = (0..700_001u32).map(|i| (i % 253) as u8).collect();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        // How full the aged image's leaves are differs from one fixture
+        // build to the next. Until nodes are split, a create that finds one
+        // full is refused with no metadata written: the name must not exist.
+        match w.create_file(dir, b"large", &data, 0o644) {
+            Ok(_) => {}
+            Err(fs_bcachefs::Error::Unsupported(m))
+                if test == "local-large-aged" && m.contains("the node is full") =>
+            {
+                drop(w);
+                let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+                assert!(fs.lookup(&format!("{dir_path}/large")).is_err(), "{test}");
+                continue;
+            }
+            Err(e) => panic!("{test}: {e}"),
+        }
+        drop(w);
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let ino = fs.lookup(&format!("{dir_path}/large")).unwrap();
+        assert!(fs.read(ino).unwrap() == data, "{test}");
+        assert_eq!(
+            fs.inode(ino).unwrap().sectors,
+            700_001u64.div_ceil(512),
+            "{test}: sectors"
+        );
+    }
 }
