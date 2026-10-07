@@ -265,9 +265,18 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .flatten()
         .filter(|_| have_inodes)
     {
+        if k.key_type == key_type::ERROR {
+            r.add(
+                "data_lost",
+                format!(
+                    "extent {}: an `error` extent, its data permanently lost",
+                    k.pos
+                ),
+            );
+        }
         if matches!(
             k.key_type,
-            key_type::EXTENT | key_type::INLINE_DATA | key_type::RESERVATION
+            key_type::EXTENT | key_type::INLINE_DATA | key_type::RESERVATION | key_type::ERROR
         ) {
             if let Some((inode, snap, end)) = prev {
                 if inode == k.pos.inode && snap == k.pos.snapshot && k.start_offset() < end {
