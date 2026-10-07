@@ -54,11 +54,6 @@ impl<D: BlockDevice> Writer<D> {
     /// clean; from here on nothing but free buckets, the journal and the
     /// superblock's clean bit are written.
     pub fn journal_commits(&mut self) -> Result<()> {
-        if self.session.is_none() {
-            return Err(Error::Unsupported(
-                "journalled commits are not implemented yet".into(),
-            ));
-        }
         if self.session.is_some() {
             return Ok(());
         }
