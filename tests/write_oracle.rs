@@ -656,3 +656,48 @@ fn long_xattr_names_set_here_are_read_by_the_reference() {
         }
     });
 }
+
+/// Hundreds of operations on 32 KiB nodes: full nodes are rewritten into
+/// fresh buckets or split, roots grow a level, old buckets are freed; the
+/// checker passes the image and the mount reads every file.
+#[test]
+fn full_nodes_rewritten_and_split_pass_the_reference() {
+    let img = scratch("write-study/base.img", "many");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..400 {
+        w.create_file(
+            d,
+            format!("f{i:05}").as_bytes(),
+            format!("file {i}\n").as_bytes(),
+            0o644,
+        )
+        .unwrap_or_else(|e| panic!("create {i}: {e}"));
+    }
+    for i in (0..400).step_by(3) {
+        w.unlink(d, format!("f{i:05}").as_bytes()).unwrap();
+    }
+    let big = pattern(50_000, 9);
+    for i in 0..10 {
+        w.create_file(d, format!("big{i}").as_bytes(), &big, 0o644)
+            .unwrap();
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert_eq!(
+            std::fs::read_dir(m.join("d")).unwrap().count(),
+            400 - 134 + 10 + 1
+        );
+        for i in (1..400).filter(|i| i % 3 != 0) {
+            assert_eq!(
+                std::fs::read(m.join(format!("d/f{i:05}"))).unwrap(),
+                format!("file {i}\n").as_bytes()
+            );
+        }
+        assert!(std::fs::read(m.join("d/big9")).unwrap() == big);
+    });
+}

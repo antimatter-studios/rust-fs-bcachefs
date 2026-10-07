@@ -529,3 +529,46 @@ fn files_on_4096_byte_blocks_are_written_in_whole_blocks() {
         assert_eq!(fs.read(ino).unwrap(), file(n), "w{n}: bytes");
     }
 }
+
+/// Hundreds of operations, one transaction each, on an image whose nodes
+/// are 32 KiB: nodes fill and are rewritten or split, roots grow a level,
+/// and everything still reads back.
+#[test]
+fn full_nodes_are_rewritten_and_split() {
+    let img = scratch("write-study/base.img", "local-many");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..400 {
+        w.create_file(
+            d,
+            format!("f{i:05}").as_bytes(),
+            format!("file {i}\n").as_bytes(),
+            0o644,
+        )
+        .unwrap_or_else(|e| panic!("create {i}: {e}"));
+    }
+    for i in (0..400).step_by(3) {
+        w.unlink(d, format!("f{i:05}").as_bytes())
+            .unwrap_or_else(|e| panic!("unlink {i}: {e}"));
+    }
+    let big: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+    for i in 0..10 {
+        w.create_file(d, format!("big{i}").as_bytes(), &big, 0o644)
+            .unwrap();
+    }
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.readdir(d).unwrap().len(), 400 - 134 + 10 + 1);
+    assert_eq!(
+        fs.read(fs.lookup("/d/f00398").unwrap()).unwrap(),
+        b"file 398\n"
+    );
+    assert!(
+        fs.lookup("/d/f00399").is_err(),
+        "399 is a multiple of 3: unlinked"
+    );
+    assert!(fs.read(fs.lookup("/d/big9").unwrap()).unwrap() == big);
+}
