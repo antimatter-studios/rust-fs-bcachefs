@@ -65,9 +65,6 @@ impl Report {
 /// problem it can name is in the report.
 pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     let mut r = Report::default();
-    if r.problems.is_empty() {
-        return Ok(r); // red: nothing is checked yet
-    }
     let sb = match Superblock::read(dev) {
         Ok(sb) => sb,
         Err(e @ Error::BadChecksum { .. }) => {
@@ -185,7 +182,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             }
         }
     }
-    for (ino, i) in &inodes {
+    // Link counts and reachability only mean something when both btrees
+    // were read whole; a btree that failed is already reported.
+    let both = trees.contains_key(&btree_id::INODES) && trees.contains_key(&btree_id::DIRENTS);
+    for (ino, i) in inodes.iter().filter(|_| both) {
         let want = if i.is_dir() {
             subdirs.get(ino).copied().unwrap_or(0) + 2
         } else {
@@ -206,7 +206,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     }
 
     // Extents: their inode, their bounds, their data.
-    for k in trees.get(&btree_id::EXTENTS).into_iter().flatten() {
+    let have_inodes = trees.contains_key(&btree_id::INODES);
+    for k in trees
+        .get(&btree_id::EXTENTS)
+        .into_iter()
+        .flatten()
+        .filter(|_| have_inodes)
+    {
         match k.key_type {
             key_type::EXTENT | key_type::INLINE_DATA => {}
             _ => continue,

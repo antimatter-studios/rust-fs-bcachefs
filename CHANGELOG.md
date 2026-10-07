@@ -41,6 +41,9 @@ API, a patch never does.
 - **C ABI**: `fs_bcachefs_last_error`, `_mount_with_fs_core_device`,
   `_get_volume_info`, `_stat_ino`, a directory iterator (`_dir_open`,
   `_dir_next`, `_dir_close`), `_readlink`, `_listxattr` and `_getxattr`.
+- **`fsck.bcachefs`, check-only** (`check::check`): btree nodes, key order,
+  directory entries, link counts, extents and data checksums; fsck(8) exit
+  status. Never writes.
 - **Inline data**: small files a mounted filesystem stores inside the
   extents btree read back byte for byte.
 - **An aged fixture**, mounted and aged by the reference implementation in
