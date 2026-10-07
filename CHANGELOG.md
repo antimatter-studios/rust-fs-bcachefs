@@ -75,6 +75,9 @@ API, a patch never does.
   all; `symlink`, `link`, `set_attributes`, `set_xattr` and
   `remove_xattr` round it out. Every image it writes in the tests passes the
   reference checker and reads back through the reference implementation.
+- **`Filesystem::read_range`** (#57): a window of a file, reading only the
+  extents that cover it; `fs_bcachefs_read_file` uses it, so a C consumer
+  reading a file in pieces no longer decodes the whole file per piece.
 - **Encoders**: `inode::InodeV3Raw`, `inode::varint_encode`,
   `Dirent::encode_value`, `inode::dirent_hash` and `siphash::siphash24`.
 - **Inline data**: small files a mounted filesystem stores inside the

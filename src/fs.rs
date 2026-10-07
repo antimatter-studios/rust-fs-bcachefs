@@ -248,19 +248,45 @@ impl<D: BlockRead> Filesystem<D> {
 
     /// The whole contents of a file (or a symlink's target).
     pub fn read(&self, ino: u64) -> Result<Vec<u8>> {
-        let inode = self.inode(ino)?;
-        let size = inode.size;
-        let mut out = vec![
-            0u8;
-            usize::try_from(size)
-                .map_err(|_| Error::Unsupported("file larger than memory".into()))?
-        ];
+        let size = self.inode(ino)?.size;
+        let len = usize::try_from(size)
+            .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
+        self.read_range(ino, 0, len)
+    }
+
+    /// Up to `len` bytes of a file from byte `offset`: empty at or past the
+    /// end, shorter than `len` across it. Only the extents covering the
+    /// window are read and decoded, so a reader taking a file in pieces
+    /// does work proportional to the pieces, not to the file.
+    pub fn read_range(&self, ino: u64, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let size = self.inode(ino)?.size;
+        if offset >= size {
+            return Ok(Vec::new());
+        }
+        let end = size.min(offset.saturating_add(len as u64));
+        let mut out = vec![0u8; (end - offset) as usize];
+        // An extent key sits at its END (S1 11.4), so the first key that can
+        // cover byte `offset` is the first whose position is past its sector.
+        let mut c = self.cursor(btree_id::EXTENTS)?;
+        c.seek(Bpos {
+            inode: ino,
+            offset: offset / 512 + 1,
+            snapshot: 0,
+        })?;
         // Extents of one file must not overlap (S1's check_extents: "no
         // overlaps"): two keys claiming the same sectors would be written
         // into the buffer in position order, and the later one, not the
         // newer one, would win. Refused instead (issue #60).
         let mut prev_end: Option<u64> = None;
-        for k in self.keys_of(btree_id::EXTENTS, ino)? {
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != ino {
+                break;
+            }
+            self.same_snapshot(&k)?;
+            let key_start = k.start_offset().saturating_mul(512);
+            if key_start >= end {
+                break;
+            }
             if matches!(
                 k.key_type,
                 crate::bkey::key_type::EXTENT
@@ -268,11 +294,11 @@ impl<D: BlockRead> Filesystem<D> {
                     | crate::bkey::key_type::RESERVATION
                     | crate::bkey::key_type::ERROR
             ) {
-                if let Some(end) = prev_end {
-                    if k.start_offset() < end {
+                if let Some(prev) = prev_end {
+                    if k.start_offset() < prev {
                         return Err(Error::Corrupt(format!(
                             "extent {} starts at sector {} before the extent before it ends at \
-                             {end}: overlapping extents, check the filesystem",
+                             {prev}: overlapping extents, check the filesystem",
                             k.pos,
                             k.start_offset()
                         )));
@@ -281,13 +307,26 @@ impl<D: BlockRead> Filesystem<D> {
                 prev_end = Some(k.pos.offset);
             }
             match k.key_type {
-                crate::bkey::key_type::EXTENT => {}
+                crate::bkey::key_type::EXTENT => {
+                    let e = DataExtent::from_key(&k)?;
+                    let data = self.extent_data(&e)?;
+                    copy_window(&mut out, offset, end, e.file_start * 512, &data);
+                }
+                crate::bkey::key_type::INLINE_DATA => {
+                    // The value is the data itself, zero-padded to a whole
+                    // u64, and the key covers `size` sectors ending at its
+                    // position like any extent (S3: the lister prints the
+                    // bytes and a `datalen` equal to the value length; S4:
+                    // the bytes match the file the mount wrote).
+                    let n = k.value.len().min(k.size as usize * 512);
+                    copy_window(&mut out, offset, end, key_start, &k.value[..n]);
+                }
                 // A reservation is space with no data yet, a whiteout hides
                 // nothing on a filesystem without snapshots: both read as
                 // zeros.
                 crate::bkey::key_type::RESERVATION
                 | crate::bkey::key_type::WHITEOUT
-                | crate::bkey::key_type::EXTENT_WHITEOUT => continue,
+                | crate::bkey::key_type::EXTENT_WHITEOUT => {}
                 // "Reads to these ranges return IO errors" (S1 9.1.2.1).
                 crate::bkey::key_type::ERROR => {
                     return Err(Error::Io(format!(
@@ -297,38 +336,8 @@ impl<D: BlockRead> Filesystem<D> {
                         k.pos.offset
                     )))
                 }
-                crate::bkey::key_type::INLINE_DATA => {
-                    // The value is the data itself, zero-padded to a whole
-                    // u64, and the key covers `size` sectors ending at its
-                    // position like any extent (S3: the lister prints the
-                    // bytes and a `datalen` equal to the value length; S4:
-                    // the bytes match the file the mount wrote).
-                    let start = k
-                        .pos
-                        .offset
-                        .checked_sub(k.size as u64)
-                        .ok_or_else(|| Error::Corrupt("inline extent before offset 0".into()))?
-                        .checked_mul(512)
-                        .ok_or_else(|| Error::Corrupt("inline extent offset overflows".into()))?;
-                    if start >= size {
-                        continue;
-                    }
-                    let n = ((size - start) as usize)
-                        .min(k.value.len())
-                        .min(k.size as usize * 512);
-                    out[start as usize..start as usize + n].copy_from_slice(&k.value[..n]);
-                    continue;
-                }
                 t => return Err(Error::Unsupported(format!("extent key type {t}"))),
             }
-            let e = DataExtent::from_key(&k)?;
-            let data = self.extent_data(&e)?;
-            let file_off = e.file_start * 512;
-            if file_off >= size {
-                continue;
-            }
-            let n = ((size - file_off) as usize).min(data.len());
-            out[file_off as usize..file_off as usize + n].copy_from_slice(&data[..n]);
         }
         Ok(out)
     }
@@ -407,4 +416,18 @@ fn snapshots_not_read(k: &Bkey, root_snapshot: u32) -> Error {
          are not read (issue #12)",
         k.pos, k.pos.snapshot
     ))
+}
+
+/// Copy the part of `data` (which starts at file byte `data_start`) that
+/// falls inside the window `[win_start, win_end)` into `out`, which holds
+/// that window.
+fn copy_window(out: &mut [u8], win_start: u64, win_end: u64, data_start: u64, data: &[u8]) {
+    let data_end = data_start.saturating_add(data.len() as u64);
+    let from = data_start.max(win_start);
+    let to = data_end.min(win_end);
+    if from >= to {
+        return;
+    }
+    out[(from - win_start) as usize..(to - win_start) as usize]
+        .copy_from_slice(&data[(from - data_start) as usize..(to - data_start) as usize]);
 }
