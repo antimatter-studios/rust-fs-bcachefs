@@ -228,3 +228,29 @@ fn large_files_read_back() {
         );
     }
 }
+
+/// Large files unlinked and rewritten: the space comes back and what
+/// remains reads back.
+#[test]
+fn allocated_space_is_freed() {
+    let img = scratch("write-study/base.img", "local-free");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 249) as u8).collect();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(dir, b"gone", &big, 0o644).unwrap();
+    let kept = w.create_file(dir, b"kept", &big, 0o644).unwrap();
+    let shrunk = w.create_file(dir, b"shrunk", &big, 0o644).unwrap();
+    w.unlink(dir, b"gone").unwrap();
+    w.write_file(shrunk, b"small now\n").unwrap();
+    let grown = w.create_file(dir, b"grown", b"tiny", 0o644).unwrap();
+    w.write_file(grown, &big[..100_000]).unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.lookup("/d/gone").is_err());
+    assert!(fs.read(kept).unwrap() == big);
+    assert_eq!(fs.read(shrunk).unwrap(), b"small now\n");
+    assert!(fs.read(grown).unwrap() == big[..100_000]);
+}

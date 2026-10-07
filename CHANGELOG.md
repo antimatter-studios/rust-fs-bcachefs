@@ -50,7 +50,8 @@ API, a patch never does.
   an existing directory; `mkdir`, `unlink`, `rmdir`, `rename` and
   `write_file` (whole inline contents) follow, and files larger than
   inline data are written into allocated buckets with every alloc,
-  freespace, backpointer, lru and accounting key the reference writes. Every image it writes in the tests passes the
+  freespace, backpointer, lru and accounting key the reference writes;
+  unlinking or rewriting them frees their buckets for discard. Every image it writes in the tests passes the
   reference checker and reads back through the reference implementation.
 - **Encoders**: `inode::InodeV3Raw`, `inode::varint_encode`,
   `Dirent::encode_value`, `inode::dirent_hash` and `siphash::siphash24`.
