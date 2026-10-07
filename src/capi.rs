@@ -118,7 +118,7 @@ pub unsafe extern "C" fn fs_bcachefs_stat(
             return -1;
         };
         let fs = &unsafe { &*fs }.fs;
-        match fs.lookup(path).and_then(|ino| fs.inode(ino).cloned()) {
+        match fs.lookup(path).and_then(|ino| fs.inode(ino)) {
             Ok(i) => {
                 unsafe {
                     *out = fs_bcachefs_attr_t {

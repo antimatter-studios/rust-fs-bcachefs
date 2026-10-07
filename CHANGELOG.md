@@ -7,6 +7,14 @@ API, a patch never does.
 
 ## [Unreleased]
 
+### Changed
+
+- **Lookups, listings and reads go through a lazy btree cursor**
+  (`btree::Cursor`): nothing but the superblock is loaded at open, and a
+  lookup reads only the nodes on its path; a name is found at its hash.
+  `Filesystem::inode` and `Filesystem::readdir` return owned values, and
+  `Inode` carries `hash_seed`: the minor version moves to 0.2.
+
 ### Added
 
 - **A read-only spike of a clean-room bcachefs reader.** The superblock is

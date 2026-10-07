@@ -20,6 +20,7 @@ pub mod extent;
 pub mod fs;
 pub mod inode;
 pub mod journal;
+pub mod siphash;
 pub mod superblock;
 pub(crate) mod util;
 pub mod xattr;

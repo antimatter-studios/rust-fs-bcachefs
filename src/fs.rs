@@ -1,14 +1,15 @@
 //! A read-only view of a single-device bcachefs filesystem: look up a
 //! path, list a directory, read a file.
 //!
-//! The spike loads the inodes and dirents btrees whole at open, and walks
-//! the extents btree per file read. Snapshots are ignored: every key is
+//! Nothing is loaded at open but the superblock (and a journal replay when
+//! one is needed): every lookup, listing and read seeks a btree cursor to
+//! its own keys and reads only the nodes on their path. Snapshots are
+//! ignored: every key is
 //! taken at the snapshot it was found at, which is right for a filesystem
 //! that has never had a snapshot taken and wrong otherwise.
 
-use std::collections::BTreeMap;
-
-use crate::btree::{self, btree_id};
+use crate::bkey::Bpos;
+use crate::btree::{btree_id, Cursor};
 use crate::error::{Error, Result};
 use crate::extent::{compression, DataExtent};
 use crate::inode::{Dirent, Inode, ROOT_INO};
@@ -22,9 +23,6 @@ pub struct Filesystem<D: BlockRead> {
     /// What a replay of the journal adds, when the filesystem was not shut
     /// down cleanly.
     replay: Option<Replay>,
-    inodes: BTreeMap<u64, Inode>,
-    /// directory inode -> entries, in btree (hash) order
-    dirents: BTreeMap<u64, Vec<Dirent>>,
 }
 
 impl<D: BlockRead> Filesystem<D> {
@@ -51,45 +49,89 @@ impl<D: BlockRead> Filesystem<D> {
         } else {
             Some(crate::journal::replay(&dev, &sb)?)
         };
-        let mut inodes = BTreeMap::new();
-        for k in btree::walk_replayed(&dev, &sb, btree_id::INODES, replay.as_ref())? {
-            if k.key_type == crate::bkey::key_type::INODE_V3 {
-                let i = Inode::from_key(&k)?;
-                inodes.insert(i.ino, i);
-            }
-        }
-        let mut dirents: BTreeMap<u64, Vec<Dirent>> = BTreeMap::new();
-        for k in btree::walk_replayed(&dev, &sb, btree_id::DIRENTS, replay.as_ref())? {
-            if k.key_type == crate::bkey::key_type::DIRENT {
-                let d = Dirent::from_key(&k)?;
-                dirents.entry(d.dir).or_default().push(d);
-            }
-        }
-        Ok(Filesystem {
-            dev,
-            sb,
-            replay,
-            inodes,
-            dirents,
-        })
+        // The root inode must be there: a filesystem without it is not
+        // one to read.
+        let fs = Filesystem { dev, sb, replay };
+        fs.inode(ROOT_INO)?;
+        Ok(fs)
     }
 
     pub fn superblock(&self) -> &Superblock {
         &self.sb
     }
 
-    pub fn inode(&self, ino: u64) -> Result<&Inode> {
-        self.inodes
-            .get(&ino)
-            .ok_or_else(|| Error::NotFound(format!("inode {ino}")))
+    fn cursor(&self, id: u8) -> Result<Cursor<'_>> {
+        Cursor::new(&self.dev, &self.sb, id, self.replay.as_ref())
     }
 
-    /// The entries of a directory, by inode.
-    pub fn readdir(&self, dir: u64) -> Result<&[Dirent]> {
+    /// Every key of btree `id` whose position's inode field is `inode`, in
+    /// order, read through a cursor.
+    fn keys_of(&self, id: u8, inode: u64) -> Result<Vec<crate::bkey::Bkey>> {
+        let mut c = self.cursor(id)?;
+        c.seek(Bpos {
+            inode,
+            offset: 0,
+            snapshot: 0,
+        })?;
+        let mut out = Vec::new();
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != inode {
+                break;
+            }
+            out.push(k);
+        }
+        Ok(out)
+    }
+
+    pub fn inode(&self, ino: u64) -> Result<Inode> {
+        let mut c = self.cursor(btree_id::INODES)?;
+        c.seek(Bpos {
+            inode: 0,
+            offset: ino,
+            snapshot: 0,
+        })?;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != 0 || k.pos.offset != ino {
+                break;
+            }
+            if k.key_type == crate::bkey::key_type::INODE_V3 {
+                return Inode::from_key(&k);
+            }
+        }
+        Err(Error::NotFound(format!("inode {ino}")))
+    }
+
+    /// The entries of a directory, by inode, in btree (hash) order.
+    pub fn readdir(&self, dir: u64) -> Result<Vec<Dirent>> {
         if !self.inode(dir)?.is_dir() {
             return Err(Error::Corrupt(format!("inode {dir} is not a directory")));
         }
-        Ok(self.dirents.get(&dir).map(|v| v.as_slice()).unwrap_or(&[]))
+        self.keys_of(btree_id::DIRENTS, dir)?
+            .iter()
+            .filter(|k| k.key_type == crate::bkey::key_type::DIRENT)
+            .map(Dirent::from_key)
+            .collect()
+    }
+
+    /// The entry named `name` in directory `dir`: at its name's hash, or
+    /// (a collision moved it) anywhere in the directory.
+    fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
+        let at = crate::inode::dirent_hash(dir.hash_seed, name);
+        let mut c = self.cursor(btree_id::DIRENTS)?;
+        c.seek(Bpos {
+            inode: dir.ino,
+            offset: at,
+            snapshot: 0,
+        })?;
+        if let Some(k) = c.next_key()? {
+            if k.pos.inode == dir.ino && k.key_type == crate::bkey::key_type::DIRENT {
+                let d = Dirent::from_key(&k)?;
+                if d.name == name {
+                    return Ok(Some(d));
+                }
+            }
+        }
+        Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name))
     }
 
     /// Resolve an absolute path to an inode, without following a symlink
@@ -97,12 +139,14 @@ impl<D: BlockRead> Filesystem<D> {
     pub fn lookup(&self, path: &str) -> Result<u64> {
         let mut ino = ROOT_INO;
         for part in path.split('/').filter(|p| !p.is_empty()) {
-            let d = self
-                .readdir(ino)?
-                .iter()
-                .find(|d| d.name == part.as_bytes())
-                .ok_or_else(|| Error::NotFound(path.to_string()))?;
-            ino = d.inum;
+            let dir = self.inode(ino)?;
+            if !dir.is_dir() {
+                return Err(Error::NotFound(path.to_string()));
+            }
+            ino = self
+                .find(&dir, part.as_bytes())?
+                .ok_or_else(|| Error::NotFound(path.to_string()))?
+                .inum;
         }
         Ok(ino)
     }
@@ -110,9 +154,9 @@ impl<D: BlockRead> Filesystem<D> {
     /// The extended attributes of an inode, in btree order.
     pub fn xattrs(&self, ino: u64) -> Result<Vec<crate::xattr::Xattr>> {
         self.inode(ino)?;
-        btree::walk_replayed(&self.dev, &self.sb, btree_id::XATTRS, self.replay.as_ref())?
+        self.keys_of(btree_id::XATTRS, ino)?
             .iter()
-            .filter(|k| k.pos.inode == ino && k.key_type == crate::bkey::key_type::XATTR)
+            .filter(|k| k.key_type == crate::bkey::key_type::XATTR)
             .map(crate::xattr::Xattr::from_key)
             .collect()
     }
@@ -126,11 +170,7 @@ impl<D: BlockRead> Filesystem<D> {
             usize::try_from(size)
                 .map_err(|_| Error::Unsupported("file larger than memory".into()))?
         ];
-        for k in btree::walk_replayed(&self.dev, &self.sb, btree_id::EXTENTS, self.replay.as_ref())?
-        {
-            if k.pos.inode != ino {
-                continue;
-            }
+        for k in self.keys_of(btree_id::EXTENTS, ino)? {
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {}
                 crate::bkey::key_type::RESERVATION | crate::bkey::key_type::WHITEOUT => continue,

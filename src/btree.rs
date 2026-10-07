@@ -267,13 +267,153 @@ pub fn walk_replayed(
     id: u8,
     replay: Option<&crate::journal::Replay>,
 ) -> Result<Vec<Bkey>> {
-    let (root_level, root_key) = match replay {
+    let (root_level, root_key) = root_of(sb, id, replay)?;
+    if u32::from(root_level) >= MAX_DEPTH {
+        return Err(Error::Corrupt(format!(
+            "btree {id} root at level {root_level}"
+        )));
+    }
+    let walk = Walk {
+        dev,
+        sb,
+        id,
+        replay,
+        max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+    };
+    let mut out = Vec::new();
+    walk.descend(&NodePtr::from_key(&root_key)?, root_level, &mut out)?;
+    Ok(out)
+}
+
+/// The position just after `p` in key order.
+pub fn successor(p: Bpos) -> Bpos {
+    if p.snapshot < u32::MAX {
+        Bpos {
+            snapshot: p.snapshot + 1,
+            ..p
+        }
+    } else if p.offset < u64::MAX {
+        Bpos {
+            inode: p.inode,
+            offset: p.offset + 1,
+            snapshot: 0,
+        }
+    } else {
+        Bpos {
+            inode: p.inode.saturating_add(1),
+            offset: 0,
+            snapshot: 0,
+        }
+    }
+}
+
+const SPOS_MAX: Bpos = Bpos {
+    inode: u64::MAX,
+    offset: u64::MAX,
+    snapshot: u32::MAX,
+};
+
+/// A cursor over one btree: [`Cursor::seek`] to a position, then
+/// [`Cursor::next`] key by key. It reads only the nodes on its path -- the
+/// root and one node per level down to the leaf holding the position --
+/// and moves to the next leaf only when the current one is used up,
+/// applying a journal replay to each node it reads as [`walk_replayed`]
+/// does.
+pub struct Cursor<'a> {
+    walk: Walk<'a>,
+    root_level: u8,
+    root: NodePtr,
+    /// The leaf being read, from where the cursor stands.
+    leaf: std::vec::IntoIter<Bkey>,
+    /// The largest position the leaf covers; SPOS_MAX for the last.
+    leaf_max: Bpos,
+    started: bool,
+}
+
+impl<'a> Cursor<'a> {
+    /// A cursor over btree `id`; on an uncleanly unmounted filesystem pass
+    /// its replay, as for [`walk_replayed`].
+    pub fn new(
+        dev: &'a dyn BlockRead,
+        sb: &'a Superblock,
+        id: u8,
+        replay: Option<&'a crate::journal::Replay>,
+    ) -> Result<Self> {
+        let (root_level, root_key) = root_of(sb, id, replay)?;
+        Ok(Cursor {
+            walk: Walk {
+                dev,
+                sb,
+                id,
+                replay,
+                max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+            },
+            root_level,
+            root: NodePtr::from_key(&root_key)?,
+            leaf: Vec::new().into_iter(),
+            leaf_max: SPOS_MAX,
+            started: false,
+        })
+    }
+
+    /// Stand before the first key at or after `pos`.
+    pub fn seek(&mut self, pos: Bpos) -> Result<()> {
+        let mut ptr = self.root.clone();
+        let mut level = self.root_level;
+        let mut max = SPOS_MAX;
+        loop {
+            let node = read_node_upto(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?;
+            let keys = self
+                .walk
+                .apply(node.keys, level, node.min_key, node.max_key);
+            if level == 0 {
+                let rest: Vec<Bkey> = keys.into_iter().filter(|k| k.pos >= pos).collect();
+                self.leaf = rest.into_iter();
+                self.leaf_max = max;
+                self.started = true;
+                return Ok(());
+            }
+            let child = keys
+                .into_iter()
+                .filter(|k| k.key_type == key_type::BTREE_PTR_V2)
+                .find(|k| k.pos >= pos)
+                .ok_or_else(|| {
+                    Error::Corrupt(format!("no child of an interior node covers {pos}"))
+                })?;
+            max = child.pos;
+            ptr = NodePtr::from_key(&child)?;
+            level -= 1;
+        }
+    }
+
+    /// The next key, or `None` past the last.
+    pub fn next_key(&mut self) -> Result<Option<Bkey>> {
+        if !self.started {
+            self.seek(Bpos::default())?;
+        }
+        loop {
+            if let Some(k) = self.leaf.next() {
+                return Ok(Some(k));
+            }
+            if self.leaf_max == SPOS_MAX {
+                return Ok(None);
+            }
+            let from = successor(self.leaf_max);
+            self.seek(from)?;
+        }
+    }
+}
+
+/// A btree's root: from the replay's newest flush entry, or the clean
+/// field.
+fn root_of(sb: &Superblock, id: u8, replay: Option<&crate::journal::Replay>) -> Result<(u8, Bkey)> {
+    match replay {
         Some(r) => r
             .roots
             .iter()
             .find(|(b, _, _)| *b == id)
             .map(|(_, level, k)| (*level, k.clone()))
-            .ok_or_else(|| Error::NotFound(format!("btree {id} has no root in the journal")))?,
+            .ok_or_else(|| Error::NotFound(format!("btree {id} has no root in the journal"))),
         None => {
             if !sb.is_clean() {
                 return Err(Error::Unsupported(
@@ -295,24 +435,9 @@ pub fn walk_replayed(
                     field_offset: [0; 6],
                 },
             )?;
-            (root.level, key)
+            Ok((root.level, key))
         }
-    };
-    if u32::from(root_level) >= MAX_DEPTH {
-        return Err(Error::Corrupt(format!(
-            "btree {id} root at level {root_level}"
-        )));
     }
-    let walk = Walk {
-        dev,
-        sb,
-        id,
-        replay,
-        max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
-    };
-    let mut out = Vec::new();
-    walk.descend(&NodePtr::from_key(&root_key)?, root_level, &mut out)?;
-    Ok(out)
 }
 
 /// One walk of one btree, with the replay (if any) it applies.

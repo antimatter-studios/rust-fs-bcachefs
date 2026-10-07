@@ -58,6 +58,8 @@ pub struct Inode {
     pub atime: u64,
     pub ctime: u64,
     pub mtime: u64,
+    /// The seed of a directory's name hash (fixed part, bytes 8..16).
+    pub hash_seed: u64,
 }
 
 impl Inode {
@@ -109,6 +111,7 @@ impl Inode {
             atime: 0,
             ctime: 0,
             mtime: 0,
+            hash_seed: le64(v, 8),
         };
         let mut p = 48;
         for (i, (name, count)) in FIELDS.iter().enumerate() {
@@ -207,6 +210,14 @@ impl Dirent {
             _ => "unknown",
         }
     }
+}
+
+/// A dirent's offset in its directory: SipHash-2-4 of the name, keyed with
+/// the directory's `hash_seed` and 0, shifted right by one. INFERRED by
+/// computing candidates against the dirents of the write study and checked
+/// against every dirent of every fixture (docs/clean-room.md).
+pub fn dirent_hash(dir_hash_seed: u64, name: &[u8]) -> u64 {
+    crate::siphash::siphash24(dir_hash_seed, 0, name) >> 1
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 [package]
 name = "rust-fs-bcachefs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Pure-Rust, read-only bcachefs reader, written clean-room from documentation and black-box observation. Exposes a C ABI (fs_bcachefs_*)."
