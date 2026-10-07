@@ -39,6 +39,16 @@ fn command() -> Cmd {
                 .arg(Arg::new("path").value_name("PATH").default_value("/")),
         )
         .subcommand(
+            Cmd::new("stat")
+                .about("One path's inode: number, type, mode, owner, links, size, times")
+                .arg(Arg::new("path").value_name("PATH").required(true)),
+        )
+        .subcommand(
+            Cmd::new("tree")
+                .about("Every path under a directory, recursively: path, type, inode, size")
+                .arg(Arg::new("path").value_name("PATH").default_value("/")),
+        )
+        .subcommand(
             Cmd::new("cat")
                 .about("Write a file's bytes (or a symlink's target) to stdout")
                 .arg(Arg::new("path").value_name("PATH").required(true)),
@@ -86,6 +96,36 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
             }
             Ok(Outcome::report(Json::Arr(rows)))
         }
+        Some(("stat", sub)) => {
+            let fs = open(dev)?;
+            let path = sub.get_one::<String>("path").expect("required");
+            let ino = fs.lookup(path).map_err(failed)?;
+            let i = fs.inode(ino).map_err(failed)?;
+            let base = fs.superblock().time_base_lo;
+            Ok(Outcome::report(Json::object([
+                ("path", Json::Str(path.clone())),
+                ("ino", Json::UInt(ino)),
+                ("type", Json::Str(kind(i.mode).into())),
+                ("mode", Json::Str(format!("{:04o}", i.mode & 0o7777))),
+                ("uid", Json::UInt(i.uid.into())),
+                ("gid", Json::UInt(i.gid.into())),
+                ("nlink", Json::UInt(i.link_count().into())),
+                ("size", Json::UInt(i.size)),
+                ("sectors", Json::UInt(i.sectors)),
+                ("atime_ns", Json::UInt(base.saturating_add(i.atime))),
+                ("mtime_ns", Json::UInt(base.saturating_add(i.mtime))),
+                ("ctime_ns", Json::UInt(base.saturating_add(i.ctime))),
+            ])))
+        }
+        Some(("tree", sub)) => {
+            let fs = open(dev)?;
+            let path = sub.get_one::<String>("path").expect("defaulted");
+            let root = fs.lookup(path).map_err(failed)?;
+            let mut rows = Vec::new();
+            let prefix = path.trim_end_matches('/').to_string();
+            walk(&fs, root, &prefix, &mut rows, 0)?;
+            Ok(Outcome::report(Json::Arr(rows)))
+        }
         Some(("cat", sub)) => {
             let fs = open(dev)?;
             let path = sub.get_one::<String>("path").expect("required");
@@ -100,6 +140,51 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
         }
         _ => Err(CliError::usage("unknown subcommand")),
     }
+}
+
+/// The type of an inode by its mode, in the words the manifests use.
+fn kind(mode: u32) -> &'static str {
+    match mode & 0o170000 {
+        0o040000 => "dir",
+        0o100000 => "file",
+        0o120000 => "symlink",
+        0o020000 => "char",
+        0o060000 => "block",
+        0o010000 => "fifo",
+        0o140000 => "socket",
+        _ => "unknown",
+    }
+}
+
+/// Deeper than any real tree; a directory cycle in a corrupt image stops here.
+const MAX_TREE_DEPTH: usize = 256;
+
+fn walk(
+    fs: &Filesystem<FileDevice>,
+    dir: u64,
+    prefix: &str,
+    rows: &mut Vec<Json>,
+    depth: usize,
+) -> Result<(), CliError> {
+    if depth > MAX_TREE_DEPTH {
+        return Err(CliError::failed("directories nest deeper than 256 levels"));
+    }
+    let mut entries: Vec<_> = fs.readdir(dir).map_err(failed)?.to_vec();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    for d in entries {
+        let path = format!("{prefix}/{}", String::from_utf8_lossy(&d.name));
+        let i = fs.inode(d.inum).map_err(failed)?;
+        rows.push(Json::object([
+            ("path", Json::Str(path.clone())),
+            ("type", Json::Str(kind(i.mode).into())),
+            ("ino", Json::UInt(d.inum)),
+            ("size", Json::UInt(i.size)),
+        ]));
+        if i.is_dir() {
+            walk(fs, d.inum, &path, rows, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 fn failed(e: fs_bcachefs::Error) -> CliError {

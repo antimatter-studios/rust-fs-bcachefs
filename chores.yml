@@ -109,7 +109,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 30'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
-  # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks.
+  # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
+  # with stat and tree (2026-10-07): 14 lines / 606 bytes, 3197 checks.
   # Budget half as much again plus room for a runner's longer paths; the
   # floor is about 95% of the checks.
   cli:install:
@@ -120,7 +121,7 @@ tasks:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 20 1000 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 2370'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3030'
 
   test:
     desc: 'Unit, then oracle, exactly as CI runs them'
