@@ -1,0 +1,34 @@
+# cargo-deny configuration: THE LICENCE GATE, run by `chore lint` through
+# scripts/licenses.sh.
+#
+# This crate is MIT and must stay that way (AGENTS.md, "Project rules" and
+# "Clean room"). Every crate in the dependency graph, direct or transitive,
+# must carry one of the permissive licences below; anything else -- a GPL,
+# LGPL, AGPL or MPL crate, or a crate whose licence cannot be identified --
+# fails the gate. Add a licence here only deliberately, with the reason in
+# the commit.
+
+[graph]
+# Every feature's dependencies are checked: `cli` pulls in clap, `write`
+# pulls in nothing, and a feature added later must not slip a licence past
+# the gate by being off by default.
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+]
+# How sure the SPDX detection must be before a crate's licence text is
+# accepted as the licence its manifest names.
+confidence-threshold = 0.8
+
+[licenses.private]
+# This crate itself is not registry-published yet; its licence is in Cargo.toml.
+ignore = true

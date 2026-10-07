@@ -3,7 +3,7 @@ name = "rust-fs-bcachefs"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Pure-Rust, read-only bcachefs reader, written clean-room from documentation and black-box observation. Exposes a C ABI (fs_bcachefs_*)."
+description = "Pure-Rust bcachefs reader, written clean-room from documentation and black-box observation; read-only by default, with an optional write feature. Exposes a C ABI (fs_bcachefs_*)."
 repository = "https://github.com/antimatter-studios/rust-fs-bcachefs"
 # The fuzz crate is its own package on its own (nightly) toolchain.
 exclude = ["fuzz"]

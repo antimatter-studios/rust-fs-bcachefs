@@ -461,7 +461,7 @@ impl Superblock {
     pub fn btree_roots(&self) -> Result<Vec<RootEntry>> {
         let f = self
             .field(FIELD_CLEAN)
-            .ok_or_else(|| Error::Unsupported("no clean field: the filesystem was not shut down cleanly; journal replay is not implemented".into()))?;
+            .ok_or_else(|| Error::Unsupported("no clean field: the filesystem was not shut down cleanly; its roots are in the journal (crate::journal::replay)".into()))?;
         let b = &f.body;
         let mut out = Vec::new();
         let mut p = 16;

@@ -1,4 +1,5 @@
-//! A pure-Rust, read-only bcachefs reader.
+//! A pure-Rust bcachefs reader: read-only by default, with a small writer
+//! behind the `write` feature.
 //!
 //! Written clean-room: the on-disk format was learned from prose
 //! documentation and from black-box observation of images made by the
