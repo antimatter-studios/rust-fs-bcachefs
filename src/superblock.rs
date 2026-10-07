@@ -322,10 +322,78 @@ impl Superblock {
         Ok(sb)
     }
 
-    /// Read and parse the primary superblock from a device.
+    /// Read the superblock from a device: every copy the layout names,
+    /// the one with the highest valid `seq` winning.
+    ///
+    /// The Principles of Operation (S1, 9.5.1): the superblock "is written
+    /// with a monotonically increasing sequence number (seq); on read, the
+    /// copy with the highest valid sequence number is authoritative", and
+    /// the standalone layout at sector 7 "is consulted only when the primary
+    /// superblock cannot be read". So: the primary first, its embedded
+    /// layout naming the copies; failing that, the layout at 3584; then
+    /// every copy, and a copy that does not parse is skipped (the checker
+    /// reports it, [`Superblock::read_copies`]). Observed (S4): every
+    /// fixture carries three copies, at sectors 8 and 2056 and at the end
+    /// of the device, all with the same `seq`.
     pub fn read(dev: &dyn BlockRead) -> Result<Self> {
+        Self::read_copies(dev).map(|(sb, _)| sb)
+    }
+
+    /// [`Superblock::read`], also returning every copy that could not be
+    /// read, by sector, for the checker. An error only when no copy reads.
+    pub fn read_copies(dev: &dyn BlockRead) -> Result<(Self, Vec<(u64, Error)>)> {
+        let mut failed: Vec<(u64, Error)> = Vec::new();
+        let primary = Self::read_at(dev, SB_OFFSET / 512);
+        let layout = match &primary {
+            Ok(sb) => sb.layout.clone(),
+            Err(e) => {
+                failed.push((SB_OFFSET / 512, e.clone()));
+                match Self::read_layout(dev) {
+                    Ok(l) => l,
+                    // Neither the primary nor the layout: the primary's
+                    // error is the one that says what is there.
+                    Err(_) => return Err(e.clone()),
+                }
+            }
+        };
+        let mut best = primary.ok();
+        for &sector in &layout.sb_offsets {
+            if sector == SB_OFFSET / 512 {
+                continue;
+            }
+            match Self::read_at(dev, sector) {
+                Ok(sb) => {
+                    if best.as_ref().is_none_or(|b| sb.seq > b.seq) {
+                        best = Some(sb);
+                    }
+                }
+                Err(e) => failed.push((sector, e)),
+            }
+        }
+        match best {
+            Some(sb) => Ok((sb, failed)),
+            None => Err(failed
+                .into_iter()
+                .next()
+                .map(|(_, e)| e)
+                .unwrap_or(Error::BadMagic { what: "superblock" })),
+        }
+    }
+
+    /// The standalone layout copy at sector 7.
+    pub fn read_layout(dev: &dyn BlockRead) -> Result<Layout> {
+        let mut b = vec![0u8; Layout::BYTES];
+        dev.read_at(LAYOUT_OFFSET, &mut b)?;
+        Layout::parse(&b)
+    }
+
+    /// One superblock copy, at `sector`, parsed and checksummed.
+    pub fn read_at(dev: &dyn BlockRead, sector: u64) -> Result<Self> {
+        let at = sector
+            .checked_mul(512)
+            .ok_or_else(|| Error::Corrupt(format!("superblock sector {sector} overflows")))?;
         let mut head = vec![0u8; SB_HEADER_BYTES];
-        dev.read_at(SB_OFFSET, &mut head)?;
+        dev.read_at(at, &mut head)?;
         if head[0x18..0x28] != BCACHEFS_MAGIC {
             return Err(Error::BadMagic { what: "superblock" });
         }
@@ -334,7 +402,7 @@ impl Superblock {
             return Err(Error::Corrupt(format!("superblock claims {total} bytes")));
         }
         let mut b = vec![0u8; total];
-        dev.read_at(SB_OFFSET, &mut b)?;
+        dev.read_at(at, &mut b)?;
         Self::parse(&b)
     }
 
