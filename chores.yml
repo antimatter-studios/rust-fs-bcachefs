@@ -74,6 +74,9 @@ tasks:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
+      # Once more with the fuzz targets' switch on: the decoders must hold
+      # without the checksums in front of them, and the switch must work.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-fuzzing 150 12000 -- cargo test --locked --features fuzzing --test fuzz_decoders'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 21'
 
   test:oracle:

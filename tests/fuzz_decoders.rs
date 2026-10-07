@@ -72,3 +72,31 @@ fn every_btree_node_seed_parses_and_mutations_never_panic() {
         }
     }
 }
+
+/// The fuzzing switch: built with the `fuzzing` feature (the fuzz targets
+/// only), a checksum that does not match is not a reason to stop, so
+/// mutated input reaches the decoders behind it. In every other build a
+/// corrupted superblock is refused for its checksum. Both builds run this:
+/// the unit tier once each way.
+#[test]
+fn checksums_are_verified_unless_built_for_fuzzing() {
+    for (name, mut data) in seeds("superblock") {
+        // A byte of the label: inside the checksummed range, harmless to the
+        // parse otherwise.
+        data[0x48] ^= 0x5a;
+        let r = fs_bcachefs::superblock::Superblock::parse(&data);
+        if cfg!(feature = "fuzzing") {
+            assert!(
+                r.is_ok(),
+                "seed {name}: the fuzzing build refused it: {:?}",
+                r.err()
+            );
+        } else {
+            assert!(
+                matches!(r, Err(fs_bcachefs::Error::BadChecksum { .. })),
+                "seed {name}: a corrupted superblock was not refused for its checksum: {:?}",
+                r.map(|_| ())
+            );
+        }
+    }
+}
