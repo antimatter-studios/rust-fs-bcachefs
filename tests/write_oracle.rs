@@ -358,3 +358,32 @@ fn large_files_created_here_are_read_by_the_reference() {
         });
     }
 }
+
+/// Unlinking and rewriting large files frees their buckets the way the
+/// reference does (need_discard, a new generation); the checker passes the
+/// result and the mount reads what remains.
+#[test]
+fn freed_space_is_accepted_by_the_reference() {
+    let img = scratch("write-study/base.img", "free");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let big = pattern(300_000, 7);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(dir, b"gone", &big, 0o644).unwrap();
+    w.create_file(dir, b"kept", &big, 0o644).unwrap();
+    let shrunk = w.create_file(dir, b"shrunk", &big, 0o644).unwrap();
+    w.unlink(dir, b"gone").unwrap();
+    w.write_file(shrunk, b"small now\n").unwrap();
+    let grown = w.create_file(dir, b"grown", b"tiny", 0o644).unwrap();
+    w.write_file(grown, &big[..100_000]).unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(!m.join("d/gone").exists());
+        assert!(std::fs::read(m.join("d/kept")).unwrap() == big);
+        assert_eq!(std::fs::read(m.join("d/shrunk")).unwrap(), b"small now\n");
+        assert!(std::fs::read(m.join("d/grown")).unwrap() == big[..100_000]);
+    });
+}
