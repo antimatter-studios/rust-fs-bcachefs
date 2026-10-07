@@ -111,6 +111,10 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **Bsets from blacklisted journal sequences are ignored** (#50): the
+  superblock's `journal_seq_blacklist` (`Superblock::journal_seq_blacklist`,
+  end exclusive) is applied to every node read, and a journal replay window
+  carrying a blacklist entry of its own is refused.
 - **Every superblock copy is read and the highest `seq` wins** (#49), with
   the layout at sector 7 as the fallback when the primary is gone;
   `fsck.bcachefs` reports a copy that does not read (`superblock_copy`).

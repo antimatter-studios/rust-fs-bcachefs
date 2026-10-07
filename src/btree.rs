@@ -136,6 +136,23 @@ impl Node {
         expect_seq: Option<u64>,
         max_journal_seq: u64,
     ) -> Result<Self> {
+        Self::parse_filtered(b, magic, block_bytes, expect_seq, max_journal_seq, &[])
+    }
+
+    /// [`Node::parse_upto`], also ignoring the keys of every bset whose
+    /// journal sequence falls in a blacklisted range (`start <= seq < end`,
+    /// the superblock's `journal_seq_blacklist`): the journal entry that
+    /// carried those keys was never committed, and the reference ignores
+    /// them "until the btree node is next rewritten" (S1 1.3). A clean
+    /// image can hold such bsets. Their checksums are still verified.
+    pub fn parse_filtered(
+        b: &[u8],
+        magic: u64,
+        block_bytes: usize,
+        expect_seq: Option<u64>,
+        max_journal_seq: u64,
+        blacklist: &[(u64, u64)],
+    ) -> Result<Self> {
         if b.len() < HEADER_BSET + BSET_HEADER {
             return Err(Error::Corrupt("btree node shorter than its header".into()));
         }
@@ -196,7 +213,11 @@ impl Node {
                     computed,
                 }
             })?;
-            let committed = le64(b, bset_at + 8) <= max_journal_seq;
+            let journal_seq = le64(b, bset_at + 8);
+            let committed = journal_seq <= max_journal_seq
+                && !blacklist
+                    .iter()
+                    .any(|&(start, end)| start <= journal_seq && journal_seq < end);
             let mut p = keys_at;
             while committed && p < end {
                 let n = b[p] as usize;
@@ -279,6 +300,7 @@ pub fn walk_replayed(
         id,
         replay,
         max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+        blacklist: sb.journal_seq_blacklist()?,
     };
     let mut out = Vec::new();
     walk.descend(&NodePtr::from_key(&root_key)?, root_level, &mut out)?;
@@ -348,6 +370,7 @@ impl<'a> Cursor<'a> {
                 id,
                 replay,
                 max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+                blacklist: sb.journal_seq_blacklist()?,
             },
             root_level,
             root: NodePtr::from_key(&root_key)?,
@@ -372,8 +395,20 @@ impl<'a> Cursor<'a> {
         let mut max = SPOS_MAX;
         loop {
             let node = match self.cache {
-                Some(c) => c.get(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?,
-                None => read_node_upto(self.walk.dev, self.walk.sb, &ptr, self.walk.max_seq)?,
+                Some(c) => c.get(
+                    self.walk.dev,
+                    self.walk.sb,
+                    &ptr,
+                    self.walk.max_seq,
+                    &self.walk.blacklist,
+                )?,
+                None => read_node_upto(
+                    self.walk.dev,
+                    self.walk.sb,
+                    &ptr,
+                    self.walk.max_seq,
+                    &self.walk.blacklist,
+                )?,
             };
             let keys = self
                 .walk
@@ -434,12 +469,15 @@ impl NodeCache {
         sb: &Superblock,
         ptr: &NodePtr,
         max_seq: u64,
+        blacklist: &[(u64, u64)],
     ) -> Result<Node> {
+        // The blacklist is the superblock's, the same for every node a
+        // cache sees, so it is not part of the key.
         let key = (ptr.ptrs[0].offset, ptr.seq, ptr.sectors_written, max_seq);
         if let Some(n) = self.nodes.lock().ok().and_then(|m| m.get(&key).cloned()) {
             return Ok(n);
         }
-        let node = read_node_upto(dev, sb, ptr, max_seq)?;
+        let node = read_node_upto(dev, sb, ptr, max_seq, blacklist)?;
         if let Ok(mut m) = self.nodes.lock() {
             if m.len() >= NODE_CACHE_CAP {
                 m.clear();
@@ -493,12 +531,14 @@ struct Walk<'a> {
     id: u8,
     replay: Option<&'a crate::journal::Replay>,
     max_seq: u64,
+    /// The superblock's blacklisted journal sequence ranges.
+    blacklist: Vec<(u64, u64)>,
 }
 
 impl Walk<'_> {
     /// Read the node at `level` (0 = leaf) and everything below it.
     fn descend(&self, ptr: &NodePtr, level: u8, out: &mut Vec<Bkey>) -> Result<()> {
-        let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq)?;
+        let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq, &self.blacklist)?;
         let keys = self.apply(node.keys, level, node.min_key, node.max_key);
         if level == 0 {
             out.extend(keys);
@@ -568,7 +608,7 @@ const ACCOUNTING: u8 = 20;
 const ACCOUNTING_KEY: u8 = 34;
 
 pub fn read_node(dev: &dyn BlockRead, sb: &Superblock, ptr: &NodePtr) -> Result<Node> {
-    read_node_upto(dev, sb, ptr, u64::MAX)
+    read_node_upto(dev, sb, ptr, u64::MAX, &sb.journal_seq_blacklist()?)
 }
 
 fn read_node_upto(
@@ -576,6 +616,7 @@ fn read_node_upto(
     sb: &Superblock,
     ptr: &NodePtr,
     max_seq: u64,
+    blacklist: &[(u64, u64)],
 ) -> Result<Node> {
     let p = &ptr.ptrs[0];
     let len = ptr.sectors_written as usize * 512;
@@ -586,11 +627,102 @@ fn read_node_upto(
     }
     let mut b = vec![0u8; len];
     dev.read_at(p.offset * 512, &mut b)?;
-    Node::parse_upto(
+    Node::parse_filtered(
         &b,
         node_magic(&sb.uuid),
         sb.block_size as usize * 512,
         Some(ptr.seq),
         max_seq,
+        blacklist,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAGIC: u64 = 0x1234_5678_9abc_def0;
+    const SEQ: u64 = 7;
+
+    /// An unpacked dirent key at `100:offset:U32_MAX`, no value.
+    fn key(offset: u64) -> Vec<u8> {
+        let mut k = vec![5u8, 1, key_type::DIRENT, 0];
+        k.extend_from_slice(&[0u8; 12]);
+        k.extend_from_slice(&0u32.to_le_bytes());
+        k.extend_from_slice(&u32::MAX.to_le_bytes());
+        k.extend_from_slice(&offset.to_le_bytes());
+        k.extend_from_slice(&100u64.to_le_bytes());
+        k
+    }
+
+    /// A bset record: `csum[16]` then seq, journal_seq, flags (crc32c),
+    /// version, u64s, keys; the checksum over everything after it.
+    fn record(journal_seq: u64, keys: &[u8]) -> Vec<u8> {
+        let mut r = vec![0u8; 16];
+        r.extend_from_slice(&SEQ.to_le_bytes());
+        r.extend_from_slice(&journal_seq.to_le_bytes());
+        r.extend_from_slice(&1u32.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.extend_from_slice(&((keys.len() / 8) as u16).to_le_bytes());
+        r.extend_from_slice(keys);
+        let c = crate::csum::crc32c_nonzero(&r[16..]);
+        r[0..4].copy_from_slice(&c.to_le_bytes());
+        r
+    }
+
+    /// A node of two bsets in two 512-byte blocks: the header's with one
+    /// key at journal sequence 5, then an entry with one key at
+    /// `second_journal_seq`.
+    fn node(second_journal_seq: u64) -> Vec<u8> {
+        // Header up to the first bset: magic, flags, min/max key, format.
+        let mut head = vec![0u8; HEADER_BSET - 16];
+        head[0..8].copy_from_slice(&MAGIC.to_le_bytes());
+        head[64] = 5; // bkey_format: key_u64s 5, nr_fields 6, no bits
+        head[65] = 6;
+        let first = record(5, &key(1));
+        // The first record's checksum covers the header too.
+        let mut b = vec![0u8; 16];
+        b.extend_from_slice(&head);
+        b.extend_from_slice(&first[16..]);
+        let c = crate::csum::crc32c_nonzero(&b[16..]);
+        b[0..4].copy_from_slice(&c.to_le_bytes());
+        b.resize(512, 0);
+        b.extend_from_slice(&record(second_journal_seq, &key(2)));
+        b.resize(1024, 0);
+        b
+    }
+
+    #[test]
+    fn a_bset_in_a_blacklisted_range_is_ignored_and_one_at_the_range_end_is_not() {
+        let keys = |js: u64, blacklist: &[(u64, u64)]| {
+            Node::parse_filtered(&node(js), MAGIC, 512, Some(SEQ), u64::MAX, blacklist)
+                .unwrap()
+                .keys
+                .len()
+        };
+        assert_eq!(keys(15, &[]), 2, "no blacklist: both bsets");
+        assert_eq!(keys(15, &[(10, 20)]), 1, "inside the range: ignored");
+        assert_eq!(keys(10, &[(10, 20)]), 1, "at the start: ignored");
+        assert_eq!(keys(20, &[(10, 20)]), 2, "at the end: live (exclusive end)");
+        assert_eq!(keys(5, &[(10, 20)]), 2, "below the range: live");
+        assert_eq!(keys(15, &[(0, 3), (10, 20)]), 1, "any of several ranges");
+        // The replay bound still applies on top.
+        assert_eq!(
+            Node::parse_filtered(&node(30), MAGIC, 512, Some(SEQ), 29, &[])
+                .unwrap()
+                .keys
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_ignored_bset_is_still_checksummed() {
+        let mut b = node(15);
+        b[560] ^= 1; // inside the second bset's key (its record spans 512..592)
+        assert!(matches!(
+            Node::parse_filtered(&b, MAGIC, 512, Some(SEQ), u64::MAX, &[(10, 20)]),
+            Err(Error::BadChecksum { .. })
+        ));
+    }
 }

@@ -53,6 +53,7 @@ pub const FIELD_NAMES: &[&str] = &[
 
 pub const FIELD_CRYPT: u32 = 2;
 pub const FIELD_CLEAN: u32 = 6;
+pub const FIELD_JOURNAL_SEQ_BLACKLIST: u32 = 8;
 pub const FIELD_MEMBERS_V2: u32 = 11;
 
 /// Names of the 1.x metadata versions, from the version history in the
@@ -517,6 +518,37 @@ impl Superblock {
                 last_mount: le64(b, off + 32),
             });
         }
+        Ok(out)
+    }
+
+    /// The blacklisted journal sequence ranges, `(start, end)` with the end
+    /// EXCLUSIVE: a bset whose journal sequence is in `start <= seq < end`
+    /// belongs to a journal entry that was never committed and is ignored
+    /// (S1 1.3, 9.7.5). Layout INFERRED: pairs of u64 (S4: the aged image's
+    /// field reads 307..4403 after the reference replayed entries 304-306
+    /// and blacklisted 64 past the last entry read). The end is exclusive
+    /// because two live bsets of that image carry journal sequence 4403
+    /// exactly and the reference lister reads their keys (S3, S4).
+    pub fn journal_seq_blacklist(&self) -> Result<Vec<(u64, u64)>> {
+        let Some(f) = self.field(FIELD_JOURNAL_SEQ_BLACKLIST) else {
+            return Ok(Vec::new());
+        };
+        if !f.body.len().is_multiple_of(16) {
+            return Err(Error::Corrupt(
+                "journal_seq_blacklist is not whole (start, end) pairs".into(),
+            ));
+        }
+        let mut out: Vec<(u64, u64)> = f
+            .body
+            .chunks_exact(16)
+            .map(|c| (le64(c, 0), le64(c, 8)))
+            .collect();
+        if out.iter().any(|&(s, e)| s > e) {
+            return Err(Error::Corrupt(
+                "journal_seq_blacklist range ends before it starts".into(),
+            ));
+        }
+        out.sort_unstable();
         Ok(out)
     }
 
