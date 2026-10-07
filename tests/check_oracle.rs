@@ -96,13 +96,13 @@ fn where_the_reference_finds_damage_this_checker_does_too() {
             img.display()
         );
     }
-    // And on the undamaged fixture, both are clean.
-    let (theirs, text) = reference_finds_a_problem(&fixture("default.img"));
+    // And on an undamaged copy, both are clean. A copy under /share: the
+    // reference tools run in a chroot that sees /share and not /repo.
+    let clean = damaged("undamaged", |_, _| {});
+    let (theirs, text) = reference_finds_a_problem(&clean);
     assert!(
         !theirs,
         "the reference finds a problem in the fixture:\n{text}"
     );
-    assert!(check(&FileDevice::open(fixture("default.img")).unwrap())
-        .unwrap()
-        .clean());
+    assert!(check(&FileDevice::open(&clean).unwrap()).unwrap().clean());
 }
