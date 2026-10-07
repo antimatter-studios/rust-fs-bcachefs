@@ -134,6 +134,33 @@ for entry in "${sets[@]}"; do
     fi
 done
 
+# THE LARGE SET: one directory of 30000 entries, so the inodes and dirents
+# btrees are many leaves wide and a lookup that reads only its path can be
+# told from one that reads the whole tree (tests/oracle_cursor.rs).
+echo "== large (30000 files in one directory)"
+large_src="$work/large-src"
+python3 - "$large_src" <<'PY'
+import os, sys
+root = sys.argv[1]
+os.makedirs(os.path.join(root, "wide"))
+for i in range(30000):
+    with open(os.path.join(root, "wide", "entry-%05d" % i), "wb") as f:
+        f.write(b"%d\n" % i)
+PY
+truncate -s 256M "$out/large.img"
+bcachefs-ref format -q --source="$large_src" "$out/large.img" > "$out/large.format.txt" 2>&1
+manifest "$large_src" "$out/large.json"
+bcachefs-ref show-super "$out/large.img" > "$out/large.super.txt" 2>&1
+for b in inodes dirents; do
+    bcachefs-ref list -b "$b" -m formats "$out/large.img" > "$out/large.$b.formats.txt" 2>&1
+done
+if ! bcachefs-ref fsck -n "$out/large.img" > "$out/large.fsck.txt" 2>&1; then
+    echo "the reference checker did not pass large:" >&2
+    tail -n 30 "$out/large.fsck.txt" >&2
+    exit 1
+fi
+rm -rf "$large_src"
+
 # THE AGED SETS. The formatter writes every node fresh; a disk that has been
 # used looks different -- narrower key formats, nodes split and rewritten,
 # several bsets per node, deletions beside live keys. So one filesystem is
