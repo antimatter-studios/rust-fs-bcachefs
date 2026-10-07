@@ -143,7 +143,7 @@ tasks:
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
-      - cargo clippy --locked --all-targets --features cli -- -D warnings
+      - cargo clippy --locked --all-targets --features cli,write -- -D warnings
 
   staticlib:
     desc: Build the static library and its headers into this crate's dist/

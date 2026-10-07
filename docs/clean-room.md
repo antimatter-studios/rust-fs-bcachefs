@@ -233,6 +233,26 @@ by operation (positions `inode:offset:snapshot`):
   the mount's listing; checked for every path of aged and aged-unclean).
 - Namespaces seen: 0 = `user.`, 3 = `trusted.`. Others are refused, not
   guessed (open question 6).
+### The write path (`src/write.rs`, feature `write`) -- observed, then judged
+
+- A change to a node is a new bset appended after its written part, at a
+  block boundary: `btree_node_entry` csum[16], then the bset with the
+  node's seq, a journal sequence, flags = checksum type | (start sector
+  within the node << 16), the node's metadata version, u64s, keys (S8:
+  the write study's create-small appended exactly one such bset to the
+  dirents leaf, flags 0x30001 at sector 3; the aged image's nodes carry
+  0x8c, 0x85, ... at sectors 140, 133, ...: bits 16.. are the start
+  sector).
+- The parent's `btree_ptr_v2` records `sectors_written`; the reference
+  raised the root key's in the clean field from 3 to 4 (S8). The writer
+  re-states each parent's pointer key in a bset appended to the parent and
+  rewrites the root key in the clean field and every superblock copy.
+- Keys are written unpacked (format 1): the lister's `formats` mode counts
+  unpacked keys in a node, so they are allowed (S3), and the reference
+  checker passes nodes holding them (checked).
+- Judged: re-stating the newest key of the dirents, inodes and extents
+  btrees of the write-study base and of the aged image (level-1 roots)
+  leaves images the reference checker passes with nothing to fix.
 
 ## Open questions
 

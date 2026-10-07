@@ -24,6 +24,8 @@ pub mod journal;
 pub mod siphash;
 pub mod superblock;
 pub(crate) mod util;
+#[cfg(feature = "write")]
+pub mod write;
 pub mod xattr;
 
 pub use error::{Error, Result};
