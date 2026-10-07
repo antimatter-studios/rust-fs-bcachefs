@@ -120,17 +120,33 @@ impl<D: BlockDevice> Writer<D> {
     pub fn insert(&mut self, id: u8, mut keys: Vec<Bkey>) -> Result<()> {
         keys.sort_by_key(|k| k.pos);
         let (root_level, root_key) = self.root(id)?;
-        let new_root = self.insert_at(&root_key, root_level, &keys)?;
+        let new_root = self.insert_at(&root_key, root_level, &keys, true)?;
         self.set_root(id, &new_root)?;
         self.write_superblock()
     }
 
+    /// Fail, writing nothing, when inserting `keys` into btree `id` would
+    /// need a node that has no room for another bset. A transaction checks
+    /// every btree it touches before writing any of them, so a refusal
+    /// never leaves one btree updated and another not.
+    fn check_fits(&self, id: u8, keys: &[Bkey]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut keys = keys.to_vec();
+        keys.sort_by_key(|k| k.pos);
+        let (root_level, root_key) = self.root(id)?;
+        self.insert_at(&root_key, root_level, &keys, false)
+            .map(|_| ())
+    }
+
     /// Insert into the subtree under `ptr_key` (at `level`); returns the
-    /// pointer key with its new `sectors_written`.
-    fn insert_at(&self, ptr_key: &Bkey, level: u8, keys: &[Bkey]) -> Result<Bkey> {
+    /// pointer key with its new `sectors_written`. With `write` false
+    /// nothing is written: only whether every node has room is checked.
+    fn insert_at(&self, ptr_key: &Bkey, level: u8, keys: &[Bkey], write: bool) -> Result<Bkey> {
         let ptr = NodePtr::from_key(ptr_key)?;
         if level == 0 {
-            let written = self.append_bset(&ptr, keys)?;
+            let written = self.append_bset(&ptr, keys, write)?;
             return with_sectors_written(ptr_key, written);
         }
         let node = btree::read_node(&self.dev, &self.sb, &ptr)?;
@@ -145,7 +161,7 @@ impl<D: BlockDevice> Writer<D> {
         {
             let n = rest.iter().take_while(|k| k.pos <= child.pos).count();
             if n > 0 {
-                updated.push(self.insert_at(child, level - 1, &rest[..n])?);
+                updated.push(self.insert_at(child, level - 1, &rest[..n], write)?);
                 rest = &rest[n..];
             }
         }
@@ -155,13 +171,13 @@ impl<D: BlockDevice> Writer<D> {
                 rest[0].pos
             )));
         }
-        let written = self.append_bset(&ptr, &updated)?;
+        let written = self.append_bset(&ptr, &updated, write)?;
         with_sectors_written(ptr_key, written)
     }
 
-    /// Append one bset holding `keys` to the node; returns the node's new
-    /// `sectors_written`.
-    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey]) -> Result<u16> {
+    /// Append one bset holding `keys` to the node, or with `write` false
+    /// only check that it fits; returns the node's new `sectors_written`.
+    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey], write: bool) -> Result<u16> {
         let block = (self.sb.block_size as usize * 512).max(512);
         let node_bytes = self.sb.btree_node_size() as usize * 512;
         let written = ptr.sectors_written as usize * 512;
@@ -204,7 +220,9 @@ impl<D: BlockDevice> Writer<D> {
             ));
         }
         rec.resize(padded, 0);
-        self.dev.write_at(at + start as u64, &rec)?;
+        if write {
+            self.dev.write_at(at + start as u64, &rec)?;
+        }
         u16::try_from((start + padded) / 512)
             .map_err(|_| Error::Corrupt("sectors_written overflows".into()))
     }
@@ -491,13 +509,20 @@ impl<D: BlockDevice> Writer<D> {
         }
         let accounting = self.accounting_deltas(1, &counters)?;
 
-        self.insert(ids::INODES, vec![new_inode, new_parent])?;
-        self.insert(ids::DIRENTS, vec![dirent])?;
-        if let Some(k) = inline {
-            self.insert(ids::EXTENTS, vec![k])?;
+        // Every btree is checked for room before any is written.
+        let mut tx = vec![
+            (ids::INODES, vec![new_inode, new_parent]),
+            (ids::DIRENTS, vec![dirent]),
+        ];
+        tx.extend(inline.map(|k| (ids::EXTENTS, vec![k])));
+        tx.push((ids::ACCOUNTING, accounting));
+        tx.push((ids::LOGGED_OPS, vec![new_cursor]));
+        for (id, keys) in &tx {
+            self.check_fits(*id, keys)?;
         }
-        self.insert(ids::ACCOUNTING, accounting)?;
-        self.insert(ids::LOGGED_OPS, vec![new_cursor])?;
+        for (id, keys) in tx {
+            self.insert(id, keys)?;
+        }
         Ok(ino)
     }
 
