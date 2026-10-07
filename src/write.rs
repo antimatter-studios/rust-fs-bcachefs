@@ -120,17 +120,33 @@ impl<D: BlockDevice> Writer<D> {
     pub fn insert(&mut self, id: u8, mut keys: Vec<Bkey>) -> Result<()> {
         keys.sort_by_key(|k| k.pos);
         let (root_level, root_key) = self.root(id)?;
-        let new_root = self.insert_at(&root_key, root_level, &keys)?;
+        let new_root = self.insert_at(&root_key, root_level, &keys, true)?;
         self.set_root(id, &new_root)?;
         self.write_superblock()
     }
 
+    /// Fail, writing nothing, when inserting `keys` into btree `id` would
+    /// need a node that has no room for another bset. A transaction checks
+    /// every btree it touches before writing any of them, so a refusal
+    /// never leaves one btree updated and another not.
+    fn check_fits(&self, id: u8, keys: &[Bkey]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut keys = keys.to_vec();
+        keys.sort_by_key(|k| k.pos);
+        let (root_level, root_key) = self.root(id)?;
+        self.insert_at(&root_key, root_level, &keys, false)
+            .map(|_| ())
+    }
+
     /// Insert into the subtree under `ptr_key` (at `level`); returns the
-    /// pointer key with its new `sectors_written`.
-    fn insert_at(&self, ptr_key: &Bkey, level: u8, keys: &[Bkey]) -> Result<Bkey> {
+    /// pointer key with its new `sectors_written`. With `write` false
+    /// nothing is written: only whether every node has room is checked.
+    fn insert_at(&self, ptr_key: &Bkey, level: u8, keys: &[Bkey], write: bool) -> Result<Bkey> {
         let ptr = NodePtr::from_key(ptr_key)?;
         if level == 0 {
-            let written = self.append_bset(&ptr, keys)?;
+            let written = self.append_bset(&ptr, keys, write)?;
             return with_sectors_written(ptr_key, written);
         }
         let node = btree::read_node(&self.dev, &self.sb, &ptr)?;
@@ -145,7 +161,7 @@ impl<D: BlockDevice> Writer<D> {
         {
             let n = rest.iter().take_while(|k| k.pos <= child.pos).count();
             if n > 0 {
-                updated.push(self.insert_at(child, level - 1, &rest[..n])?);
+                updated.push(self.insert_at(child, level - 1, &rest[..n], write)?);
                 rest = &rest[n..];
             }
         }
@@ -155,13 +171,13 @@ impl<D: BlockDevice> Writer<D> {
                 rest[0].pos
             )));
         }
-        let written = self.append_bset(&ptr, &updated)?;
+        let written = self.append_bset(&ptr, &updated, write)?;
         with_sectors_written(ptr_key, written)
     }
 
-    /// Append one bset holding `keys` to the node; returns the node's new
-    /// `sectors_written`.
-    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey]) -> Result<u16> {
+    /// Append one bset holding `keys` to the node, or with `write` false
+    /// only check that it fits; returns the node's new `sectors_written`.
+    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey], write: bool) -> Result<u16> {
         let block = (self.sb.block_size as usize * 512).max(512);
         let node_bytes = self.sb.btree_node_size() as usize * 512;
         let written = ptr.sectors_written as usize * 512;
@@ -204,7 +220,9 @@ impl<D: BlockDevice> Writer<D> {
             ));
         }
         rec.resize(padded, 0);
-        self.dev.write_at(at + start as u64, &rec)?;
+        if write {
+            self.dev.write_at(at + start as u64, &rec)?;
+        }
         u16::try_from((start + padded) / 512)
             .map_err(|_| Error::Corrupt("sectors_written overflows".into()))
     }
@@ -292,5 +310,256 @@ pub fn pos(inode: u64, offset: u64) -> Bpos {
         inode,
         offset,
         snapshot: u32::MAX,
+    }
+}
+
+/// The btrees and key types the file operations touch.
+mod ids {
+    pub const EXTENTS: u8 = 0;
+    pub const INODES: u8 = 1;
+    pub const DIRENTS: u8 = 2;
+    pub const LOGGED_OPS: u8 = 17;
+    pub const ACCOUNTING: u8 = 20;
+    pub const INODE_ALLOC_CURSOR: u8 = 35;
+    pub const ACCOUNTING_KEY: u8 = 34;
+}
+
+/// The largest file this writer stores inline. The reference
+/// implementation was seen storing up to 248 bytes inline (the aged
+/// fixture) and nothing of 2024 bytes or more; past what was seen is not
+/// guessed.
+pub const INLINE_MAX: usize = 248;
+
+/// Varint positions in an `inode_v3`, as the lister orders the fields
+/// (the four times take two varints each).
+mod field {
+    pub const ATIME: usize = 0;
+    pub const CTIME: usize = 2;
+    pub const MTIME: usize = 4;
+    pub const OTIME: usize = 6;
+    pub const UID: usize = 8;
+    pub const GID: usize = 9;
+    pub const DIR: usize = 23;
+    pub const DIR_OFFSET: usize = 24;
+    /// Fields stored by a regular file the reference created.
+    pub const FILE_FIELDS: u64 = 21;
+}
+
+/// The accounting key counting the keys and bytes a btree holds in the
+/// all-ones snapshot: kind 5 in the top byte, the snapshot id, the btree id
+/// at bits 16..24 (S8: `snapshot id=4294967295 btree=NAME` at
+/// 0x05ffffffff000000 + id << 16; its value is keys, bytes, 0).
+fn btree_counter_pos(id: u8) -> Bpos {
+    Bpos {
+        inode: 0x05ff_ffff_ff00_0000 | (u64::from(id) << 16),
+        offset: 0,
+        snapshot: 0,
+    }
+}
+
+fn unpacked_bytes(k: &Bkey) -> i64 {
+    (40 + k.value.len()) as i64
+}
+
+impl<D: BlockDevice> Writer<D> {
+    /// Every leaf key of btree `id`, as it stands.
+    fn keys(&self, id: u8) -> Result<Vec<Bkey>> {
+        btree::walk(&self.dev, &self.sb, id)
+    }
+
+    fn key_at(&self, id: u8, pos: Bpos) -> Result<Option<Bkey>> {
+        Ok(self.keys(id)?.into_iter().find(|k| k.pos == pos))
+    }
+
+    /// Nanoseconds since the filesystem's time base, the unit inode times
+    /// are stored in (S8: precision 1, base in nanoseconds since the epoch).
+    fn now(&self) -> u64 {
+        let ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        ns.saturating_sub(self.sb.time_base_lo)
+    }
+
+    /// Create a regular file named `name` in directory `parent` holding
+    /// `data` (at most [`INLINE_MAX`] bytes, stored inline). Returns its
+    /// inode number.
+    pub fn create_file(&mut self, parent: u64, name: &[u8], data: &[u8], mode: u32) -> Result<u64> {
+        if data.len() > INLINE_MAX {
+            return Err(Error::Unsupported(format!(
+                "files over {INLINE_MAX} bytes need allocation, which is not implemented"
+            )));
+        }
+        if name.is_empty() || name.len() > 255 || name.contains(&b'/') || name.contains(&0) {
+            return Err(Error::Corrupt("not a valid file name".into()));
+        }
+        let parent_key = self
+            .key_at(ids::INODES, pos(0, parent))?
+            .ok_or_else(|| Error::NotFound(format!("inode {parent}")))?;
+        let mut parent_raw = crate::inode::InodeV3Raw::parse(&parent_key.value)?;
+        if parent_raw.mode() & 0o170000 != 0o040000 {
+            return Err(Error::Corrupt(format!("inode {parent} is not a directory")));
+        }
+        let offset = crate::inode::dirent_hash(parent_raw.hash_seed, name);
+        let dirent_pos = pos(parent, offset);
+        if self.key_at(ids::DIRENTS, dirent_pos)?.is_some() {
+            return Err(Error::Unsupported(
+                "the name's hash slot is taken: hash collisions are not handled".into(),
+            ));
+        }
+
+        // The next inode number, from the inode allocation cursor (S8: the
+        // reference advanced it by one per create).
+        let cursor = self
+            .keys(ids::LOGGED_OPS)?
+            .into_iter()
+            .find(|k| k.key_type == ids::INODE_ALLOC_CURSOR)
+            .ok_or_else(|| Error::Unsupported("no inode allocation cursor".into()))?;
+        if cursor.value.len() < 16 {
+            return Err(Error::Corrupt("inode allocation cursor too short".into()));
+        }
+        let ino = le64(&cursor.value, 8);
+        if self.key_at(ids::INODES, pos(0, ino))?.is_some() {
+            return Err(Error::Unsupported(format!(
+                "inode {ino}, the cursor's next, is in use: searching for a free one is not implemented"
+            )));
+        }
+        let mut new_cursor = cursor.clone();
+        new_cursor.value[8..16].copy_from_slice(&(ino + 1).to_le_bytes());
+
+        let now = self.now();
+        let sectors = data.len().div_ceil(512) as u64;
+        let mut varints = vec![0u64; 25];
+        for t in [field::ATIME, field::CTIME, field::MTIME, field::OTIME] {
+            varints[t] = now;
+        }
+        varints[field::UID] = 0;
+        varints[field::GID] = 0;
+        varints[field::DIR] = parent;
+        varints[field::DIR_OFFSET] = offset;
+        // The fixed flags bits as the reference set them on a file: its
+        // own hash type and the four bits not yet understood come from the
+        // parent, which shares them in every fixture.
+        let inherited = parent_raw.flags & (0xf << 20 | 0xf << 32);
+        let inode = crate::inode::InodeV3Raw {
+            journal_seq: self.journal_seq,
+            hash_seed: crate::siphash::siphash24(now, ino, name),
+            flags: inherited
+                | field::FILE_FIELDS << 24
+                | u64::from(0o100000 | (mode & 0o7777)) << 36,
+            sectors,
+            size: data.len() as u64,
+            version: 0,
+            varints,
+        };
+        let new_inode = Bkey {
+            key_type: key_type::INODE_V3,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: pos(0, ino),
+            value: inode.encode(),
+        };
+        parent_raw.varints[field::CTIME] = now;
+        parent_raw.varints[field::MTIME] = now;
+        parent_raw.journal_seq = self.journal_seq;
+        let new_parent = Bkey {
+            value: parent_raw.encode(),
+            ..parent_key.clone()
+        };
+        let dirent = Bkey {
+            key_type: key_type::DIRENT,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: dirent_pos,
+            value: crate::inode::Dirent {
+                dir: parent,
+                name: name.to_vec(),
+                inum: ino,
+                d_type: 8,
+            }
+            .encode_value(),
+        };
+        let inline = (!data.is_empty()).then(|| {
+            let mut value = data.to_vec();
+            value.resize(value.len().div_ceil(8) * 8, 0);
+            Bkey {
+                key_type: key_type::INLINE_DATA,
+                size: sectors as u32,
+                version_hi: 0,
+                version_lo: 0,
+                pos: pos(ino, sectors),
+                value,
+            }
+        });
+
+        // Accounting: one more inode, and each btree's key count and bytes.
+        let mut counters: Vec<(u8, i64, i64)> = vec![
+            (
+                ids::INODES,
+                1,
+                unpacked_bytes(&new_inode) + unpacked_bytes(&new_parent)
+                    - unpacked_bytes(&parent_key),
+            ),
+            (ids::DIRENTS, 1, unpacked_bytes(&dirent)),
+        ];
+        if let Some(k) = &inline {
+            counters.push((ids::EXTENTS, 1, unpacked_bytes(k)));
+        }
+        let accounting = self.accounting_deltas(1, &counters)?;
+
+        // Every btree is checked for room before any is written.
+        let mut tx = vec![
+            (ids::INODES, vec![new_inode, new_parent]),
+            (ids::DIRENTS, vec![dirent]),
+        ];
+        tx.extend(inline.map(|k| (ids::EXTENTS, vec![k])));
+        tx.push((ids::ACCOUNTING, accounting));
+        tx.push((ids::LOGGED_OPS, vec![new_cursor]));
+        for (id, keys) in &tx {
+            self.check_fits(*id, keys)?;
+        }
+        for (id, keys) in tx {
+            self.insert(id, keys)?;
+        }
+        Ok(ino)
+    }
+
+    /// The accounting keys after adding `inodes` to the inode count and
+    /// `(btree, keys, bytes)` to each btree's counter.
+    fn accounting_deltas(&self, inodes: i64, counters: &[(u8, i64, i64)]) -> Result<Vec<Bkey>> {
+        let all = self.keys(ids::ACCOUNTING)?;
+        let find = |p: Bpos| {
+            all.iter()
+                .find(|k| k.pos == p && k.key_type == ids::ACCOUNTING_KEY)
+                .cloned()
+                .ok_or_else(|| Error::Unsupported(format!("no accounting key at {p}")))
+        };
+        let add = |k: &mut Bkey, i: usize, d: i64| -> Result<()> {
+            let at = i * 8;
+            if k.value.len() < at + 8 {
+                return Err(Error::Corrupt(format!(
+                    "accounting key {} too short",
+                    k.pos
+                )));
+            }
+            let v = le64(&k.value, at)
+                .checked_add_signed(d)
+                .ok_or_else(|| Error::Corrupt("an accounting counter would go negative".into()))?;
+            k.value[at..at + 8].copy_from_slice(&v.to_le_bytes());
+            Ok(())
+        };
+        let mut out = Vec::new();
+        let mut nr = find(Bpos::default())?;
+        add(&mut nr, 0, inodes)?;
+        out.push(nr);
+        for &(id, keys, bytes) in counters {
+            let mut k = find(btree_counter_pos(id))?;
+            add(&mut k, 0, keys)?;
+            add(&mut k, 1, bytes)?;
+            out.push(k);
+        }
+        Ok(out)
     }
 }

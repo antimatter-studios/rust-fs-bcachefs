@@ -136,3 +136,107 @@ fn an_identity_edit_passes_the_reference_checker() {
         assert_eq!(root, theirs, "{test}: entries in /");
     }
 }
+
+/// Files this crate creates in an existing directory: the reference
+/// checker passes the image, and the reference implementation lists each
+/// file and reads back its bytes, size and mode.
+#[test]
+fn small_files_created_here_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "create-small");
+    let files: Vec<(&str, Vec<u8>, u32)> = vec![
+        ("new.txt", b"hello\n".to_vec(), 0o644),
+        ("empty", Vec::new(), 0o600),
+        (
+            "full-inline.bin",
+            (0..248u32).map(|i| (i * 7) as u8).collect(),
+            0o640,
+        ),
+        (
+            "a-rather-longer-name-for-a-file-created-by-this-writer.txt",
+            b"x".to_vec(),
+            0o644,
+        ),
+    ];
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for (name, data, mode) in &files {
+        w.create_file(dir, name.as_bytes(), data, *mode)
+            .unwrap_or_else(|e| panic!("create {name}: {e}"));
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    with_reference_mount(&img, |m| {
+        let mut listed: Vec<String> = std::fs::read_dir(m.join("d"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        listed.sort();
+        let mut want: Vec<String> = files.iter().map(|f| f.0.to_string()).collect();
+        want.push("existing".into());
+        want.sort();
+        assert_eq!(listed, want, "the reference's listing of /d");
+        for (name, data, mode) in &files {
+            let p = m.join("d").join(name);
+            assert_eq!(
+                &std::fs::read(&p).unwrap(),
+                data,
+                "{name}: bytes, as the reference reads them"
+            );
+            use std::os::unix::fs::PermissionsExt;
+            let md = std::fs::metadata(&p).unwrap();
+            assert_eq!(md.permissions().mode() & 0o7777, *mode, "{name}: mode");
+            assert_eq!(md.len(), data.len() as u64, "{name}: size");
+            let ours = fs.read(fs.lookup(&format!("/d/{name}")).unwrap()).unwrap();
+            assert_eq!(&ours, data, "{name}: bytes, as this crate reads them");
+        }
+    });
+}
+
+/// The same creations in the aged image, whose btrees are two levels deep
+/// and whose leaves hold many bsets.
+#[test]
+fn a_file_created_in_the_aged_image_is_read_by_the_reference() {
+    let img = scratch("aged.img", "create-aged");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/many").unwrap()
+    };
+    // The aged image is aged by a live mount, so how full its leaves are
+    // differs from one fixture build to the next. Until nodes are split, a
+    // full leaf must be refused before anything is written, and the
+    // untouched image still passes the reference checker.
+    let before = std::fs::read(&img).unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    match w.create_file(
+        dir,
+        b"written-by-this-crate",
+        b"appended to an aged tree\n",
+        0o644,
+    ) {
+        Ok(_) => {}
+        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
+            drop(w);
+            assert!(
+                std::fs::read(&img).unwrap() == before,
+                "refused, but written"
+            );
+            assert_fsck_clean(&img);
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert_eq!(
+            std::fs::read(m.join("many/written-by-this-crate")).unwrap(),
+            b"appended to an aged tree\n"
+        );
+        // Everything that was there still is.
+        assert!(std::fs::read_dir(m.join("many")).unwrap().count() > 1000);
+    });
+}

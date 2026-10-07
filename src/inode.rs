@@ -242,3 +242,110 @@ mod tests {
         assert!(varint(&[0x03]).is_err());
     }
 }
+
+/// Encode a varint: the inverse of [`varint`]. The shortest length `n` (1 to
+/// 8 bytes) whose `7 * n` value bits hold it, marked by `n - 1` trailing one
+/// bits and a zero; past 56 bits, 0xff and the 8 bytes verbatim.
+pub fn varint_encode(v: u64, out: &mut Vec<u8>) {
+    for n in 1..=8usize {
+        if v < 1u64 << (7 * n) {
+            let word = (v << n) | ((1u64 << (n - 1)) - 1);
+            out.extend_from_slice(&word.to_le_bytes()[..n]);
+            return;
+        }
+    }
+    out.push(0xff);
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// An `inode_v3` value as stored, every field kept: the fixed part, then
+/// the varints exactly as many as were stored (each time is two varints).
+/// Decoding then encoding gives back the same bytes (checked against every
+/// inode of every fixture).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InodeV3Raw {
+    pub journal_seq: u64,
+    pub hash_seed: u64,
+    /// bi_flags in bits 0..20, hash type 20..24, number of varint fields
+    /// 24..32, four bits not yet understood 32..36, mode 36..52.
+    pub flags: u64,
+    pub sectors: u64,
+    pub size: u64,
+    pub version: u64,
+    pub varints: Vec<u64>,
+}
+
+/// The varint fields that take two varints: the four times, which come
+/// first.
+const TWO_VARINT_FIELDS: usize = 4;
+
+impl InodeV3Raw {
+    pub fn parse(v: &[u8]) -> Result<Self> {
+        if v.len() < 48 {
+            return Err(Error::Corrupt(
+                "inode_v3 shorter than its fixed part".into(),
+            ));
+        }
+        let flags = le64(v, 16);
+        let nr_fields = ((flags >> 24) & 0xff) as usize;
+        let n = nr_fields + nr_fields.min(TWO_VARINT_FIELDS);
+        let mut varints = Vec::with_capacity(n);
+        let mut p = 48;
+        for _ in 0..n {
+            let (val, len) = varint(&v[p.min(v.len())..])?;
+            varints.push(val);
+            p += len;
+        }
+        if v[p..].iter().any(|&b| b != 0) {
+            return Err(Error::Corrupt(
+                "inode_v3 has bytes after its last field".into(),
+            ));
+        }
+        Ok(InodeV3Raw {
+            journal_seq: le64(v, 0),
+            hash_seed: le64(v, 8),
+            flags,
+            sectors: le64(v, 24),
+            size: le64(v, 32),
+            version: le64(v, 40),
+            varints,
+        })
+    }
+
+    pub fn mode(&self) -> u32 {
+        ((self.flags >> 36) & 0xffff) as u32
+    }
+
+    /// The value bytes, zero-padded to a whole u64.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(96);
+        for f in [
+            self.journal_seq,
+            self.hash_seed,
+            self.flags,
+            self.sectors,
+            self.size,
+            self.version,
+        ] {
+            b.extend_from_slice(&f.to_le_bytes());
+        }
+        for &v in &self.varints {
+            varint_encode(v, &mut b);
+        }
+        b.resize(b.len().div_ceil(8) * 8, 0);
+        b
+    }
+}
+
+impl Dirent {
+    /// The value bytes: target inode u64, DT_* type u8, the name, zero
+    /// padding to a whole u64.
+    pub fn encode_value(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(16 + self.name.len());
+        b.extend_from_slice(&self.inum.to_le_bytes());
+        b.push(self.d_type);
+        b.extend_from_slice(&self.name);
+        b.resize(b.len().div_ceil(8) * 8, 0);
+        b
+    }
+}

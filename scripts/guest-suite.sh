@@ -25,7 +25,7 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
     fs-bcachefs /share rust-fs-core -- bash -c '
         set -euo pipefail
         EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib --test fuzz_decoders "$@"
-        cargo test --locked --release --test "oracle_*" --test capi "$@"
+        cargo test --locked --release --features write --test "oracle_*" --test capi "$@"
         # The checker against the reference checker, which only exists in here.
         cargo test --locked --release --test check_oracle "$@"
         # The write path, judged by the reference tools that only exist in
