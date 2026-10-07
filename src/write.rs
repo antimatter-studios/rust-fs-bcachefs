@@ -934,3 +934,52 @@ impl<D: BlockDevice> Writer<D> {
         Ok(out)
     }
 }
+
+impl<D: BlockDevice> Writer<D> {
+    /// Create a symlink named `name` in `parent` pointing at `target`.
+    pub fn symlink(&mut self, parent: u64, name: &[u8], target: &[u8]) -> Result<u64> {
+        Err(Error::Unsupported(format!(
+            "symlink is not implemented yet ({parent}, {}, {})",
+            name.len(),
+            target.len()
+        )))
+    }
+
+    /// Give inode `ino` one more name: `name` in `dir`.
+    pub fn link(&mut self, ino: u64, dir: u64, name: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "link is not implemented yet ({ino}, {dir}, {})",
+            name.len()
+        )))
+    }
+
+    /// Change an inode's permissions and owner; `None` leaves one as it is.
+    pub fn set_attributes(
+        &mut self,
+        ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "set_attributes is not implemented yet ({ino}, {mode:?}, {uid:?}, {gid:?})"
+        )))
+    }
+
+    /// Set the extended attribute `name` (with its namespace, `user.x`).
+    pub fn set_xattr(&mut self, ino: u64, name: &[u8], value: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "set_xattr is not implemented yet ({ino}, {}, {})",
+            name.len(),
+            value.len()
+        )))
+    }
+
+    /// Remove the extended attribute `name`.
+    pub fn remove_xattr(&mut self, ino: u64, name: &[u8]) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "remove_xattr is not implemented yet ({ino}, {})",
+            name.len()
+        )))
+    }
+}
