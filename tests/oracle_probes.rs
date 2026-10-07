@@ -106,20 +106,20 @@ fn the_probe_image_is_refused_or_read_according_to_what_the_mount_honoured() {
         );
     }
 
-    // Reflink: a clone the mount made must read as its source (#7); a clone
-    // the mount refused to make does not exist.
+    // Reflink: a clone the mount made must read as its source (#7). One it
+    // refused to make is left behind by cp as an empty file (the mount's own
+    // listing in probe.txt shows `clone` at 0 bytes), or not at all.
     match fs.lookup("/sub/clone") {
-        Ok(clone) => {
-            assert!(
-                reflink,
-                "a clone exists but probe.txt says cp --reflink failed"
-            );
-            assert_eq!(
-                fs.read(clone).unwrap(),
-                b"probe\n",
-                "the reflinked clone does not read as its source"
-            );
-        }
+        Ok(clone) if reflink => assert_eq!(
+            fs.read(clone).unwrap(),
+            b"probe\n",
+            "the reflinked clone does not read as its source"
+        ),
+        Ok(clone) => assert_eq!(
+            fs.read(clone).unwrap(),
+            b"",
+            "cp --reflink failed but left a clone with data in it"
+        ),
         Err(Error::NotFound(_)) => {
             assert!(!reflink, "cp --reflink succeeded but the clone is missing")
         }

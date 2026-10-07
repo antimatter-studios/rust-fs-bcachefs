@@ -340,9 +340,14 @@ bcachefs-ref format -q "$probe_img" > "$out/probe.format.txt" 2>&1
         echo "Mixed" > "$m/casefold/Name" 2>&1 || echo "exit $?"
         echo "## reflink via cp --reflink=always"
         cp --reflink=always "$m/sub/file" "$m/sub/clone" 2>&1 || echo "exit $?"
-        sync
         echo "## listing"
         ls -laR "$m" 2>&1 || true
+        # The daemon is killed, so what reaches the image is what the journal
+        # flushed: the wait outlasts its flush delay (1 s by default), as the
+        # write study's settle does. Without it the image held none of the
+        # above (measured in CI: the lister found only lost+found).
+        sync
+        sleep 2
         fuse_kill
     else
         echo "the reference implementation did not mount the probe image"
