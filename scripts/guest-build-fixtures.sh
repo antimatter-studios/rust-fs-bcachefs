@@ -113,6 +113,11 @@ sets=(
     # still find every name (by scanning), the writer must refuse to place
     # one, and the lister's `hash_type=` pairs the number with the name.
     "strhash|--str_hash=crc32c"
+    # Background compression asks the reconcile subsystem to recompress
+    # extents later (S1 2.1.3, 9.1.9): if the formatter marks its extents
+    # with a reconcile entry (S1 9.1.3.5), this set's extents listing is
+    # where its layout is first seen (docs/clean-room.md, open question 19).
+    "bgcompress|--background_compression=lz4"
 )
 
 src="$work/src"

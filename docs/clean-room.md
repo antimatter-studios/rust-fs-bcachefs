@@ -536,9 +536,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     not support the option).
 19. **Extent entries beyond ptr, crc32 and crc64.** S1 (9.1.3, 9.1.12)
     names crc128 (24 bytes, required under encryption), stripe pointers
-    (erasure coding) and a `reconcile` entry recording IO options, e.g.
-    `[crc32, ptr, ptr, reconcile]`. Their sizes are not observed, so the
-    reader refuses any extent carrying one rather than skipping it (issue #52).
+    (erasure coding), a flags entry (poisoned) and a `reconcile` entry
+    recording IO options, e.g. `[crc32, ptr, ptr, reconcile]`. Their sizes
+    are not observed, so the reader refuses any extent carrying one,
+    naming the kind by S1 9.1.3's order (3 crc128, 4 stripe_ptr, 5 flags,
+    6 reconcile -- inferred from the order alone; issue #52). The
+    `bgcompress` fixture (`--background_compression=lz4`) is built so a
+    reconcile entry, if the formatter writes one, is first seen in its
+    extents listing.
 
 ## Confirmation
 
