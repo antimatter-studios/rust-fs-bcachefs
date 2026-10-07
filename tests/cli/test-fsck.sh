@@ -17,7 +17,8 @@ printf '\377' | dd of="$SANDBOX/damaged.img" bs=1 seek=$((4096 + 72)) conv=notru
 fsck.bcachefs "$SANDBOX/damaged.img" >"$SANDBOX/out.json" 2>"$SANDBOX/err"
 status=$?
 check "a damaged superblock: fsck exits 4 (got $status)" test "$status" -eq 4
-check "a damaged superblock: the report names it" jq -e '[.problems[].kind] | index("superblock_checksum") != null' "$SANDBOX/out.json" >/dev/null
+# The copy at 2056 is read instead, and the dead primary is what is reported.
+check "a damaged superblock: the report names the dead copy" jq -e '[.problems[].kind] == ["superblock_copy"]' "$SANDBOX/out.json" >/dev/null
 
 fsck.bcachefs -y "$FIXTURES/default.img" >/dev/null 2>&1
 status=$?

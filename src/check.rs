@@ -68,10 +68,20 @@ impl Report {
 /// problem it can name is in the report.
 pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     let mut r = Report::default();
-    let sb = match Superblock::read(dev) {
-        Ok(sb) => sb,
-        Err(e @ Error::BadChecksum { .. }) => {
-            r.add("superblock_checksum", e.to_string());
+    let sb = match Superblock::read_copies(dev) {
+        Ok((sb, failed)) => {
+            // A copy that does not read is damage even when another copy
+            // does: the next torn write has one fewer to fall back on.
+            for (sector, e) in failed {
+                r.add("superblock_copy", format!("copy at sector {sector}: {e}"));
+            }
+            sb
+        }
+        Err(e @ (Error::BadChecksum { .. } | Error::BadMagic { .. })) => {
+            r.add(
+                "superblock",
+                format!("no copy of the superblock reads: {e}"),
+            );
             return Ok(r);
         }
         Err(e) => return Err(e),

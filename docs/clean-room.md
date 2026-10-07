@@ -487,11 +487,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     `user.greeting`, the first set in the session) are not at the computed
     slot, and no candidate tried places them; the writer puts new ones at
     the computed slot, where the reference's own lookups find them.
-16. **Superblock copies.** S1 (9.5.1): the copy with the highest valid
-    `seq` is authoritative, and the standalone layout at sector 7 is
-    consulted when the primary cannot be read. This reader reads the
-    primary only (issue #49); a fixture with a torn
-    primary and a fixture whose backup carries a higher `seq` are needed.
+16. **Superblock copies.** SETTLED. S1 (9.5.1): the copy with the highest
+    valid `seq` is authoritative, and the standalone layout at sector 7 is
+    consulted when the primary cannot be read. Observed (S4): every fixture
+    carries three copies, at sectors 8 and 2056 and at the end of the
+    device, each recording its own offset, all with one `seq`. The reader
+    reads every copy and takes the highest `seq`, falling back to the
+    layout at 3584 when the primary does not read; the checker reports a
+    copy that does not read (`tests/oracle_superblock_copies.rs`).
 17. **The string hash.** S1 (7.7): the `str_hash` option is one of crc32c,
     crc64 or siphash (the default), for dirents and xattrs alike; the
     inode's flags bits 20..23 carry a hash type (inferred, above). Every

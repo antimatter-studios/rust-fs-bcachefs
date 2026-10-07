@@ -97,12 +97,23 @@ fn damaged_file_data_is_found() {
     assert!(kinds(&p).contains(&"extent_data"), "{:?}", kinds(&p));
 }
 
+/// A damaged primary no longer stops the check: the copy at 2056 is read
+/// instead, the dead copy is reported, and the rest of the filesystem is
+/// still checked (and clean).
 #[test]
 fn a_damaged_superblock_is_found() {
     let p = damaged("default", "superblock", |b, _| b[4096 + 0x48] ^= 0xff);
-    assert!(
-        kinds(&p).contains(&"superblock_checksum"),
-        "{:?}",
-        kinds(&p)
-    );
+    assert_eq!(kinds(&p), vec!["superblock_copy"], "{p:?}");
+}
+
+/// With every copy damaged there is nothing to check from, and the report
+/// says so instead of the checker failing outright.
+#[test]
+fn a_superblock_with_no_readable_copy_is_reported() {
+    let p = damaged("default", "superblock-all", |b, sb| {
+        for &sector in &sb.layout.sb_offsets {
+            b[(sector * 512) as usize + 0x48] ^= 0xff;
+        }
+    });
+    assert_eq!(kinds(&p), vec!["superblock"], "{p:?}");
 }

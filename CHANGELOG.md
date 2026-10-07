@@ -111,3 +111,6 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **Every superblock copy is read and the highest `seq` wins** (#49), with
+  the layout at sector 7 as the fallback when the primary is gone;
+  `fsck.bcachefs` reports a copy that does not read (`superblock_copy`).
