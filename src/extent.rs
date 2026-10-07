@@ -116,21 +116,19 @@ fn bits(w: u64, lo: u32, n: u32) -> u64 {
 }
 
 /// The name of an extent entry kind, by the position of its first set bit.
-/// 0 to 2 are decoded here and checked against the lister. 3 to 6 follow
-/// S1 9.1.3's order of the remaining kinds (crc128, then the stripe
-/// pointer, the flags entry and the reconcile entry) and are INFERRED from
-/// that order alone: none has been seen in a fixture, and only crc128's
-/// size (24 bytes) is documented, so an extent carrying one is refused by
-/// name rather than decoded (docs/clean-room.md, open question 19).
+/// 0 to 2 are decoded here and checked against the lister. 7 is the
+/// reconcile entry, OBSERVED on the `bgcompress` fixture: the lister prints
+/// `reconcile: need_rb=...` for each extent whose value carries a word with
+/// bit 7 first. S1 9.1.3 lists crc128, the stripe pointer and the flags
+/// entry before reconcile, but reconcile sitting at 7 rather than 6 shows
+/// that order does not give the bit positions, so 3 to 6 are left unnamed
+/// until a fixture shows them (docs/clean-room.md, open question 19).
 pub fn entry_kind_name(first_set_bit: u32) -> &'static str {
     match first_set_bit {
         0 => "ptr",
         1 => "crc32",
         2 => "crc64",
-        3 => "crc128",
-        4 => "stripe_ptr",
-        5 => "flags",
-        6 => "reconcile",
+        7 => "reconcile",
         _ => "unknown",
     }
 }
@@ -182,6 +180,16 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
                     csum_lo: le64(v, p + 8),
                 }));
                 p += 16;
+            }
+            7 => {
+                // Reconcile: pending background work and the IO options it
+                // is for, not where the data is. One word, MEASURED: on the
+                // `bgcompress` fixture every crc32+ptr extent is 7 u64s
+                // without it and 8 with it (302 of 302), and its word reads
+                // 0x0000_0010_9010_0080 for `need_rb=background_compression
+                // replicas=1 checksum=crc32c background_compression=lz4`.
+                // Its fields are not decoded; the data reads without them.
+                p += 8;
             }
             t => {
                 return Err(Error::Unsupported(format!(
@@ -283,13 +291,27 @@ mod tests {
     #[test]
     fn unknown_or_truncated_entries_are_refused_by_name() {
         match parse_entries(&0x8u64.to_le_bytes()) {
-            Err(Error::Unsupported(m)) => assert!(m.contains("crc128"), "{m}"),
+            Err(Error::Unsupported(m)) => assert!(m.contains("type 3 (unknown)"), "{m}"),
             other => panic!("{other:?}"),
         }
         match parse_entries(&0x40u64.to_le_bytes()) {
-            Err(Error::Unsupported(m)) => assert!(m.contains("reconcile"), "{m}"),
+            Err(Error::Unsupported(m)) => assert!(m.contains("type 6 (unknown)"), "{m}"),
             other => panic!("{other:?}"),
         }
         assert!(parse_entries(&0x4u64.to_le_bytes()).is_err());
+    }
+
+    /// The `bgcompress` fixture's crc32, ptr and reconcile words, as found
+    /// in its image: the reconcile word is passed over and the data
+    /// entries around it decode.
+    #[test]
+    fn a_reconcile_entry_is_passed_over() {
+        let mut v = Vec::new();
+        for w in [0x40f8_e88f_0500_0002u64, 0x4_dea1, 0x10_9010_0080] {
+            v.extend_from_slice(&w.to_le_bytes());
+        }
+        let e = parse_entries(&v).unwrap();
+        assert_eq!(e.len(), 2, "{e:?}");
+        assert!(matches!(e[0], ExtentEntry::Crc(_)) && matches!(e[1], ExtentEntry::Ptr(_)));
     }
 }

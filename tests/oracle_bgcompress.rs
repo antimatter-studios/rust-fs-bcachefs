@@ -31,10 +31,14 @@ fn every_file_reads_or_the_refusal_names_the_entry_kind_and_the_lister_shows_it(
                 files += 1;
             }
             Err(Error::Unsupported(m)) if m.contains("extent entry type") => {
+                // The inode's first key and the entry lines indented under it.
+                let key = format!(" {ino}:");
                 let seen: Vec<&str> = listing
                     .lines()
-                    .filter(|l| l.contains(&format!(" {ino}:")) || l.starts_with("u64s"))
-                    .take(6)
+                    .skip_while(|l| !(l.starts_with("u64s") && l.contains(&key)))
+                    .enumerate()
+                    .take_while(|(i, l)| *i == 0 || l.starts_with(' '))
+                    .map(|(_, l)| l)
                     .collect();
                 panic!(
                     "{}: {m}\nthe lister's view of inode {ino}'s extents (bgcompress.extents.txt):\n{}",

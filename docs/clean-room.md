@@ -541,13 +541,21 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 19. **Extent entries beyond ptr, crc32 and crc64.** S1 (9.1.3, 9.1.12)
     names crc128 (24 bytes, required under encryption), stripe pointers
     (erasure coding), a flags entry (poisoned) and a `reconcile` entry
-    recording IO options, e.g. `[crc32, ptr, ptr, reconcile]`. Their sizes
-    are not observed, so the reader refuses any extent carrying one,
-    naming the kind by S1 9.1.3's order (3 crc128, 4 stripe_ptr, 5 flags,
-    6 reconcile -- inferred from the order alone; issue #52). The
-    `bgcompress` fixture (`--background_compression=lz4`) is built so a
-    reconcile entry, if the formatter writes one, is first seen in its
-    extents listing.
+    recording IO options, e.g. `[crc32, ptr, ptr, reconcile]`.
+    **Reconcile is answered by the `bgcompress` fixture**
+    (`--background_compression=lz4`, S3, S4): its listing shows
+    `reconcile: need_rb=background_compression replicas=1 checksum=crc32c
+    background_compression=lz4` after the pointer of 302 of its 440
+    extents; those keys are 8 u64s against 7 for the same `[crc32, ptr]`
+    without it, and the extra word in the image is
+    `0x0000_0010_9010_0080`, whose first set bit is 7. The reader passes
+    over that one word and reads the data; the files read back to the
+    mount's SHA-256 (`tests/oracle_bgcompress.rs`). Still open: the
+    word's fields, and whether it can be longer with other options set.
+    Bit 7 rather than the 6 S1's order suggested shows the order does not
+    give bit positions, so 3 to 6 (crc128, stripe_ptr and flags in some
+    arrangement) are refused as unknown kinds until a fixture shows them
+    (issue #52).
 
 ## Confirmation
 
