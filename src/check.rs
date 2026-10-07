@@ -6,9 +6,12 @@
 //! node's range); every directory entry against the inode it names (it
 //! exists, its type agrees, its directory is a directory); every inode's
 //! link count against the entries that name it; every extent against its
-//! inode (it exists, the extent does not start past the end of the file);
-//! and every data extent's checksum. A filesystem not shut down cleanly is
-//! checked through the replay of its journal, as it would be read.
+//! inode (it exists, the extent does not start past the end of the file,
+//! it does not overlap the extent before it); every data extent's checksum;
+//! and that every key is at the root inode's snapshot, since this checker
+//! reads one snapshot and knows nothing of the others. A filesystem not
+//! shut down cleanly is checked through the replay of its journal, as it
+//! would be read.
 //!
 //! It is a subset of what the reference checker checks (allocation,
 //! accounting, backpointers and lru are not), and the tests hold it to
@@ -104,6 +107,41 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 trees.insert(id, keys);
             }
             None => continue,
+        }
+    }
+
+    // Snapshots: this checker reads at one snapshot, the root inode's. A
+    // key at another belongs to a snapshot or subvolume whose visibility
+    // it does not implement, so everything below is said of one snapshot
+    // only, and the report says so (issue #53).
+    let root_snapshot = trees
+        .get(&btree_id::INODES)
+        .into_iter()
+        .flatten()
+        .find(|k| k.pos.inode == 0 && k.pos.offset == ROOT_INO && k.key_type == key_type::INODE_V3)
+        .map(|k| k.pos.snapshot);
+    if let Some(snap) = root_snapshot {
+        let elsewhere = [
+            btree_id::EXTENTS,
+            btree_id::INODES,
+            btree_id::DIRENTS,
+            btree_id::XATTRS,
+        ]
+        .iter()
+        .filter_map(|id| trees.get(id).map(|keys| (*id, keys)))
+        .flat_map(|(id, keys)| keys.iter().map(move |k| (id, k)))
+        .find(|(_, k)| k.pos.snapshot != snap);
+        if let Some((id, k)) = elsewhere {
+            r.add(
+                "snapshots",
+                format!(
+                    "btree {}: key {} is at snapshot {}, the root inode at {snap}; snapshots are \
+                     not checked, so nothing below speaks for them",
+                    journal::btree_name(id),
+                    k.pos,
+                    k.pos.snapshot
+                ),
+            );
         }
     }
 
@@ -205,14 +243,36 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
 
-    // Extents: their inode, their bounds, their data.
+    // Extents: their inode, their bounds, their neighbours, their data.
     let have_inodes = trees.contains_key(&btree_id::INODES);
+    // (inode, snapshot, end sector) of the last extent-like key seen: an
+    // extent that starts before it ends overlaps it (S1's check_extents,
+    // "no overlaps"; issue #60).
+    let mut prev: Option<(u64, u32, u64)> = None;
     for k in trees
         .get(&btree_id::EXTENTS)
         .into_iter()
         .flatten()
         .filter(|_| have_inodes)
     {
+        if matches!(
+            k.key_type,
+            key_type::EXTENT | key_type::INLINE_DATA | key_type::RESERVATION
+        ) {
+            if let Some((inode, snap, end)) = prev {
+                if inode == k.pos.inode && snap == k.pos.snapshot && k.start_offset() < end {
+                    r.add(
+                        "extent_overlap",
+                        format!(
+                            "extent {} starts at sector {} before the extent before it ends at {end}",
+                            k.pos,
+                            k.start_offset()
+                        ),
+                    );
+                }
+            }
+            prev = Some((k.pos.inode, k.pos.snapshot, k.pos.offset));
+        }
         match k.key_type {
             key_type::EXTENT | key_type::INLINE_DATA => {}
             _ => continue,

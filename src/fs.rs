@@ -3,12 +3,15 @@
 //!
 //! Nothing is loaded at open but the superblock (and a journal replay when
 //! one is needed): every lookup, listing and read seeks a btree cursor to
-//! its own keys and reads only the nodes on their path. Snapshots are
-//! ignored: every key is
-//! taken at the snapshot it was found at, which is right for a filesystem
-//! that has never had a snapshot taken and wrong otherwise.
+//! its own keys and reads only the nodes on their path.
+//!
+//! Snapshots are not read. Every key this reader uses must carry the
+//! snapshot the root inode carries (U32_MAX on every fixture; inferred,
+//! docs/clean-room.md): a key at any other snapshot means a snapshot or
+//! subvolume exists, whose visibility rules (S1 9.4) are not implemented,
+//! so it is refused rather than misread.
 
-use crate::bkey::Bpos;
+use crate::bkey::{Bkey, Bpos};
 use crate::btree::{btree_id, Cursor};
 use crate::error::{Error, Result};
 use crate::extent::{compression, DataExtent};
@@ -25,6 +28,8 @@ pub struct Filesystem<D: BlockRead> {
     replay: Option<Replay>,
     /// The nodes lookups pass through, read once.
     cache: crate::btree::NodeCache,
+    /// The one snapshot every key is read at: the root inode's.
+    snapshot: u32,
 }
 
 impl<D: BlockRead> Filesystem<D> {
@@ -52,15 +57,51 @@ impl<D: BlockRead> Filesystem<D> {
             Some(crate::journal::replay(&dev, &sb)?)
         };
         // The root inode must be there: a filesystem without it is not
-        // one to read.
-        let fs = Filesystem {
+        // one to read. Its snapshot is the one every other key must carry.
+        let mut fs = Filesystem {
             dev,
             sb,
             replay,
             cache: Default::default(),
+            snapshot: u32::MAX,
         };
-        fs.inode(ROOT_INO)?;
+        fs.snapshot = fs.root_snapshot()?;
         Ok(fs)
+    }
+
+    /// The snapshot of the root inode's key, and a refusal when the root
+    /// exists at more than one.
+    fn root_snapshot(&self) -> Result<u32> {
+        let mut c = self.cursor(btree_id::INODES)?;
+        c.seek(Bpos {
+            inode: 0,
+            offset: ROOT_INO,
+            snapshot: 0,
+        })?;
+        let mut found: Option<u32> = None;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != 0 || k.pos.offset != ROOT_INO {
+                break;
+            }
+            if k.key_type != crate::bkey::key_type::INODE_V3 {
+                continue;
+            }
+            if let Some(first) = found {
+                return Err(snapshots_not_read(&k, first));
+            }
+            found = Some(k.pos.snapshot);
+        }
+        found.ok_or_else(|| Error::NotFound(format!("inode {ROOT_INO}")))
+    }
+
+    /// A key at any snapshot but the root's is a snapshot this reader
+    /// cannot resolve.
+    fn same_snapshot(&self, k: &Bkey) -> Result<()> {
+        if k.pos.snapshot == self.snapshot {
+            Ok(())
+        } else {
+            Err(snapshots_not_read(k, self.snapshot))
+        }
     }
 
     pub fn superblock(&self) -> &Superblock {
@@ -85,6 +126,7 @@ impl<D: BlockRead> Filesystem<D> {
             if k.pos.inode != inode {
                 break;
             }
+            self.same_snapshot(&k)?;
             out.push(k);
         }
         Ok(out)
@@ -97,15 +139,17 @@ impl<D: BlockRead> Filesystem<D> {
             offset: ino,
             snapshot: 0,
         })?;
+        let mut found: Option<Inode> = None;
         while let Some(k) = c.next_key()? {
             if k.pos.inode != 0 || k.pos.offset != ino {
                 break;
             }
-            if k.key_type == crate::bkey::key_type::INODE_V3 {
-                return Inode::from_key(&k);
+            self.same_snapshot(&k)?;
+            if k.key_type == crate::bkey::key_type::INODE_V3 && found.is_none() {
+                found = Some(Inode::from_key(&k)?);
             }
         }
-        Err(Error::NotFound(format!("inode {ino}")))
+        found.ok_or_else(|| Error::NotFound(format!("inode {ino}")))
     }
 
     /// The entries of a directory, by inode, in btree (hash) order.
@@ -131,6 +175,9 @@ impl<D: BlockRead> Filesystem<D> {
             snapshot: 0,
         })?;
         if let Some(k) = c.next_key()? {
+            if k.pos.inode == dir.ino {
+                self.same_snapshot(&k)?;
+            }
             if k.pos.inode == dir.ino && k.key_type == crate::bkey::key_type::DIRENT {
                 let d = Dirent::from_key(&k)?;
                 if d.name == name {
@@ -177,7 +224,30 @@ impl<D: BlockRead> Filesystem<D> {
             usize::try_from(size)
                 .map_err(|_| Error::Unsupported("file larger than memory".into()))?
         ];
+        // Extents of one file must not overlap (S1's check_extents: "no
+        // overlaps"): two keys claiming the same sectors would be written
+        // into the buffer in position order, and the later one, not the
+        // newer one, would win. Refused instead (issue #60).
+        let mut prev_end: Option<u64> = None;
         for k in self.keys_of(btree_id::EXTENTS, ino)? {
+            if matches!(
+                k.key_type,
+                crate::bkey::key_type::EXTENT
+                    | crate::bkey::key_type::INLINE_DATA
+                    | crate::bkey::key_type::RESERVATION
+            ) {
+                if let Some(end) = prev_end {
+                    if k.start_offset() < end {
+                        return Err(Error::Corrupt(format!(
+                            "extent {} starts at sector {} before the extent before it ends at \
+                             {end}: overlapping extents, check the filesystem",
+                            k.pos,
+                            k.start_offset()
+                        )));
+                    }
+                }
+                prev_end = Some(k.pos.offset);
+            }
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {}
                 crate::bkey::key_type::RESERVATION | crate::bkey::key_type::WHITEOUT => continue,
@@ -258,4 +328,13 @@ impl<D: BlockRead> Filesystem<D> {
         }
         Ok(plain[from..to].to_vec())
     }
+}
+
+/// The refusal for a key at a snapshot other than the root's.
+fn snapshots_not_read(k: &Bkey, root_snapshot: u32) -> Error {
+    Error::Unsupported(format!(
+        "key {} is at snapshot {}, the root inode at {root_snapshot}: snapshots and subvolumes \
+         are not read (issue #12)",
+        k.pos, k.pos.snapshot
+    ))
 }
