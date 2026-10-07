@@ -36,6 +36,10 @@ API, a patch never does.
   the test VM, with hard links, renames, deletions, overwrites, sparse and
   fragmented files; every file and listing is compared with the mount's view.
 
+- **Encrypted and multi-device filesystems are refused by name**
+  (`Superblock::is_encrypted`), and `fs.bcachefs info` reports `encrypted`
+  and `clean`.
+
 ### Fixed
 
 - **An uncleanly unmounted filesystem is no longer read from its stale

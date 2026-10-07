@@ -75,6 +75,8 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
                     Json::UInt(sb.btree_node_size() as u64 * 512),
                 ),
                 ("devices", Json::UInt(sb.nr_devices as u64)),
+                ("encrypted", Json::Bool(sb.is_encrypted())),
+                ("clean", Json::Bool(sb.is_clean())),
             ])))
         }
         Some(("ls", sub)) => {
