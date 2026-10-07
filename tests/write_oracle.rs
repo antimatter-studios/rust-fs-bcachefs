@@ -55,9 +55,12 @@ fn reference(args: &[&str]) -> (bool, String) {
 /// The reference checker passes the image and fixes nothing.
 fn assert_fsck_clean(img: &Path) {
     let (ok, text) = reference(&["fsck", "-n", img.to_str().unwrap()]);
-    let complaint = text
-        .lines()
-        .find(|l| l.contains("fixing") || l.contains("error") || l.contains("Error"));
+    // Any line naming an error, but not the options line, whose
+    // `fix_errors=no` is no finding.
+    let complaint = text.lines().find(|l| {
+        !l.trim_start().starts_with("with options")
+            && (l.contains("fixing") || l.contains("error") || l.contains("Error"))
+    });
     assert!(
         ok && complaint.is_none(),
         "the reference checker did not pass {}:\n{text}",
