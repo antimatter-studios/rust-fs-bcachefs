@@ -24,26 +24,35 @@ fn scratch(name: &str, test: &str) -> std::path::PathBuf {
     img
 }
 
-/// Whether creating a file in `dir` is refused, on a copy of `img`,
-/// because a node it would go in is full; when it is, the copy must be byte
-/// for byte what it was.
+/// The two files the create test makes, in order.
+const CREATES: [(&[u8], &[u8], u32); 2] = [(b"one", b"first\n", 0o644), (b"two", b"", 0o600)];
+
+/// Whether making `CREATES` in `dir`, on a copy of `img`, is refused
+/// because a node one of them would go in is full; when one is, the copy
+/// must be byte for byte what it was before that create. Every create the
+/// test makes is probed: a leaf with room for one entry passes a probe of
+/// one and fails the test's second (measured in CI on an aged image).
 fn refused_as_full(img: &std::path::Path, dir: u64) -> bool {
     let probe = img.with_extension("probe.img");
     std::fs::copy(img, &probe).unwrap();
-    let before = std::fs::read(&probe).unwrap();
-    let mut w = Writer::open(FileDevice::open_rw(&probe).unwrap()).unwrap();
-    let refused = match w.create_file(dir, b"probe", b"", 0o644) {
-        Ok(_) => false,
-        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
-            drop(w);
-            assert!(
-                std::fs::read(&probe).unwrap() == before,
-                "refused, but written"
-            );
-            true
+    let mut refused = false;
+    for (name, data, mode) in CREATES {
+        let before = std::fs::read(&probe).unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&probe).unwrap()).unwrap();
+        match w.create_file(dir, name, data, mode) {
+            Ok(_) => {}
+            Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
+                drop(w);
+                assert!(
+                    std::fs::read(&probe).unwrap() == before,
+                    "refused, but written"
+                );
+                refused = true;
+                break;
+            }
+            Err(e) => panic!("{e}"),
         }
-        Err(e) => panic!("{e}"),
-    };
+    }
     std::fs::remove_file(&probe).unwrap();
     refused
 }
@@ -67,8 +76,9 @@ fn created_files_read_back_and_the_old_ones_are_untouched() {
             continue;
         }
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
-        let a = w.create_file(dir, b"one", b"first\n", 0o644).unwrap();
-        let b = w.create_file(dir, b"two", b"", 0o600).unwrap();
+        let [(n1, d1, m1), (n2, d2, m2)] = CREATES;
+        let a = w.create_file(dir, n1, d1, m1).unwrap();
+        let b = w.create_file(dir, n2, d2, m2).unwrap();
         assert_eq!(b, a + 1, "{test}: inode numbers follow the cursor");
         drop(w);
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
