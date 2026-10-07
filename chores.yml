@@ -169,12 +169,14 @@ tasks:
   # suite exercises; fails under the floor. MEASURED 2026-10-07 (macOS
   # arm64, the fixtures of this tree): 87.84% of lines, 38 tests, 114 log
   # lines / 8417 bytes warm (a cold runner adds a Compiling line per
-  # dependency). The floor sits a
+  # dependency); 204 lines / 12403 bytes on a cold CI runner once the
+  # checker's tests joined (run of #39, 2026-10-07): the line budget is 300.
+  # The floor sits a
   # little under that and moves up with the suite.
   coverage:
     desc: 'Line coverage of the unit and oracle tiers (needs chore fixtures and cargo-llvm-cov): fails under the floor'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 200 30000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 300 30000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 30'
 
   check:semver:

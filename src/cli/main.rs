@@ -4,6 +4,7 @@
 //! `cli` feature); `fs` is the tool itself.
 
 mod fs;
+mod fsck;
 
 use fs_core::cli;
 use std::process::ExitCode;
@@ -16,7 +17,7 @@ static FAMILY: cli::Family = cli::Family {
     install_hints: &[
         "`cargo install rust-fs-bcachefs --features cli` from a checkout of this repository",
     ],
-    tools: &[fs::TOOL],
+    tools: &[fs::TOOL, fsck::TOOL],
 };
 
 fn main() -> ExitCode {
