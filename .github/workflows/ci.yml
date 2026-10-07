@@ -54,6 +54,8 @@ jobs:
           fi
       - name: chore test:unit
         run: chore test:unit
+      - name: chore test:scripts
+        run: chore test:scripts
       - name: Keep the tier logs
         if: always()
         uses: actions/upload-artifact@v4

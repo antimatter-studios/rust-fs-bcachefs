@@ -90,12 +90,6 @@ pub fn compute(csum_type: u8, data: &[u8]) -> crate::Result<u64> {
 /// Verify `data` against a stored checksum of the given type. Returns the
 /// computed value on a mismatch.
 pub fn verify(csum_type: u8, data: &[u8], stored: u64) -> Result<(), u64> {
-    // The fuzz targets' build: a mismatch is no reason to stop, so mutated
-    // input reaches what lies behind the checksum (tests/fuzz_decoders.rs
-    // proves every other build still refuses it).
-    if cfg!(feature = "fuzzing") {
-        return Ok(());
-    }
     let computed = match csum_type {
         0 => return Ok(()),
         1 => crc32c_nonzero(data) as u64,
