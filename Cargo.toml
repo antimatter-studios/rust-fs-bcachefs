@@ -11,7 +11,7 @@ exclude = ["fuzz"]
 # What the release tarball ships, read by rust-fs-core's
 # scripts/package-cli.sh (run in place as ../rust-fs-core/scripts/package-cli.sh).
 [package.metadata.package-cli]
-names = { "fs.bcachefs" = 1 }
+names = { "fs.bcachefs" = 1, "fsck.bcachefs" = 8 }
 licenses = ["LICENSE"]
 
 [lib]

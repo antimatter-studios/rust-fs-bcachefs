@@ -6,7 +6,7 @@ source "$(dirname "$0")/lib.sh"
 
 # Written here, not read from the binary: a binary that forgot one would
 # otherwise agree with itself.
-EXPECTED="fs.bcachefs"
+EXPECTED="fs.bcachefs fsck.bcachefs"
 
 version="$(rust-fs-bcachefs --version | sed -n "s/^rust-fs-bcachefs ($CRATE) //p")"
 check "rust-fs-bcachefs --version names a version" test -n "$version"
