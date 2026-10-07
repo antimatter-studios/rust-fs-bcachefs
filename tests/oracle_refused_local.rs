@@ -104,3 +104,63 @@ fn overlapping_extents_are_refused_by_the_reader_and_named_by_the_checker() {
         report.problems
     );
 }
+
+#[test]
+fn an_older_inode_encoding_is_unsupported_not_missing() {
+    let img = scratch("write-study/base.img", "inode-v2");
+    let ino = 777_777u64;
+    // A v2 inode where there was none: the filesystem now holds an inode
+    // this reader does not decode, which is not "no such inode".
+    insert(
+        &img,
+        btree_id::INODES,
+        Bkey {
+            key_type: key_type::INODE_V2,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: fs_bcachefs::bkey::Bpos {
+                inode: 0,
+                offset: ino,
+                snapshot: u32::MAX,
+            },
+            value: vec![0u8; 48],
+        },
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    match fs.inode(ino) {
+        Err(Error::Unsupported(m)) if m.contains("inode_v2") => {}
+        other => panic!("an inode_v2 key was not refused by name: {other:?}"),
+    }
+}
+
+#[test]
+fn an_error_extent_reads_as_lost_data_and_is_named_by_the_checker() {
+    let img = scratch("write-study/base.img", "error-extent");
+    let first = keys(&img, btree_id::EXTENTS)
+        .into_iter()
+        .find(|k| k.key_type == key_type::INLINE_DATA)
+        .expect("an inline extent in the fixture");
+    let ino = first.pos.inode;
+    // The same range, marked as permanently lost (a zero-byte value since
+    // 1.34, S1 11.6).
+    let mut lost = first.clone();
+    lost.key_type = key_type::ERROR;
+    lost.value = Vec::new();
+    insert(&img, btree_id::EXTENTS, lost);
+
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    match fs.read(ino) {
+        Err(Error::Io(m)) if m.contains("lost") => {}
+        other => panic!(
+            "an error extent did not read as lost data: {:?}",
+            other.map(|b| b.len())
+        ),
+    }
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report.problems.iter().any(|p| p.kind == "data_lost"),
+        "the checker did not name the lost range: {:?}",
+        report.problems
+    );
+}

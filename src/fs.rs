@@ -145,8 +145,26 @@ impl<D: BlockRead> Filesystem<D> {
                 break;
             }
             self.same_snapshot(&k)?;
-            if k.key_type == crate::bkey::key_type::INODE_V3 && found.is_none() {
-                found = Some(Inode::from_key(&k)?);
+            match k.key_type {
+                crate::bkey::key_type::INODE_V3 if found.is_none() => {
+                    found = Some(Inode::from_key(&k)?);
+                }
+                // The earlier encodings (S1 11.5, 11.6: `inode` is v1,
+                // `inode_v2` is 0.18 to 0.22): a filesystem older than this
+                // reader decodes, which is not the same as no inode.
+                crate::bkey::key_type::INODE | crate::bkey::key_type::INODE_V2 => {
+                    return Err(Error::Unsupported(format!(
+                        "inode {ino} is stored in the {} encoding (key type {}), older than \
+                         the inode_v3 this reader decodes",
+                        if k.key_type == crate::bkey::key_type::INODE {
+                            "inode (v1)"
+                        } else {
+                            "inode_v2"
+                        },
+                        k.key_type
+                    )));
+                }
+                _ => {}
             }
         }
         found.ok_or_else(|| Error::NotFound(format!("inode {ino}")))
@@ -235,6 +253,7 @@ impl<D: BlockRead> Filesystem<D> {
                 crate::bkey::key_type::EXTENT
                     | crate::bkey::key_type::INLINE_DATA
                     | crate::bkey::key_type::RESERVATION
+                    | crate::bkey::key_type::ERROR
             ) {
                 if let Some(end) = prev_end {
                     if k.start_offset() < end {
@@ -250,7 +269,21 @@ impl<D: BlockRead> Filesystem<D> {
             }
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {}
-                crate::bkey::key_type::RESERVATION | crate::bkey::key_type::WHITEOUT => continue,
+                // A reservation is space with no data yet, a whiteout hides
+                // nothing on a filesystem without snapshots: both read as
+                // zeros.
+                crate::bkey::key_type::RESERVATION
+                | crate::bkey::key_type::WHITEOUT
+                | crate::bkey::key_type::EXTENT_WHITEOUT => continue,
+                // "Reads to these ranges return IO errors" (S1 9.1.2.1).
+                crate::bkey::key_type::ERROR => {
+                    return Err(Error::Io(format!(
+                        "inode {ino}, sectors {}..{}: the data was permanently lost (an `error` \
+                         extent)",
+                        k.start_offset(),
+                        k.pos.offset
+                    )))
+                }
                 crate::bkey::key_type::INLINE_DATA => {
                     // The value is the data itself, zero-padded to a whole
                     // u64, and the key covers `size` sectors ending at its

@@ -111,6 +111,10 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **An `error` extent reads as an I/O error naming the lost range** and the
+  checker reports `data_lost` (#61); an `extent_whiteout` reads as a hole;
+  an `inode` or `inode_v2` key is refused as an older encoding instead of
+  being reported as a missing inode (#55).
 - **Bsets from blacklisted journal sequences are ignored** (#50): the
   superblock's `journal_seq_blacklist` (`Superblock::journal_seq_blacklist`,
   end exclusive) is applied to every node read, and a journal replay window

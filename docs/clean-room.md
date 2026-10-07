@@ -120,7 +120,10 @@ all eight fixture sets.
   significant bit of the key's words downward (S4; checked on byte-aligned
   formats only -- see open questions).
 - Key type numbers follow S1's list order: extent 6, dirent 10,
-  btree_ptr_v2 18, inode_v3 29 (checked).
+  btree_ptr_v2 18, inode_v3 29 (checked); also named from that order,
+  not yet seen in a fixture: error 2 (reads are I/O errors, S1 9.1.2.1),
+  inode 8 and inode_v2 23 (older encodings, refused by name),
+  extent_whiteout 36 (reads as a hole on a filesystem without snapshots).
 
 ### Btree nodes (`src/btree.rs`) -- documented structure, inferred layout
 

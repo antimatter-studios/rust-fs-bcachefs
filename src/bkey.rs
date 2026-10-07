@@ -123,16 +123,24 @@ impl BkeyFormat {
 pub mod key_type {
     pub const DELETED: u8 = 0;
     pub const WHITEOUT: u8 = 1;
+    /// "Marks an extent as containing unrecoverable errors" (S1 11.5):
+    /// a range whose data is permanently lost; reads of it are I/O errors.
+    pub const ERROR: u8 = 2;
     pub const HASH_WHITEOUT: u8 = 4;
     pub const EXTENT: u8 = 6;
     pub const RESERVATION: u8 = 7;
+    /// The v1 inode encoding (legacy, S1 11.5); not decoded here.
     pub const INODE: u8 = 8;
     pub const DIRENT: u8 = 10;
     pub const XATTR: u8 = 11;
     pub const INLINE_DATA: u8 = 17;
     pub const BTREE_PTR_V2: u8 = 18;
+    /// The v2 inode encoding (0.18 to 0.22, S1 11.6); not decoded here.
     pub const INODE_V2: u8 = 23;
     pub const INODE_V3: u8 = 29;
+    /// A whiteout "specific to the extents btree, blocking visibility of
+    /// ancestor snapshot extent versions" (S1 11.5; 1.29).
+    pub const EXTENT_WHITEOUT: u8 = 36;
 }
 
 /// The format byte of an unpacked key ("current" format).
