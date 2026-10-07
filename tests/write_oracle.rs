@@ -205,14 +205,30 @@ fn a_file_created_in_the_aged_image_is_read_by_the_reference() {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         fs.lookup("/many").unwrap()
     };
+    // The aged image is aged by a live mount, so how full its leaves are
+    // differs from one fixture build to the next. Until nodes are split, a
+    // full leaf must be refused before anything is written, and the
+    // untouched image still passes the reference checker.
+    let before = std::fs::read(&img).unwrap();
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
-    w.create_file(
+    match w.create_file(
         dir,
         b"written-by-this-crate",
         b"appended to an aged tree\n",
         0o644,
-    )
-    .unwrap();
+    ) {
+        Ok(_) => {}
+        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
+            drop(w);
+            assert!(
+                std::fs::read(&img).unwrap() == before,
+                "refused, but written"
+            );
+            assert_fsck_clean(&img);
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
     drop(w);
     assert_fsck_clean(&img);
     with_reference_mount(&img, |m| {

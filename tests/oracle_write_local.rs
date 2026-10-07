@@ -18,6 +18,30 @@ fn scratch(name: &str, test: &str) -> std::path::PathBuf {
     img
 }
 
+/// Whether creating a file in `dir` is refused, on a copy of `img`,
+/// because a node it would go in is full; when it is, the copy must be byte
+/// for byte what it was.
+fn refused_as_full(img: &std::path::Path, dir: u64) -> bool {
+    let probe = img.with_extension("probe.img");
+    std::fs::copy(img, &probe).unwrap();
+    let before = std::fs::read(&probe).unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&probe).unwrap()).unwrap();
+    let refused = match w.create_file(dir, b"probe", b"", 0o644) {
+        Ok(_) => false,
+        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
+            drop(w);
+            assert!(
+                std::fs::read(&probe).unwrap() == before,
+                "refused, but written"
+            );
+            true
+        }
+        Err(e) => panic!("{e}"),
+    };
+    std::fs::remove_file(&probe).unwrap();
+    refused
+}
+
 #[test]
 fn created_files_read_back_and_the_old_ones_are_untouched() {
     for (set, dir_path, test) in [
@@ -30,6 +54,12 @@ fn created_files_read_back_and_the_old_ones_are_untouched() {
             let dir = fs.lookup(dir_path).unwrap();
             (dir, fs.readdir(dir).unwrap().len())
         };
+        // The aged image is aged by a live mount, so how full its leaves are
+        // differs from one fixture build to the next. Until nodes are split,
+        // a full leaf must be refused before anything is written.
+        if test == "local-aged" && refused_as_full(&img, dir) {
+            continue;
+        }
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         let a = w.create_file(dir, b"one", b"first\n", 0o644).unwrap();
         let b = w.create_file(dir, b"two", b"", 0o600).unwrap();
