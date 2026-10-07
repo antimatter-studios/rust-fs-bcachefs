@@ -65,7 +65,12 @@ fn reference_finds_a_problem(img: &Path) -> (bool, String) {
         .unwrap();
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
-    (!out.status.success() || text.contains("error"), text)
+    // Any line naming an error, but not the options line, whose
+    // `errors=`/`fix_errors=` is no finding.
+    let named = text.lines().any(|l| {
+        !l.trim_start().starts_with("with options") && (l.contains("error") || l.contains("fixing"))
+    });
+    (!out.status.success() || named, text)
 }
 
 #[test]
