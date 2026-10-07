@@ -74,16 +74,36 @@ tasks:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
-      # Once more with the fuzz targets' switch on: the decoders must hold
-      # without the checksums in front of them, and the switch must work.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-fuzzing 150 12000 -- cargo test --locked --features fuzzing --test fuzz_decoders'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 21'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 150 12000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
+      # MEASURED 2026-10-07 at this change: 165 lines / 7135 bytes (the
+      # write-path tests of #43 took it past the old 150). The review stack
+      # above adds nine oracle test binaries (superblock copies, blacklist,
+      # pointers, ranged reads, cursor end, strhash, probes, bgcompress,
+      # refusals), about eight lines each: 300 lines / 20000 bytes leaves
+      # room for a cold runner's Compiling lines on top of that.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 300 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 9'
+
+  test:scripts:
+    desc: The shell tests (tests/scripts/*.sh), every one by glob
+    # By glob, so a test added later needs no edit here: a guard that has
+    # to be registered somewhere else is a guard that gets silently
+    # skipped. They test the scripts that drive the fuzzer (sandboxed
+    # stand-ins for cargo, no toolchain needed). BUDGET: two tests, one
+    # PASS line each, plus the tier's own lines.
+    cmds:
+      - |
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 40 2500 -- bash -c '
+          set -eu
+          for t in tests/scripts/*.sh; do
+            echo "== $t"
+            bash "$t"
+          done
+        '
 
   test:vm:
     desc: 'The unit and oracle tiers compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -127,14 +147,19 @@ tasks:
       - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3030'
 
   test:
-    desc: 'Unit, then oracle, exactly as CI runs them'
+    desc: 'Unit, scripts, then oracle, exactly as CI runs them'
     cmds:
       - task: test:unit
+      - task: test:scripts
       - task: test:oracle
 
   fuzz:
     desc: 'Run every fuzz target for a bounded time: chore fuzz [-- seconds]'
     cmds: ['scripts/fuzz-all.sh $CLI_ARGS']
+
+  fuzz:corpus:
+    desc: 'Rebuild the fuzz seeds from the fixtures (needs chore fixtures); committed reproducers are kept'
+    cmds: ['scripts/make-fuzz-corpus.sh']
 
   lint:
     desc: Formatting, clippy, the family's structural checks and the licence gate, exactly as CI runs them
@@ -178,7 +203,9 @@ tasks:
   coverage:
     desc: 'Line coverage of the unit and oracle tiers (needs chore fixtures and cargo-llvm-cov): fails under the floor'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 300 30000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      # Raised with the oracle tier's budget (2026-10-07): the same nine new
+      # test binaries print here too.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 450 40000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 30'
 
   check:semver:

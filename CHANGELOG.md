@@ -29,8 +29,17 @@ API, a patch never does.
   view of eight fixture sets.
 - **A C ABI** (`fs_bcachefs_mount`, `_stat`, `_readdir`, `_read_file`,
   `_umount`) and the `fs.bcachefs` tool (`info`, `ls`, `cat`).
-- **Fuzz targets** for the superblock and btree-node decoders, with a
-  corpus of real blocks replayed on every pull request.
+- **Fuzzing the way the family does it.** Seven `cargo-fuzz` targets
+  (superblock, btree node, journal entry, key values, inode_v3 with a
+  decode-encode round trip, extent entries, the LZ4 block decoder) share
+  their drivers with the gate, `tests/fuzz_decoders.rs`, which replays and
+  mutates the corpus on every pull request with hang detection and a
+  case floor. Checksums are re-stamped by the harness so the decoders
+  behind them are reached: the `fuzzing` cargo feature that switched
+  verification off in the library is gone, which removes a cargo feature
+  and so moves the minor version to 0.3. `scripts/make-fuzz-corpus.sh`
+  (`chore fuzz:corpus`) cuts the seeds from the fixtures and keeps
+  committed reproducers; `chore test:scripts` tests both scripts.
 - **Fixtures made by the reference formatter in the Linux test VM**, each with
   a JSON record of what the reference tools say is in it.
 - **docs/clean-room.md**, the provenance of every fact about the format,

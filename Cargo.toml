@@ -1,6 +1,6 @@
 [package]
 name = "rust-fs-bcachefs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Pure-Rust bcachefs reader, written clean-room from documentation and black-box observation; read-only by default, with an optional write feature. Exposes a C ABI (fs_bcachefs_*)."
@@ -27,10 +27,6 @@ path = "src/cli/main.rs"
 required-features = ["cli"]
 
 [features]
-# For the fuzz targets only: checksums that do not match are not a reason to
-# stop, so mutated input reaches the decoders behind them. Never part of a
-# normal build; tests/fuzz_decoders.rs proves the default still verifies.
-fuzzing = []
 # Writing (src/write.rs): off by default, and nothing in the default build
 # can write to a device.
 write = []

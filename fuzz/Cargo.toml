@@ -9,6 +9,19 @@ cargo-fuzz = true
 
 # Its own workspace: the fuzz crate builds on nightly and is not part of
 # the published package.
+#
+# The explorer half of the fuzzing setup. The gate half is
+# tests/fuzz_decoders.rs in the parent crate, which replays and mutates
+# the same corpus on the stable toolchain -- see that file's header for
+# why the work is split in two. What each target drives is in
+# fuzz/shared/helpers.rs, shared with the gate.
+#
+# Run one target:
+#   cargo +nightly fuzz run btree_node -- -max_total_time=60
+# Run all of them, which is what CI does nightly:
+#   scripts/fuzz-all.sh 60
+# Rebuild the seeds from the fixtures:
+#   scripts/make-fuzz-corpus.sh
 [workspace]
 
 [lib]
@@ -17,7 +30,7 @@ path = "src/lib.rs"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rust-fs-bcachefs = { path = "..", features = ["fuzzing"] }
+rust-fs-bcachefs = { path = ".." }
 
 [[bin]]
 name = "superblock"
@@ -43,6 +56,27 @@ bench = false
 [[bin]]
 name = "key_values"
 path = "fuzz_targets/key_values.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inode_v3"
+path = "fuzz_targets/inode_v3.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extent_entries"
+path = "fuzz_targets/extent_entries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lz4_block"
+path = "fuzz_targets/lz4_block.rs"
 test = false
 doc = false
 bench = false
