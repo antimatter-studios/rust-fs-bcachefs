@@ -289,7 +289,9 @@ pub fn walk_replayed(
     id: u8,
     replay: Option<&crate::journal::Replay>,
 ) -> Result<Vec<Bkey>> {
-    let (root_level, root_key) = root_of(sb, id, replay)?;
+    let Some((root_level, root_key)) = root_of(sb, id, replay)? else {
+        return Ok(Vec::new());
+    };
     if u32::from(root_level) >= MAX_DEPTH {
         return Err(Error::Corrupt(format!(
             "btree {id} root at level {root_level}"
@@ -340,7 +342,8 @@ pub struct Cursor<'a> {
     walk: Walk<'a>,
     cache: Option<&'a NodeCache>,
     root_level: u8,
-    root: NodePtr,
+    /// `None` for a btree with no root recorded: it holds nothing.
+    root: Option<NodePtr>,
     /// The largest position the whole btree covers: the root key's
     /// position, which is the root node's maximum key. SPOS_MAX on every
     /// fixture (docs/clean-room.md); the cursor does not depend on that.
@@ -361,7 +364,10 @@ impl<'a> Cursor<'a> {
         id: u8,
         replay: Option<&'a crate::journal::Replay>,
     ) -> Result<Self> {
-        let (root_level, root_key) = root_of(sb, id, replay)?;
+        let (root_level, root, root_max) = match root_of(sb, id, replay)? {
+            Some((level, key)) => (level, Some(NodePtr::from_key(&key)?), key.pos),
+            None => (0, None, Bpos::MAX),
+        };
         Ok(Cursor {
             walk: Walk {
                 dev,
@@ -372,11 +378,11 @@ impl<'a> Cursor<'a> {
                 blacklist: sb.journal_seq_blacklist()?,
             },
             root_level,
-            root: NodePtr::from_key(&root_key)?,
-            root_max: root_key.pos,
+            root,
+            root_max,
             cache: None,
             leaf: Vec::new().into_iter(),
-            leaf_max: root_key.pos,
+            leaf_max: root_max,
             started: false,
         })
     }
@@ -391,13 +397,16 @@ impl<'a> Cursor<'a> {
     /// Stand before the first key at or after `pos`; past the btree's last
     /// position, before nothing.
     pub fn seek(&mut self, pos: Bpos) -> Result<()> {
-        if pos > self.root_max {
-            self.leaf = Vec::new().into_iter();
-            self.leaf_max = self.root_max;
-            self.started = true;
-            return Ok(());
-        }
-        let mut ptr = self.root.clone();
+        let root = match &self.root {
+            Some(root) if pos <= self.root_max => root.clone(),
+            _ => {
+                self.leaf = Vec::new().into_iter();
+                self.leaf_max = self.root_max;
+                self.started = true;
+                return Ok(());
+            }
+        };
+        let mut ptr = root;
         let mut level = self.root_level;
         let mut max = self.root_max;
         loop {
@@ -496,15 +505,22 @@ impl NodeCache {
 }
 
 /// A btree's root: from the replay's newest flush entry, or the clean
-/// field.
-fn root_of(sb: &Superblock, id: u8, replay: Option<&crate::journal::Replay>) -> Result<(u8, Bkey)> {
+/// field. `None` when none is recorded, which is a btree holding nothing:
+/// the reference formatter records no xattrs root on a new filesystem, and
+/// the reference lister lists such a btree as empty, without an error (S3:
+/// every formatter-made fixture, and `write-study/base.xattrs.txt`). The
+/// journal's roots are taken the same way, by analogy (INFERRED).
+fn root_of(
+    sb: &Superblock,
+    id: u8,
+    replay: Option<&crate::journal::Replay>,
+) -> Result<Option<(u8, Bkey)>> {
     match replay {
-        Some(r) => r
+        Some(r) => Ok(r
             .roots
             .iter()
             .find(|(b, _, _)| *b == id)
-            .map(|(_, level, k)| (*level, k.clone()))
-            .ok_or_else(|| Error::NotFound(format!("btree {id} has no root in the journal"))),
+            .map(|(_, level, k)| (*level, k.clone()))),
         None => {
             if !sb.is_clean() {
                 return Err(Error::Unsupported(
@@ -513,10 +529,9 @@ fn root_of(sb: &Superblock, id: u8, replay: Option<&crate::journal::Replay>) -> 
                 ));
             }
             let roots = sb.btree_roots()?;
-            let root = roots
-                .iter()
-                .find(|r| r.btree_id == id)
-                .ok_or_else(|| Error::NotFound(format!("btree {id} has no root")))?;
+            let Some(root) = roots.iter().find(|r| r.btree_id == id) else {
+                return Ok(None);
+            };
             let key = bkey::decode(
                 &root.key,
                 &BkeyFormat {
@@ -526,7 +541,7 @@ fn root_of(sb: &Superblock, id: u8, replay: Option<&crate::journal::Replay>) -> 
                     field_offset: [0; 6],
                 },
             )?;
-            Ok((root.level, key))
+            Ok(Some((root.level, key)))
         }
     }
 }

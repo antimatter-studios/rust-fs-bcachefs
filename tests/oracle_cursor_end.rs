@@ -65,3 +65,35 @@ fn a_seek_past_the_last_key_stands_before_nothing() {
         }
     }
 }
+
+/// A btree with no root recorded holds nothing. The reference formatter
+/// records no xattrs root on a new filesystem, and the reference lister
+/// lists that btree as empty rather than failing; so does this reader,
+/// through a walk, a cursor and the filesystem's xattr lookup.
+#[test]
+fn a_btree_with_no_root_is_empty_as_the_lister_lists_it() {
+    let dev = FileDevice::open(fixture("write-study/base.img")).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    assert!(
+        !sb.btree_roots()
+            .unwrap()
+            .iter()
+            .any(|r| r.btree_id == btree_id::XATTRS),
+        "the fixture records an xattrs root, so this test would prove nothing"
+    );
+    let listed = common::read_text("write-study/base.xattrs.txt");
+    assert!(
+        !listed.lines().any(|l| l.starts_with("u64s")),
+        "the lister lists keys: {listed}"
+    );
+    assert!(fs_bcachefs::btree::walk(&dev, &sb, btree_id::XATTRS)
+        .unwrap()
+        .is_empty());
+    let mut c = Cursor::new(&dev, &sb, btree_id::XATTRS, None).unwrap();
+    assert!(c.next_key().unwrap().is_none());
+    c.seek(Bpos::default()).unwrap();
+    assert!(c.next_key().unwrap().is_none());
+    let fs = fs_bcachefs::Filesystem::open(dev).unwrap();
+    let d = fs.lookup("/d").unwrap();
+    assert!(fs.xattrs(d).unwrap().is_empty());
+}
