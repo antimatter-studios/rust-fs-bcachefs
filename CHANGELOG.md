@@ -114,6 +114,13 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **The fixture build probes the reference mount for a subvolume, a
+  snapshot, a casefolded directory and a reflink** on a scratch image and
+  records the answers and the lister's view (`probe.*`); `tests/oracle_probes.rs`
+  asserts what the reader does with the image either way, so the fixtures
+  behind #12, #54 and #7 turn a test red the first time the reference
+  implementation honours one of them, and `tests/oracle_bgcompress.rs` does
+  the same for an extent entry kind this reader cannot decode (#52).
 - **An extent entry kind this reader cannot decode is refused by name**
   (crc128, stripe_ptr, flags, reconcile; #52), and a `bgcompress` fixture is
   built so a reconcile entry's layout can be observed.

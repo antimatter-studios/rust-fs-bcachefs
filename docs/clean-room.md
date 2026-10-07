@@ -481,7 +481,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    by every oracle test's positions). The reader and the checker refuse a
    key at any other snapshot rather than resolve it (issue #53); what a
    snapshotted filesystem looks like needs a fixture no guest can make
-   yet (issue #12).
+   yet (issue #12). The fixture build probes for one: it asks the
+   reference implementation's mount for a subvolume and a snapshot on a
+   scratch image and records the answer and the lister's view in
+   `probe.*` (scripts/guest-build-fixtures.sh).
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
    reflink, xattrs, multiple devices and replicas**: not seen in any
    fixture. (inline_data: seen and read, see above.)
@@ -532,8 +535,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     both the original name and its casefolded form in each dirent, and
     looks up by the folded form. The dirent layout this reader decodes is
     the non-casefolded one (issue #54); which inode flag marks a casefolded directory,
-    and the two-name layout, need a fixture (the reference FUSE mount may
-    not support the option).
+    and the two-name layout, need a fixture. The fixture build probes for
+    one (`set-file-option --casefold=1` and `chattr +F` through the
+    reference mount) and records the answer in `probe.*`.
 19. **Extent entries beyond ptr, crc32 and crc64.** S1 (9.1.3, 9.1.12)
     names crc128 (24 bytes, required under encryption), stripe pointers
     (erasure coding), a flags entry (poisoned) and a `reconcile` entry
