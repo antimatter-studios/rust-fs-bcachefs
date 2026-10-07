@@ -289,3 +289,60 @@ fn namespace_operations_are_read_by_the_reference() {
         assert_eq!(std::fs::metadata(m.join("d")).unwrap().nlink(), 3);
     });
 }
+
+fn pattern(n: usize, seed: u8) -> Vec<u8> {
+    (0..n).map(|i| (i % 251) as u8 ^ seed).collect()
+}
+
+/// Files too large to store inline: whole free buckets, checksummed
+/// extents, alloc, freespace, backpointer, lru and accounting keys -- on
+/// the write-study base, which has no lru btree yet (its root is made), and
+/// on the aged image, whose buckets are four times larger and partly reused.
+#[test]
+fn large_files_created_here_are_read_by_the_reference() {
+    for (set, dir_path, test, sizes) in [
+        (
+            "write-study/base.img",
+            "/d",
+            "large-base",
+            vec![300_000usize, 249, 32_768, 1],
+        ),
+        (
+            "aged.img",
+            "/many",
+            "large-aged",
+            vec![1_000_000usize, 131_072 + 1],
+        ),
+    ] {
+        let img = scratch(set, test);
+        let dir = {
+            let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+            fs.lookup(dir_path).unwrap()
+        };
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        for (i, &n) in sizes.iter().enumerate() {
+            w.create_file(
+                dir,
+                format!("large-{i}").as_bytes(),
+                &pattern(n, i as u8),
+                0o644,
+            )
+            .unwrap_or_else(|e| panic!("{test}: {n} bytes: {e}"));
+        }
+        drop(w);
+        assert_fsck_clean(&img);
+        with_reference_mount(&img, |m| {
+            for (i, &n) in sizes.iter().enumerate() {
+                let got = std::fs::read(
+                    m.join(dir_path.trim_start_matches('/'))
+                        .join(format!("large-{i}")),
+                )
+                .unwrap();
+                assert!(
+                    got == pattern(n, i as u8),
+                    "{test}: large-{i}: the reference read different bytes"
+                );
+            }
+        });
+    }
+}
