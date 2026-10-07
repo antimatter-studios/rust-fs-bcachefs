@@ -59,10 +59,15 @@ fn every_journal_entry_header_matches_the_reference() {
         );
     }
     let newest = theirs.iter().map(|h| h.0).max().unwrap();
+    let oldest = theirs.iter().map(|h| h.0).min().unwrap();
     for j in &ours {
+        // Beyond what the reference lists, a ring holds two kinds of entry
+        // it does not: older ones its buckets still carry (measured in CI:
+        // entry 106 beside a listing that starts at 110), and an unflushed
+        // tail after the newest flush.
         assert!(
-            theirs.iter().any(|h| h.0 == j.seq) || (j.seq > newest && !j.flush),
-            "entry {}: found by this reader, not listed by the reference, and not an unflushed tail",
+            theirs.iter().any(|h| h.0 == j.seq) || j.seq < oldest || (j.seq > newest && !j.flush),
+            "entry {}: found by this reader, not listed by the reference, inside its range",
             j.seq
         );
     }

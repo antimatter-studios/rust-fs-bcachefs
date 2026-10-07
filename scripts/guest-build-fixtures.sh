@@ -193,7 +193,7 @@ rm -f "$ROOT$img"
 truncate -s 256M "$ROOT$img"
 bcachefs-ref format -q "$img" > "$out/aged.format.txt" 2>&1
 # noatime: reading the tree back for the manifest must not itself write.
-fuse_mount "$img" rw,noatime "$work/fuse-age.log"
+fuse_mount "$img" rw,noatime,journal_reclaim_delay=60000 "$work/fuse-age.log"
 python3 /repo/scripts/guest-age.py "$ROOT$mnt"
 sync
 manifest "$ROOT$mnt" "$work/aged.mounted.json" live
