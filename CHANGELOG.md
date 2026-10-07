@@ -114,6 +114,9 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **An extent entry kind this reader cannot decode is refused by name**
+  (crc128, stripe_ptr, flags, reconcile; #52), and a `bgcompress` fixture is
+  built so a reconcile entry's layout can be observed.
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both

@@ -115,6 +115,26 @@ fn bits(w: u64, lo: u32, n: u32) -> u64 {
     (w >> lo) & ((1u64 << n) - 1)
 }
 
+/// The name of an extent entry kind, by the position of its first set bit.
+/// 0 to 2 are decoded here and checked against the lister. 3 to 6 follow
+/// S1 9.1.3's order of the remaining kinds (crc128, then the stripe
+/// pointer, the flags entry and the reconcile entry) and are INFERRED from
+/// that order alone: none has been seen in a fixture, and only crc128's
+/// size (24 bytes) is documented, so an extent carrying one is refused by
+/// name rather than decoded (docs/clean-room.md, open question 19).
+pub fn entry_kind_name(first_set_bit: u32) -> &'static str {
+    match first_set_bit {
+        0 => "ptr",
+        1 => "crc32",
+        2 => "crc64",
+        3 => "crc128",
+        4 => "stripe_ptr",
+        5 => "flags",
+        6 => "reconcile",
+        _ => "unknown",
+    }
+}
+
 /// Parse an extent value into its entries.
 pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
     let mut out = Vec::new();
@@ -163,7 +183,13 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
                 }));
                 p += 16;
             }
-            t => return Err(Error::Unsupported(format!("extent entry type {t}"))),
+            t => {
+                return Err(Error::Unsupported(format!(
+                    "extent entry type {t} ({}): its layout has not been observed, so the \
+                     extent is not read (docs/clean-room.md, open question 19)",
+                    entry_kind_name(t)
+                )))
+            }
         }
     }
     Ok(out)
@@ -255,8 +281,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_truncated_entries_are_refused() {
-        assert!(parse_entries(&0x8u64.to_le_bytes()).is_err());
+    fn unknown_or_truncated_entries_are_refused_by_name() {
+        match parse_entries(&0x8u64.to_le_bytes()) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("crc128"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        match parse_entries(&0x40u64.to_le_bytes()) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("reconcile"), "{m}"),
+            other => panic!("{other:?}"),
+        }
         assert!(parse_entries(&0x4u64.to_le_bytes()).is_err());
     }
 }
