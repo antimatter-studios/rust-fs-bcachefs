@@ -181,6 +181,8 @@ pub unsafe extern "C" fn fs_bcachefs_readdir(
 
 /// Copy up to `length` bytes of the file at `path`, from `offset`, into
 /// `buf`. Returns the number of bytes copied (0 at or past the end), or -1.
+/// Only the extents covering the window are read, so reading a file in
+/// pieces costs the pieces, not the file each time.
 ///
 /// # Safety
 /// `fs` a live handle or NULL; `path` NUL-terminated or NULL; `buf`
@@ -202,14 +204,16 @@ pub unsafe extern "C" fn fs_bcachefs_read_file(
             return -1;
         };
         let fs = &unsafe { &*fs }.fs;
-        match fs.lookup(path).and_then(|ino| fs.read(ino)) {
+        let len = usize::try_from(length).unwrap_or(usize::MAX);
+        match fs
+            .lookup(path)
+            .and_then(|ino| fs.read_range(ino, offset, len))
+        {
             Ok(data) => {
-                let start = (offset as usize).min(data.len());
-                let n = (data.len() - start).min(length as usize);
                 unsafe {
-                    std::ptr::copy_nonoverlapping(data[start..].as_ptr(), buf.cast::<u8>(), n)
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), buf.cast::<u8>(), data.len())
                 };
-                n as i64
+                data.len() as i64
             }
             Err(e) => {
                 set_last_error(e.to_string());
