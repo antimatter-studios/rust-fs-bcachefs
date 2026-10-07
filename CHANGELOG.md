@@ -114,6 +114,11 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **The writer refuses a filesystem whose time precision is not
+  nanoseconds** (#58), since the times it stamps would be in the wrong unit;
+  the guest test that could pass by refusing a full node is named for both
+  of its outcomes, and the unconditional create-and-read-back stays on the
+  write-study base.
 - **Directories hashed with crc32c or crc64 are scanned, not mis-hashed**
   (#51): `Inode::hash_type` reads the inode's string hash type, the reader
   falls back to a scan for any type but SipHash, and the writer refuses to
