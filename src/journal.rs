@@ -70,6 +70,9 @@ pub struct JsetEntry {
 pub mod entry_type {
     pub const BTREE_KEYS: u8 = 0;
     pub const BTREE_ROOT: u8 = 1;
+    /// A single blacklisted sequence number, and a range of them (S1 11.2).
+    pub const BLACKLIST: u8 = 3;
+    pub const BLACKLIST_V2: u8 = 4;
     pub const OVERWRITE: u8 = 10;
 }
 
@@ -299,6 +302,16 @@ pub fn replay(dev: &dyn BlockRead, sb: &Superblock) -> Result<Replay> {
     for j in entries.iter().filter(|j| j.seq >= from && j.seq <= to) {
         for e in &j.entries {
             match e.entry_type {
+                // A blacklist carried by the journal applies to the bsets
+                // this replay reads, and its payload has never been seen
+                // (no fixture's journal holds one): refused, not guessed.
+                entry_type::BLACKLIST | entry_type::BLACKLIST_V2 => {
+                    return Err(Error::Unsupported(format!(
+                        "journal entry {} carries a blacklist entry (type {}), whose layout \
+                         is not known to this reader",
+                        j.seq, e.entry_type
+                    )));
+                }
                 entry_type::BTREE_KEYS => {
                     out.keys
                         .entry((e.btree_id, e.level))

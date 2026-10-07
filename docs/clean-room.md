@@ -440,17 +440,19 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 3. **Btree node flags**: where the btree id and level are, and what bit 8 and
    bit 32 mean. The reader does not need them yet (it trusts the parent).
 4. **Unclean filesystems**: SETTLED for single-device images (see Journal
-   above). Still open: the superblock's `journal_seq_blacklist` field
-   (type 8; pairs of u64, e.g. 313..4409 after a replay) on a clean image
-   -- whether its end is inclusive. S1 (1.3, 9.7.5) answers the other
-   half: bsets referencing a blacklisted sequence "are ignored until the
-   btree node is next rewritten", and after an unclean shutdown 64
-   sequence numbers past the last journal entry read are blacklisted too
-   -- so a clean image CAN hold bsets from a blacklisted sequence, and a
-   reader that does not consult the field would take their keys. This
-   reader does not consult it yet (issue #50); every
-   clean fixture reads correctly without it, which says only that none of
-   them holds such a bset.
+   above), and the superblock's `journal_seq_blacklist` (type 8) is
+   SETTLED too: pairs of u64 `(start, end)` with the end EXCLUSIVE. S1
+   (1.3, 9.7.5): bsets referencing a blacklisted sequence "are ignored
+   until the btree node is next rewritten", and after an unclean shutdown
+   64 sequence numbers past the last journal entry read are blacklisted
+   too, so a clean image can hold such bsets. Observed (S3, S4): the aged
+   image's field reads 307..4403 after the reference replayed entries
+   304-306; no bset of its nodes has a journal sequence inside the range,
+   two have exactly 4403, and the lister reads their keys -- so 4403 is
+   live and the end is exclusive. The reader ignores bsets in
+   `start <= seq < end` (`Node::parse_filtered`). Still open: the journal's
+   own `blacklist` and `blacklist_v2` entries (types 3, 4) -- none in any
+   fixture's journal; a replay window holding one is refused.
 5. **Snapshots and subvolumes**: visibility rules (S1 9.4) are not
    implemented. Inferred and relied on: on a filesystem that never had a
    snapshot, every key of the extents, inodes, dirents and xattrs btrees
