@@ -451,8 +451,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    reader does not consult it yet (issue #50); every
    clean fixture reads correctly without it, which says only that none of
    them holds such a bset.
-5. **Snapshots and subvolumes**: keys are read at whatever snapshot they
-   carry; visibility rules (S1 9.4) are not implemented.
+5. **Snapshots and subvolumes**: visibility rules (S1 9.4) are not
+   implemented. Inferred and relied on: on a filesystem that never had a
+   snapshot, every key of the extents, inodes, dirents and xattrs btrees
+   carries the root inode's snapshot (U32_MAX on every fixture, checked
+   by every oracle test's positions). The reader and the checker refuse a
+   key at any other snapshot rather than resolve it (issue #53); what a
+   snapshotted filesystem looks like needs a fixture no guest can make
+   yet (issue #12).
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
    reflink, xattrs, multiple devices and replicas**: not seen in any
    fixture. (inline_data: seen and read, see above.)

@@ -88,7 +88,10 @@ pub fn compute(csum_type: u8, data: &[u8]) -> crate::Result<u64> {
 }
 
 /// Verify `data` against a stored checksum of the given type. Returns the
-/// computed value on a mismatch.
+/// computed value on a mismatch -- and `Err(0)` for a type this reader does
+/// not know, which never verifies: a checksum nobody computed is not a
+/// checksum that matched. Callers name the type first with [`is_known`];
+/// this is the backstop for one that forgets.
 pub fn verify(csum_type: u8, data: &[u8], stored: u64) -> Result<(), u64> {
     let computed = match csum_type {
         0 => return Ok(()),
@@ -97,7 +100,7 @@ pub fn verify(csum_type: u8, data: &[u8], stored: u64) -> Result<(), u64> {
         5 => crc32c_zero(data) as u64,
         6 => crc64_zero(data),
         7 => xxhash64(data),
-        _ => return Ok(()), // not yet known: see the module docs
+        _ => return Err(0),
     };
     if computed == stored {
         Ok(())
@@ -114,6 +117,16 @@ pub fn is_known(csum_type: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_checksum_type_never_verifies() {
+        for t in [3u8, 4, 8, 15, 0xff] {
+            assert!(!is_known(t));
+            assert!(verify(t, b"anything", 0).is_err(), "type {t} passed");
+            assert!(compute(t, b"anything").is_err(), "type {t} computed");
+        }
+        assert!(verify(0, b"anything", 12345).is_ok());
+    }
 
     #[test]
     fn the_two_crc32c_conventions_differ_as_measured() {

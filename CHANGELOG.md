@@ -103,3 +103,11 @@ API, a patch never does.
 - **Link counts** are reported as a mount reports them (`Inode::link_count`).
 - **The error for a superblock without a `clean` field** no longer says
   journal replay is not implemented; it points at the journal.
+- **A filesystem with snapshots is refused, not misread** (#53): every key
+  must carry the root inode's snapshot, and `fsck.bcachefs` reports
+  `snapshots` when one does not.
+- **Overlapping extents are refused by the reader and reported by the
+  checker** (`extent_overlap`, #60) instead of the later key silently
+  overwriting the newer one's bytes.
+- **An unknown checksum type never verifies** (#48): `csum::verify` returns
+  an error for a type it cannot compute instead of passing it.
