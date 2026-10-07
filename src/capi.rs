@@ -354,7 +354,7 @@ pub unsafe extern "C" fn fs_bcachefs_stat_ino(
         }
         match unsafe { &*fs }.fs.inode(ino) {
             Ok(i) => {
-                unsafe { *out = attr_of(i) };
+                unsafe { *out = attr_of(&i) };
                 0
             }
             Err(e) => {
