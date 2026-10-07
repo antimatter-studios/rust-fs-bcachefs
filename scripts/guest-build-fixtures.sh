@@ -307,6 +307,59 @@ done
 # directory under fixtures/.
 bash /repo/scripts/guest-write-study.sh
 
+# PROBES: open questions this build cannot settle on purpose, but can
+# record. Snapshots and subvolumes (#12), casefolded directories (#54) and
+# reflink (#7) each need a fixture that only a running filesystem can make;
+# the reference implementation's FUSE mount may or may not honour the
+# ioctls behind them. Each is tried once, on a scratch image, and whatever
+# happens -- success, "not supported", an error -- goes to probe.txt, with
+# the printer's and lister's view of the image afterwards. If one of them
+# works, probe.img is the first fixture of its kind and the lister's output
+# beside it is where the layout is first observed. Nothing here fails the
+# build: a probe that finds nothing is a recorded answer, not a skipped
+# step, and the image is not read by any test until a reader for it exists.
+echo "== probes (subvolume, snapshot, casefold, reflink through the reference mount)"
+probe_img=/var/tmp/age/probe.img
+rm -f "$ROOT$probe_img"
+truncate -s 64M "$ROOT$probe_img"
+bcachefs-ref format -q "$probe_img" > "$out/probe.format.txt" 2>&1
+{
+    echo "## mount"
+    if (fuse_mount "$probe_img" rw,noatime "$work/fuse-probe.log"); then
+        m="$ROOT$mnt"
+        mkdir -p "$m/sub" && echo "probe" > "$m/sub/file"
+        echo "## subvolume create (bcachefs subvolume create $mnt/subvol)"
+        bcachefs-ref subvolume create "$mnt/subvol" 2>&1 || echo "exit $?"
+        echo "## subvolume snapshot (bcachefs subvolume snapshot $mnt $mnt/snap)"
+        bcachefs-ref subvolume snapshot "$mnt" "$mnt/snap" 2>&1 || echo "exit $?"
+        echo "## casefold via set-file-option (--casefold=1 on an empty directory)"
+        mkdir -p "$m/casefold"
+        bcachefs-ref set-file-option --casefold=1 "$mnt/casefold" 2>&1 || echo "exit $?"
+        echo "## casefold via chattr +F"
+        chattr +F "$m/casefold" 2>&1 || echo "exit $?"
+        echo "Mixed" > "$m/casefold/Name" 2>&1 || echo "exit $?"
+        echo "## reflink via cp --reflink=always"
+        cp --reflink=always "$m/sub/file" "$m/sub/clone" 2>&1 || echo "exit $?"
+        echo "## listing"
+        ls -laR "$m" 2>&1 || true
+        # The daemon is killed, so what reaches the image is what the journal
+        # flushed: the wait outlasts its flush delay (1 s by default), as the
+        # write study's settle does. Without it the image held none of the
+        # above (measured in CI: the lister found only lost+found).
+        sync
+        sleep 2
+        fuse_kill
+    else
+        echo "the reference implementation did not mount the probe image"
+    fi
+} > "$out/probe.txt" 2>&1
+bcachefs-ref fsck -y "$probe_img" > "$out/probe.replay.txt" 2>&1 || true
+bcachefs-ref show-super "$probe_img" > "$out/probe.super.txt" 2>&1 || true
+for b in inodes dirents extents subvolumes snapshots reflink; do
+    bcachefs-ref list -b "$b" "$probe_img" > "$out/probe.$b.txt" 2>&1 || true
+done
+cp --sparse=always "$ROOT$probe_img" "$out/probe.img"
+
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
 rm -rf "$work"
 ls -l "$out"
