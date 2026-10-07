@@ -254,3 +254,52 @@ fn allocated_space_is_freed() {
     assert_eq!(fs.read(shrunk).unwrap(), b"small now\n");
     assert!(fs.read(grown).unwrap() == big[..100_000]);
 }
+
+/// Journalled commits: this crate reads the result through its own replay,
+/// and an entry whose superblock never said "replay me" changes nothing.
+#[test]
+fn journalled_commits_read_back_and_an_unmarked_one_is_ignored() {
+    let img = scratch("write-study/base.img", "local-journal");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 247) as u8).collect();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.journal_commits().unwrap();
+    w.create_file(d, b"small", b"journalled\n", 0o644).unwrap();
+    w.create_file(d, b"big", &big, 0o644).unwrap();
+    w.mkdir(d, b"sub", 0o755).unwrap();
+    w.unlink(d, b"existing").unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        !fs.superblock().is_clean(),
+        "journalled commits leave the image for replay"
+    );
+    assert_eq!(
+        fs.read(fs.lookup("/d/small").unwrap()).unwrap(),
+        b"journalled\n"
+    );
+    assert!(fs.read(fs.lookup("/d/big").unwrap()).unwrap() == big);
+    assert!(fs.inode(fs.lookup("/d/sub").unwrap()).unwrap().is_dir());
+    assert!(fs.lookup("/d/existing").is_err());
+
+    let img = scratch("write-study/base.img", "local-journal-crash");
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.journal_commits().unwrap();
+    w.crash_before_superblock();
+    w.create_file(d, b"lost", b"never committed\n", 0o644)
+        .unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.superblock().is_clean());
+    assert!(
+        fs.lookup("/d/lost").is_err(),
+        "an entry the superblock never marked was read"
+    );
+    assert_eq!(
+        fs.read(fs.lookup("/d/existing").unwrap()).unwrap(),
+        b"an existing file\n"
+    );
+}

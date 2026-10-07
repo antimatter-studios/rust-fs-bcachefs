@@ -351,6 +351,25 @@ checker judged each attempt and named what was missing until nothing was.
   does). Judged: unlinking, shrinking and growing large files passes the
   reference checker and the mount reads what remains (S8 checker run).
 
+### Committing through the journal (`src/write_journal.rs`) -- judged
+
+- A transaction is one jset in the layout the reader decodes: seq one past
+  the newest entry, last_seq the session's first, flags checksum type |
+  0x40 (bit 6 set on every flush entry the reference wrote), a btree_keys
+  entry per btree and a btree_root entry per root, at the next free block
+  of the journal ring (S4, S8).
+- Accounting goes in as signed deltas with version (seq, position), which
+  the replay adds once to keys of a lower version (S8: the reference's own
+  journal carries `replicas user ... -14`, `inum -1 -14 -14`).
+- The superblock's clean bit is cleared after the first entry, and its
+  replicas_v0 field lists the journal on the device (`02 01 00`; S4, and the
+  checker's "superblock not marked as containing replicas for journal
+  entry", its only finding on the first attempt).
+- Judged: entries 13-16 written to the write-study base (a small file, a
+  large file with a new lru root, a mkdir, an unlink) are replayed by the
+  reference checker with nothing to fix and read back through its mount;
+  an entry left unmarked is ignored by both.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
