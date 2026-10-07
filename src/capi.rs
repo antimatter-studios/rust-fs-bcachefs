@@ -13,7 +13,11 @@ use crate::Filesystem;
 
 /// An open, read-only filesystem.
 pub struct fs_bcachefs_fs {
-    fs: Filesystem<Arc<dyn BlockDevice>>,
+    /// The device is an fs_core trait object, which does not promise unwind
+    /// safety; every entry point catches panics and leaves the handle
+    /// usable, so the handle keeps promising it as it did with a concrete
+    /// file device.
+    fs: std::panic::AssertUnwindSafe<Filesystem<Arc<dyn BlockDevice>>>,
 }
 
 /// What `fs_bcachefs_stat` reports.
@@ -72,7 +76,9 @@ pub unsafe extern "C" fn fs_bcachefs_mount(path: *const c_char) -> *mut fs_bcach
             }
         };
         match Filesystem::open(Arc::new(dev) as Arc<dyn BlockDevice>) {
-            Ok(fs) => Box::into_raw(Box::new(fs_bcachefs_fs { fs })),
+            Ok(fs) => Box::into_raw(Box::new(fs_bcachefs_fs {
+                fs: std::panic::AssertUnwindSafe(fs),
+            })),
             Err(e) => {
                 set_last_error(e.to_string());
                 std::ptr::null_mut()
@@ -242,7 +248,9 @@ pub unsafe extern "C" fn fs_bcachefs_mount_with_fs_core_device(
         }
         let inner = Arc::clone(unsafe { &*dev }.inner());
         match Filesystem::open(inner) {
-            Ok(fs) => Box::into_raw(Box::new(fs_bcachefs_fs { fs })),
+            Ok(fs) => Box::into_raw(Box::new(fs_bcachefs_fs {
+                fs: std::panic::AssertUnwindSafe(fs),
+            })),
             Err(e) => {
                 set_last_error(e.to_string());
                 std::ptr::null_mut()
