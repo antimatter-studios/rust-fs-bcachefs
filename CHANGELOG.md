@@ -71,6 +71,9 @@ API, a patch never does.
 
 ### Fixed
 
+- **A transient HTTP 5xx from the chore release download no longer fails a CI
+  job.** `scripts/ci-install-chore.sh` retries both downloads up to five
+  times on any error; the checksum check still guards what was fetched.
 - **`fs_bcachefs_stat` reports the link count as a mount does**, not the
   stored count.
 
