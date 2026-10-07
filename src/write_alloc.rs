@@ -182,13 +182,6 @@ impl<D: BlockDevice> Writer<D> {
     /// Write `data` for inode `ino` into fresh buckets and add every key
     /// that goes with it to `t`. Returns the sectors allocated.
     pub(super) fn allocate_data(&mut self, ino: u64, data: &[u8], t: &mut Txn) -> Result<u64> {
-        if !data.is_empty() {
-            return Err(Error::Unsupported(format!(
-                "allocation is not implemented yet (inode {ino}, {} bytes, {} keys)",
-                data.len(),
-                t.keys.len()
-            )));
-        }
         let bucket = self.bucket_sectors()?;
         if bucket == 0 {
             return Err(Error::Corrupt("bucket size 0".into()));

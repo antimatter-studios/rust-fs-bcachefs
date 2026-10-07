@@ -296,6 +296,52 @@ by operation (positions `inode:offset:snapshot`):
   lists them and reads back their bytes, sizes and modes
   (tests/write_oracle.rs, in the guest).
 
+### Allocating space (`src/write_alloc.rs`) -- learned by write, judge, fix
+
+The write study's create-large pair (S8) gave the key set; the reference
+checker judged each attempt and named what was missing until nothing was.
+
+- Free space: the freespace btree (id 11) holds `set` keys (type 25) at
+  `dev:end`, `size` buckets long, one per run of free buckets (S8: 0:2016
+  len 1924 = buckets 92..2016). A bucket taken shrinks or removes its run.
+- alloc_v4 (type 27, alloc btree id 4) per bucket: word 0 journal seq when
+  it became non-empty, word 1 flags in byte 0 (0x23 on every bucket in use;
+  bit 0 need_discard, bit 1 need_inc_gen), gen byte 4, oldest_gen byte 5,
+  data type byte 6 (1 sb, 2 journal, 3 btree, 4 user, 9 need_discard),
+  word 2 dirty sectors, word 3 read clock, word 4 write clock, word 6 the
+  journal seq when it became empty (S3 + S4, field by field against the
+  lister over 259 keys and the reused buckets of `aged`).
+- Generations: bucket_gens (id 14) keys of type 30 at `dev:bucket/256`,
+  256 one-byte generations; a pointer carries its bucket's (S3 + S4).
+- Data extents: a crc32 entry (crc32c from zero, type 5; sizes minus one in
+  7 bits, so at most 128 sectors) then a pointer (S4, the create-large
+  extents), one bucket at most each.
+- Backpointers (id 13, type 28) at `dev:sector << 16`: value btree id,
+  level, data type, 5 bytes, the length in sectors u32, then the bpos of
+  the key pointing at the data (S3 + S4; for a btree node, the parent key's
+  position one level up).
+- lru (id 10): a partly filled bucket has a `set` key at
+  `(1 << 61 | dirty * 2^31 / bucket_size) : bucket` (S8, and the checker's
+  "missing fragmentation lru entry at pos 2305843009549238272:101:0").
+- A first lru key on a filesystem without an lru btree needs its root: an
+  empty node (header flags as an existing node's with the btree id in the
+  low byte, POS_MIN..SPOS_MAX, format 3 u64s 64/64/32, one empty bset), a
+  btree_ptr_v2 root key at SPOS_MAX added to the clean field, and the node
+  marked in the member's btree-allocated bitmap: a u64 at member offset
+  128, one bit per `2^shift` sectors with the shift a byte at member
+  offset 28 (S3: the printer's bitmap, most significant bit first,
+  blocksize 128; the checker's "btree ptr not marked in member info btree
+  allocated bitmap").
+- Accounting positions are a byte string read as a big-endian bpos: kind,
+  then fields (S8): 2 replicas `[data type, nr devs, nr required, devs]`
+  (value: sectors), 3 dev_data_type `[dev, data type]` (buckets, sectors,
+  fragmented), 5 per-snapshot btree counters (keys, bytes, data sectors),
+  6 per-btree node usage (sectors, nodes), 8 inode `[inum little-endian]`
+  (extents, sectors, sectors).
+- Judged: files of 249 bytes to 1 MB on the write-study base and on the
+  aged image pass the reference checker with nothing to fix and read back
+  through the reference mount byte for byte.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
@@ -330,6 +376,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    31-bit dirent offset change** (1.30) -- not exercised.
 10. **Dirent hash collisions**: where an entry goes when its name's hash
     slot is taken (none occurred in any fixture). The writer refuses.
+13. **Node flags for btree ids of 16 and more**: the writer only makes
+    roots for ids under 16 (the lru btree, 10).
+14. **Freeing allocated space** (unlink and rewrite of a large file): not
+    studied yet.
 11. **The inline-data limit**: inline was seen up to 248 bytes and not at
     2024; where between the reference switches to extents is unknown.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
