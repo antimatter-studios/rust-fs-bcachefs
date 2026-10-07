@@ -96,7 +96,10 @@ fn the_replayed_keys_are_the_references() {
             format!("{} {} len {}", w[0], w[6], w[8])
         })
         .collect();
-    assert!(theirs.len() > 100, "only {} keys listed", theirs.len());
+    // How many keys the window holds is the guest's timing, not ours:
+    // measured 11 in CI runs 37545693891 and #39's, about 1600 locally. Any
+    // window proves the comparison below; an empty one would prove nothing.
+    assert!(!theirs.is_empty(), "the reference lists no keys to replay");
 
     let dev = FileDevice::open(fixture(&format!("{SET}.img"))).unwrap();
     let sb = Superblock::read(&dev).unwrap();
