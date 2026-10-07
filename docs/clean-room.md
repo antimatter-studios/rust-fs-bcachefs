@@ -141,6 +141,11 @@ all eight fixture sets.
   flags u16, min_key, then extent pointers (S1 names; S4 layout).
 - Btree ids follow S1's list order: extents 0, inodes 1, dirents 2
   (checked).
+- The root key of every btree (in the clean field, and in the journal's
+  root entries) is at SPOS_MAX, the all-ones position, on every fixture
+  (S4, 14 to 16 roots each): the rightmost node covers everything up to
+  the end of the key space. The cursor records the root key's position as
+  the btree's end rather than assuming it (`tests/oracle_cursor_end.rs`).
 
 ### Inodes and dirents (`src/inode.rs`) -- documented fields, inferred encoding
 

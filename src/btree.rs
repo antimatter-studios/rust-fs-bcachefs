@@ -330,12 +330,6 @@ pub fn successor(p: Bpos) -> Bpos {
     }
 }
 
-const SPOS_MAX: Bpos = Bpos {
-    inode: u64::MAX,
-    offset: u64::MAX,
-    snapshot: u32::MAX,
-};
-
 /// A cursor over one btree: [`Cursor::seek`] to a position, then
 /// [`Cursor::next`] key by key. It reads only the nodes on its path -- the
 /// root and one node per level down to the leaf holding the position --
@@ -347,9 +341,13 @@ pub struct Cursor<'a> {
     cache: Option<&'a NodeCache>,
     root_level: u8,
     root: NodePtr,
+    /// The largest position the whole btree covers: the root key's
+    /// position, which is the root node's maximum key. SPOS_MAX on every
+    /// fixture (docs/clean-room.md); the cursor does not depend on that.
+    root_max: Bpos,
     /// The leaf being read, from where the cursor stands.
     leaf: std::vec::IntoIter<Bkey>,
-    /// The largest position the leaf covers; SPOS_MAX for the last.
+    /// The largest position the leaf covers; `root_max` for the last.
     leaf_max: Bpos,
     started: bool,
 }
@@ -375,9 +373,10 @@ impl<'a> Cursor<'a> {
             },
             root_level,
             root: NodePtr::from_key(&root_key)?,
+            root_max: root_key.pos,
             cache: None,
             leaf: Vec::new().into_iter(),
-            leaf_max: SPOS_MAX,
+            leaf_max: root_key.pos,
             started: false,
         })
     }
@@ -389,11 +388,18 @@ impl<'a> Cursor<'a> {
         self
     }
 
-    /// Stand before the first key at or after `pos`.
+    /// Stand before the first key at or after `pos`; past the btree's last
+    /// position, before nothing.
     pub fn seek(&mut self, pos: Bpos) -> Result<()> {
+        if pos > self.root_max {
+            self.leaf = Vec::new().into_iter();
+            self.leaf_max = self.root_max;
+            self.started = true;
+            return Ok(());
+        }
         let mut ptr = self.root.clone();
         let mut level = self.root_level;
-        let mut max = SPOS_MAX;
+        let mut max = self.root_max;
         loop {
             let node = match self.cache {
                 Some(c) => c.get(
@@ -443,7 +449,7 @@ impl<'a> Cursor<'a> {
             if let Some(k) = self.leaf.next() {
                 return Ok(Some(k));
             }
-            if self.leaf_max == SPOS_MAX {
+            if self.leaf_max >= self.root_max {
                 return Ok(None);
             }
             let from = successor(self.leaf_max);

@@ -114,6 +114,9 @@ API, a patch never does.
   overwriting the newer one's bytes.
 - **An unknown checksum type never verifies** (#48): `csum::verify` returns
   an error for a type it cannot compute instead of passing it.
+- **A cursor past the last key stands before nothing** (#56): the end of a
+  btree is the root key's position, not an assumed all-ones one, and a seek
+  beyond it is not an error.
 - **Extent pointers are judged before they are read** (#59): the bucket's
   generation from its `alloc_v4` key must match (a stale pointer is
   refused), the device must be this one, and a pointer with any flag set
