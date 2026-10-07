@@ -267,6 +267,9 @@ bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.forma
 for i in 0 1; do
     bcachefs-ref show-super "$out/multi-$i.img" > "$out/multi-$i.super.txt" 2>&1
 done
+# The write study's before/after pairs (#20): its own script, its own
+# directory under fixtures/.
+bash /repo/scripts/guest-write-study.sh
 
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
 rm -rf "$work"
