@@ -349,11 +349,3 @@ impl Dirent {
         b
     }
 }
-
-/// A dirent's offset in its directory: SipHash-2-4 of the name, keyed with
-/// the directory's `hash_seed` and 0, shifted right by one. INFERRED by
-/// computing candidates against every dirent of the write study (S4); see
-/// docs/clean-room.md.
-pub fn dirent_hash(dir_hash_seed: u64, name: &[u8]) -> u64 {
-    crate::siphash::siphash24(dir_hash_seed, 0, name) >> 1
-}
