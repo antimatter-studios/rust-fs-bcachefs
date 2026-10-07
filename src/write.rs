@@ -126,6 +126,11 @@ impl<D: BlockDevice> Writer<D> {
     /// (a key of type `deleted` removes it). Keys going to the same leaf are
     /// appended as one bset; the new lengths are carried up to the root.
     pub fn insert(&mut self, id: u8, mut keys: Vec<Bkey>) -> Result<()> {
+        if keys.is_empty() {
+            // An empty bset is one the reference checker rejects ("empty
+            // bset"): nothing to add is nothing to write.
+            return Ok(());
+        }
         keys.sort_by_key(|k| k.pos);
         let (root_level, root_key) = self.root(id)?;
         let new_root = self.insert_at(&root_key, root_level, &keys, true)?;
@@ -352,6 +357,8 @@ mod field {
     pub const CTIME: usize = 2;
     pub const MTIME: usize = 4;
     pub const OTIME: usize = 6;
+    pub const UID: usize = 8;
+    pub const GID: usize = 9;
     pub const NLINK: usize = 10;
     pub const DEPTH: usize = 28;
     /// Fields stored by a directory the reference created.
@@ -486,7 +493,11 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     fn key_at(&self, id: u8, pos: Bpos) -> Result<Option<Bkey>> {
-        Ok(self.keys(id)?.into_iter().find(|k| k.pos == pos))
+        match self.keys(id) {
+            // A btree with no root yet holds nothing.
+            Err(Error::NotFound(_)) if self.root(id).is_err() => Ok(None),
+            r => Ok(r?.into_iter().find(|k| k.pos == pos)),
+        }
     }
 
     fn inode(&self, ino: u64) -> Result<InodeRef> {
@@ -586,11 +597,12 @@ impl<D: BlockDevice> Writer<D> {
         parent: &InodeRef,
         offset: u64,
         mode: u32,
-        is_dir: bool,
+        kind: u32,
         size: u64,
         now: u64,
         name: &[u8],
     ) -> Bkey {
+        let is_dir = kind == S_IFDIR;
         let fields = if is_dir {
             field::DIR_FIELDS
         } else {
@@ -605,7 +617,6 @@ impl<D: BlockDevice> Writer<D> {
         if is_dir {
             varints[field::DEPTH] = parent.raw.varints.get(field::DEPTH).copied().unwrap_or(0) + 1;
         }
-        let kind = if is_dir { 0o040000 } else { 0o100000 };
         let inherited = parent.raw.flags & (0xf << 20 | 0xf << 32);
         let raw = crate::inode::InodeV3Raw {
             journal_seq: self.journal_seq,
@@ -684,8 +695,9 @@ impl<D: BlockDevice> Writer<D> {
         name: &[u8],
         data: &[u8],
         mode: u32,
-        is_dir: bool,
+        kind: u32,
     ) -> Result<u64> {
+        let is_dir = kind == S_IFDIR;
         valid_name(name)?;
         let mut p = self.dir(parent)?;
         let (at, existing) = self.dirent(&p, name)?;
@@ -699,16 +711,7 @@ impl<D: BlockDevice> Writer<D> {
         let now = self.now();
         let mut t = Txn::default();
         t.inodes(1);
-        let mut new = self.new_inode(
-            ino,
-            &p,
-            at.offset,
-            mode,
-            is_dir,
-            data.len() as u64,
-            now,
-            name,
-        );
+        let mut new = self.new_inode(ino, &p, at.offset, mode, kind, data.len() as u64, now, name);
         if data.len() > INLINE_MAX {
             let sectors = self.allocate_data(ino, data, &mut t)?;
             let mut raw = crate::inode::InodeV3Raw::parse(&new.value)?;
@@ -727,7 +730,7 @@ impl<D: BlockDevice> Writer<D> {
         t.put(
             ids::DIRENTS,
             None,
-            Self::dirent_key(at, name, ino, if is_dir { 4 } else { 8 }),
+            Self::dirent_key(at, name, ino, d_type(kind)),
         );
         if data.len() <= INLINE_MAX {
             if let Some(k) = Self::inline_key(ino, data) {
@@ -744,13 +747,13 @@ impl<D: BlockDevice> Writer<D> {
     /// `data` (at most [`INLINE_MAX`] bytes, stored inline). Returns its
     /// inode number.
     pub fn create_file(&mut self, parent: u64, name: &[u8], data: &[u8], mode: u32) -> Result<u64> {
-        self.create(parent, name, data, mode, false)
+        self.create(parent, name, data, mode, S_IFREG)
     }
 
     /// Create a directory named `name` in `parent`. Returns its inode
     /// number.
     pub fn mkdir(&mut self, parent: u64, name: &[u8], mode: u32) -> Result<u64> {
-        self.create(parent, name, &[], mode, true)
+        self.create(parent, name, &[], mode, S_IFDIR)
     }
 
     fn remove(&mut self, parent: u64, name: &[u8], want_dir: bool) -> Result<()> {
@@ -932,5 +935,205 @@ impl<D: BlockDevice> Writer<D> {
             out.push(k);
         }
         Ok(out)
+    }
+}
+
+const S_IFREG: u32 = 0o100000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFLNK: u32 = 0o120000;
+
+/// The DT_* type a dirent records for an inode type.
+fn d_type(kind: u32) -> u8 {
+    match kind {
+        S_IFDIR => 4,
+        S_IFLNK => 10,
+        _ => 8,
+    }
+}
+
+/// The xattrs btree and key type (S1's orders).
+const XATTRS: u8 = 3;
+
+/// An xattr's namespace number and the name without its prefix (S4, the
+/// aged fixture; others are refused, as the reader refuses them).
+fn xattr_namespace(name: &[u8]) -> Result<(u8, &[u8])> {
+    for (ns, prefix) in [(0u8, &b"user."[..]), (3, &b"trusted."[..])] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if rest.is_empty() || rest.len() > 255 {
+                break;
+            }
+            return Ok((ns, rest));
+        }
+    }
+    Err(Error::Unsupported(format!(
+        "xattr {:?}: only the user and trusted namespaces are written",
+        String::from_utf8_lossy(name)
+    )))
+}
+
+impl<D: BlockDevice> Writer<D> {
+    /// Create a symlink named `name` in `parent` pointing at `target`: an
+    /// inode of mode 120777 whose inline data is the target (S8: the aged
+    /// fixture's symlinks).
+    pub fn symlink(&mut self, parent: u64, name: &[u8], target: &[u8]) -> Result<u64> {
+        if target.is_empty() || target.len() > INLINE_MAX || target.contains(&0) {
+            return Err(Error::Unsupported(format!(
+                "symlink targets of 1 to {INLINE_MAX} bytes without NUL are written"
+            )));
+        }
+        self.create(parent, name, target, 0o777, S_IFLNK)
+    }
+
+    /// Give inode `ino` one more name: `name` in `dir`. The inode's stored
+    /// link count rises and its back-reference moves to the new name, as
+    /// the aged fixture's hard links show (S8).
+    pub fn link(&mut self, ino: u64, dir: u64, name: &[u8]) -> Result<()> {
+        valid_name(name)?;
+        let mut i = self.inode(ino)?;
+        if i.is_dir() {
+            return Err(Error::Corrupt("directories cannot be hard-linked".into()));
+        }
+        let mut p = self.dir(dir)?;
+        let (at, existing) = self.dirent(&p, name)?;
+        if existing.is_some() {
+            return Err(Error::Corrupt(format!(
+                "{:?} already exists",
+                String::from_utf8_lossy(name)
+            )));
+        }
+        let now = self.now();
+        let mut t = Txn::default();
+        t.put(
+            ids::DIRENTS,
+            None,
+            Self::dirent_key(at, name, ino, d_type(i.raw.mode() & 0o170000)),
+        );
+        let old = i.key.clone();
+        i.raw.varints[field::NLINK] += 1;
+        i.raw.varints[field::DIR] = dir;
+        i.raw.varints[field::DIR_OFFSET] = at.offset;
+        i.raw.varints[field::CTIME] = now;
+        i.raw.journal_seq = self.journal_seq;
+        t.put(ids::INODES, Some(&old), i.rekey());
+        let old_parent = p.key.clone();
+        self.touch(&mut p, now);
+        t.put(ids::INODES, Some(&old_parent), p.rekey());
+        self.commit(t)
+    }
+
+    /// Change an inode's permissions and owner; `None` leaves one as it is.
+    pub fn set_attributes(
+        &mut self,
+        ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<()> {
+        let mut i = self.inode(ino)?;
+        let old = i.key.clone();
+        if let Some(m) = mode {
+            let mode_bits = (i.raw.mode() & 0o170000) | (m & 0o7777);
+            i.raw.flags = (i.raw.flags & !(0xffff << 36)) | u64::from(mode_bits) << 36;
+        }
+        if let Some(u) = uid {
+            i.raw.varints[field::UID] = u64::from(u);
+        }
+        if let Some(g) = gid {
+            i.raw.varints[field::GID] = u64::from(g);
+        }
+        i.raw.varints[field::CTIME] = self.now();
+        i.raw.journal_seq = self.journal_seq;
+        let mut t = Txn::default();
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
+    }
+
+    /// The xattr key of `name` on inode `ino`: at SipHash-2-4 of the
+    /// namespace byte and the name, keyed with the inode's hash seed and 0,
+    /// shifted right by one (S4: 43 of the aged fixture's 45 xattrs sit
+    /// there; open question 15 for the other two).
+    fn xattr_pos(&self, i: &InodeRef, ns: u8, name: &[u8]) -> Bpos {
+        let mut msg = Vec::with_capacity(1 + name.len());
+        msg.push(ns);
+        msg.extend_from_slice(name);
+        pos(
+            i.key.pos.offset,
+            crate::siphash::siphash24(i.raw.hash_seed, 0, &msg) >> 1,
+        )
+    }
+
+    /// Set the extended attribute `name` (with its namespace, `user.x`).
+    pub fn set_xattr(&mut self, ino: u64, name: &[u8], value: &[u8]) -> Result<()> {
+        let (ns, short) = xattr_namespace(name)?;
+        if value.len() > 0xffff {
+            return Err(Error::Unsupported("xattr values over 65535 bytes".into()));
+        }
+        let mut i = self.inode(ino)?;
+        let at = self.xattr_pos(&i, ns, short);
+        let old_x = self
+            .key_at(XATTRS, at)?
+            .filter(|k| k.key_type == key_type::XATTR);
+        if let Some(k) = &old_x {
+            if crate::xattr::Xattr::from_key(k)?.name != name {
+                return Err(Error::Unsupported(
+                    "another xattr holds this name's hash slot: collisions are not handled".into(),
+                ));
+            }
+        }
+        let mut v = vec![ns, short.len() as u8];
+        v.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        v.extend_from_slice(short);
+        v.extend_from_slice(value);
+        v.resize(v.len().div_ceil(8) * 8, 0);
+        if 5 + v.len() / 8 > 255 {
+            return Err(Error::Unsupported("an xattr too large for one key".into()));
+        }
+        let mut t = Txn::default();
+        if self.root(XATTRS).is_err() {
+            // The first xattr of a filesystem that never had one: its
+            // btree's root is made, as for lru.
+            let b = self.take_buckets(1, &mut t)?;
+            self.create_root(XATTRS, b[0], &mut t)?;
+        }
+        t.put(
+            XATTRS,
+            old_x.as_ref(),
+            Bkey {
+                key_type: key_type::XATTR,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: at,
+                value: v,
+            },
+        );
+        let old = i.key.clone();
+        i.raw.varints[field::CTIME] = self.now();
+        i.raw.journal_seq = self.journal_seq;
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
+    }
+
+    /// Remove the extended attribute `name`.
+    pub fn remove_xattr(&mut self, ino: u64, name: &[u8]) -> Result<()> {
+        let (ns, short) = xattr_namespace(name)?;
+        let mut i = self.inode(ino)?;
+        let at = self.xattr_pos(&i, ns, short);
+        let old_x = self
+            .key_at(XATTRS, at)?
+            .filter(|k| k.key_type == key_type::XATTR)
+            .filter(|k| {
+                crate::xattr::Xattr::from_key(k)
+                    .map(|x| x.name == name)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| Error::NotFound(format!("xattr {:?}", String::from_utf8_lossy(name))))?;
+        let mut t = Txn::default();
+        t.delete(XATTRS, &old_x);
+        let old = i.key.clone();
+        i.raw.varints[field::CTIME] = self.now();
+        i.raw.journal_seq = self.journal_seq;
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
     }
 }

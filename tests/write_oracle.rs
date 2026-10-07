@@ -430,3 +430,54 @@ fn journalled_commits_are_replayed_by_the_reference() {
         assert!(m.join("d/existing").exists());
     });
 }
+
+/// Symlinks, hard links, attributes and extended attributes: the checker
+/// passes them and the mount sees them.
+#[test]
+fn links_attributes_and_xattrs_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "links");
+    let (d, existing) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        (fs.lookup("/d").unwrap(), fs.lookup("/d/existing").unwrap())
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.symlink(d, b"link", b"existing").unwrap();
+    w.link(existing, d, b"second-name").unwrap();
+    w.set_attributes(existing, Some(0o600), Some(1000), Some(1000))
+        .unwrap();
+    w.set_xattr(existing, b"user.colour", b"blue").unwrap();
+    w.set_xattr(existing, b"user.shape", b"round").unwrap();
+    w.set_xattr(existing, b"user.colour", b"green").unwrap();
+    w.remove_xattr(existing, b"user.shape").unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_eq!(
+            std::fs::read_link(m.join("d/link")).unwrap().to_str(),
+            Some("existing")
+        );
+        let a = std::fs::metadata(m.join("d/existing")).unwrap();
+        let b = std::fs::metadata(m.join("d/second-name")).unwrap();
+        assert_eq!(a.ino(), b.ino());
+        assert_eq!(
+            (a.permissions().mode() & 0o7777, a.uid(), a.gid(), a.nlink()),
+            (0o600, 1000, 1000, 2)
+        );
+        // getfattr is installed in the reference tools' chroot
+        // (scripts/vm-setup.sh), where the mount is at MNT.
+        let out = Command::new("chroot")
+            .args([
+                REF_ROOT,
+                "getfattr",
+                "-d",
+                "--absolute-names",
+                &format!("{MNT}/d/existing"),
+            ])
+            .output()
+            .expect("chroot into the reference tools' root");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("user.colour=\"green\""), "{text}");
+        assert!(!text.contains("user.shape"), "{text}");
+    });
+}

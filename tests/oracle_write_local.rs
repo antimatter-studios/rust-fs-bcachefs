@@ -303,3 +303,43 @@ fn journalled_commits_read_back_and_an_unmarked_one_is_ignored() {
         b"an existing file\n"
     );
 }
+
+/// Symlinks, hard links, attributes and extended attributes, read back.
+#[test]
+fn links_attributes_and_xattrs_read_back() {
+    let img = scratch("write-study/base.img", "local-links");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let existing = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d/existing").unwrap()
+    };
+    let l = w.symlink(d, b"link", b"existing").unwrap();
+    w.link(existing, d, b"second-name").unwrap();
+    w.set_attributes(existing, Some(0o600), Some(1000), Some(1000))
+        .unwrap();
+    w.set_xattr(existing, b"user.colour", b"blue").unwrap();
+    w.set_xattr(existing, b"user.shape", b"round").unwrap();
+    w.set_xattr(existing, b"user.colour", b"green").unwrap();
+    w.remove_xattr(existing, b"user.shape").unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.inode(l).unwrap().is_symlink());
+    assert_eq!(fs.read(fs.lookup("/d/link").unwrap()).unwrap(), b"existing");
+    assert_eq!(fs.lookup("/d/second-name").unwrap(), existing);
+    let i = fs.inode(existing).unwrap();
+    assert_eq!(
+        (i.mode & 0o7777, i.uid, i.gid, i.link_count()),
+        (0o600, 1000, 1000, 2)
+    );
+    let x: Vec<(Vec<u8>, Vec<u8>)> = fs
+        .xattrs(existing)
+        .unwrap()
+        .into_iter()
+        .map(|x| (x.name, x.value))
+        .collect();
+    assert_eq!(x, vec![(b"user.colour".to_vec(), b"green".to_vec())]);
+}
