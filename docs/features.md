@@ -79,8 +79,7 @@ reads back byte for byte through the reference implementation's mount
 | Data on blocks larger than 512 bytes | Experimental | Unreleased (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | Unreleased (#37) | | `write_oracle.rs` |
 | Symlinks, hard links, mode and owner | Experimental | Unreleased (#43) | | `write_oracle.rs` |
-| Extended attributes, names of up to 7 bytes | Experimental | Unreleased (#43) | | `write_oracle.rs` |
-| Extended attributes, names of 8 bytes and more | Upcoming: placed at the wrong slot today | | #77 (PR #91) | |
+| Extended attributes, any name length, at the slot the reference uses | Experimental | Unreleased (#43, #91) | | `oracle_xattr_slots.rs`, `write_oracle.rs` |
 | Colliding names (hash runs, whiteouts) | Experimental | Unreleased (#88) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Names in crc32c directories | Experimental | Unreleased (#88) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | A new btree root, any btree id | Experimental: no write needs an id of 16 and above yet | Unreleased (#92) | #80 | `oracle_node_flags.rs` |
