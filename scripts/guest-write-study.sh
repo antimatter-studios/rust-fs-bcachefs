@@ -230,85 +230,34 @@ dump "$img" options
 cp --sparse=always "$ROOT$img" "$out/options.img"
 
 # PER-INODE OPTIONS, OFFLINE (#81). The mount refuses the bcachefs.*
-# xattrs above, so here the options are set with the reference tool's
-# offline key editor instead (S1 6.12, `kvdb`: `update inodes <pos>
-# bi_<field>=<value>`, by the unpacked field names). Files and a directory
-# are made through the mount and settled; kvdb gives each file one option
-# value, named by the file, and the directory `o` a compression value;
-# then the image is mounted again, data is written into each file, and a
-# file and a directory are made in `o`. The lister's extents show what
-# each value did to the data, and its inodes whether a new inode took its
-# directory's option. kvdb-options.txt records every step. Nothing here
-# fails the build: tests/oracle_inode_options.rs fails if no option was
-# set.
+# xattrs above; the reference tool's offline key editor (`kvdb`, S1 6.12)
+# is the other way S1 names to set an inode's fields by name. The pinned
+# one refuses them too: varint-packed values are editable only up to
+# their fixed header, and `update inodes <pos> bi_compression=2` answers
+# "bch_inode_v3 has no field 'bi_compression'" (CI run 37807307021). So
+# one file is made through the mount and settled, kvdb prints its inode
+# (how it names the fixed header's fields and flag bits) and is asked for
+# the option again. kvdb-options.txt records both; nothing here fails the
+# build: tests/oracle_inode_fields.rs reads the answer, and fails the day
+# the editor takes an option.
 echo "== write-study: kvdb-options"
 img="$work/kvdb-options.img"
 truncate -s 64M "$ROOT$img"
 bcachefs-ref format -q "$img" >"$out/kvdb-options.format.txt" 2>&1
-KVDB_FILES="compression-1 compression-2 compression-3 compression-4 data_checksum-1
-data_checksum-2 data_checksum-3 data_checksum-4 background_compression-2 plain"
-kvdb_settle() { # STEP: the daemon killed, the journal replayed, as settle does
-    sync
-    sleep 2
-    pkill -KILL -f "bcachefs fusemount" || true
-    for _ in $(seq 1 30); do
-        pgrep -f "bcachefs fusemount" >/dev/null || break
-        sleep 1
-    done
-    fusermount3 -uz "$ROOT$mnt" 2>/dev/null || umount -l "$ROOT$mnt" 2>/dev/null || true
-    bcachefs-ref fsck -y "$img" >"$out/kvdb-options.$1.settle.txt" 2>&1 || echo "settle $1: exit $?"
-}
+mount_rw "$img"
+printf 'a file to give an option\n' >"$ROOT$mnt/own"
+ino="$(stat -c %i "$ROOT$mnt/own")"
+settle "$img" kvdb-options
 {
-    echo "## kvdb --help"
-    timeout 60 bcachefs-ref kvdb --help 2>&1 </dev/null || echo "exit $?"
-    M="$ROOT$mnt"
-    if (mount_rw "$img"); then
-        mkdir "$M/o"
-        for f in $KVDB_FILES; do : >"$M/$f"; done
-        # shellcheck disable=SC2086 # the names are one word each
-        (cd "$M" && stat -c '%i %n' o $KVDB_FILES) >"$ROOT$work/kvdb.inos"
-        echo "## inodes"
-        cat "$ROOT$work/kvdb.inos"
-        kvdb_settle made
-        while read -r ino name; do
-            case "$name" in
-                o) set=bi_compression=2 ;;
-                plain) continue ;;
-                *) set="bi_${name%-*}=${name##*-}" ;;
-            esac
-            for p in "0:$ino:4294967295" "0:$ino:U32_MAX" "0:$ino"; do
-                echo "## kvdb --rw: update inodes $p $set"
-                if echo "update inodes $p $set" | timeout 120 bcachefs-ref kvdb --rw "$img" 2>&1; then
-                    break
-                else
-                    echo "exit $?"
-                fi
-            done
-        done <"$ROOT$work/kvdb.inos"
-        bcachefs-ref list -b inodes "$img" >"$out/kvdb-options-set.inodes.txt" 2>&1 || true
-        echo "## write through the mount"
-        if (mount_rw "$img"); then
-            for f in $KVDB_FILES o/new; do
-                head -c 65536 /dev/zero | tr '\0' x >"$M/$f" || echo "write $f: exit $?"
-            done
-            : >"$M/o/empty"
-            mkdir "$M/o/sub" || echo "mkdir o/sub: exit $?"
-            stat -c '%i %n' "$M/o/new" "$M/o/empty" "$M/o/sub"
-            kvdb_settle written
-        else
-            echo "the reference implementation did not mount the edited image"
-        fi
-        for b in inodes extents; do
-            bcachefs-ref list -b "$b" "$img" >"$out/kvdb-options.$b.txt" 2>&1 || true
-        done
-        bcachefs-ref fsck -n "$img" >"$out/kvdb-options.fsck.txt" 2>&1 &&
-            echo "fsck -n: clean" || echo "fsck -n: exit $?"
-        cp --sparse=always "$ROOT$img" "$out/kvdb-options.img"
-    else
-        echo "the reference implementation did not mount the options image"
-    fi
-} >"$out/kvdb-options.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/kvdb-options.txt"
-sed 's/^/kvdb-options: /' "$out/kvdb-options.txt"
+    echo "## get inodes 0:$ino:4294967295"
+    echo "get inodes 0:$ino:4294967295" | timeout 120 bcachefs-ref kvdb "$img" 2>&1 ||
+        echo "exit $?"
+    echo "## update inodes 0:$ino:4294967295 bi_compression=2"
+    echo "update inodes 0:$ino:4294967295 bi_compression=2" |
+        timeout 120 bcachefs-ref kvdb --rw "$img" 2>&1 || echo "exit $?"
+} >"$out/kvdb-options.txt" 2>&1 || true
+grep -v '^\(Using\|starting\|  with\|recovering\|Journal\|going\|clean\|.*\.\.\. done\)' \
+    "$out/kvdb-options.txt" | sed 's/^/kvdb-options: /' || true
 # XATTR SLOTS (#77): two of aged's xattrs, the first set on a fresh file
 # and one set on a directory, are not at the SipHash slot the inode's
 # hash_seed gives. The same steps are taken here one mount each, settled

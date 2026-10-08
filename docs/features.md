@@ -54,7 +54,7 @@ States:
 | Snapshots and subvolumes | Not supported | | #12; Unobservable: the reference mount makes none | `oracle_probes.rs` |
 | Reflinked extents (`reflink_p`): refused by the reader and the writer, named by the checker | Refused | Unreleased (#100) | #7; Unobservable through the reference mount: no route makes a reflink (FICLONE, FICLONERANGE, `copy_file_range`, FIDEDUPERANGE); the reference's `kvdb` editor is the next route | `oracle_refused_local.rs`, `oracle_probes.rs` |
 | Casefolded directories | Not supported | | #54; Unobservable: the reference mount refuses casefold | `oracle_probes.rs` |
-| Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: the reference mount refuses options | `oracle_inode_fields.rs` |
+| Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: neither the reference mount nor its offline editor sets one (#99) | `oracle_inode_fields.rs` |
 
 ## Checking
 
