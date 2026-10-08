@@ -30,7 +30,7 @@ const MAX_EXTENT_SECTORS: u64 = 128;
 
 /// Data types in alloc keys, accounting and backpointers (S1's order; the
 /// lister names 1 sb, 2 journal, 3 btree, 4 user).
-const DATA_USER: u8 = 4;
+pub(super) const DATA_USER: u8 = 4;
 
 /// A bucket's data type sits in byte 6 of the alloc_v4 value's second
 /// word; the low byte of that word held 0x23 in every bucket the reference
@@ -48,7 +48,7 @@ fn acct_replicas_user(dev: u8) -> Bpos {
     }
 }
 
-fn acct_dev_data_type(dev: u8, data_type: u8) -> Bpos {
+pub(super) fn acct_dev_data_type(dev: u8, data_type: u8) -> Bpos {
     Bpos {
         inode: 0x0300_0000_0000_0000 | u64::from(dev) << 48 | u64::from(data_type) << 40,
         offset: 0,
@@ -91,7 +91,7 @@ impl<D: BlockDevice> Writer<D> {
     /// Take `n` whole free buckets, lowest first, from the freespace btree's
     /// runs (keys of type `set` at `dev:end`, `size` buckets long, S8).
     /// Returns the buckets and the keys that shrink the runs.
-    pub(super) fn take_buckets(&self, n: u64, t: &mut Txn) -> Result<Vec<u64>> {
+    pub(super) fn take_buckets(&mut self, n: u64, t: &mut Txn) -> Result<Vec<u64>> {
         let runs: Vec<Bkey> = self
             .keys(aids::FREESPACE)?
             .into_iter()
@@ -115,7 +115,16 @@ impl<D: BlockDevice> Writer<D> {
                 .checked_sub(u64::from(run.size))
                 .ok_or_else(|| Error::Corrupt("a freespace run before bucket 0".into()))?;
             let mut first_unused = start;
+            // Buckets this writer took earlier: the run on disk may not show
+            // them taken yet.
+            while first_unused < end && self.reserved.contains(&first_unused) {
+                first_unused += 1;
+            }
             while first_unused < end && (out.len() as u64) < n {
+                if self.reserved.contains(&first_unused) {
+                    first_unused += 1;
+                    continue;
+                }
                 if used.contains(&first_unused) {
                     return Err(Error::Corrupt(format!(
                         "bucket {first_unused} is free and has an alloc key"
@@ -144,6 +153,7 @@ impl<D: BlockDevice> Writer<D> {
                 out.len()
             )));
         }
+        self.reserved.extend(out.iter().copied());
         Ok(out)
     }
 
@@ -151,7 +161,7 @@ impl<D: BlockDevice> Writer<D> {
     /// `dev:bucket / 256` (type 30, 256 one-byte generations; S3 + S4: the
     /// lister prints them in order and the alloc keys of reused buckets
     /// carry the same), 0 when there is none.
-    fn bucket_gen(&self, bucket: u64) -> Result<u8> {
+    pub(super) fn bucket_gen(&self, bucket: u64) -> Result<u8> {
         let gens = match self.keys(aids::BUCKET_GENS) {
             Err(Error::NotFound(_)) => return Ok(0),
             r => r?,
@@ -169,7 +179,7 @@ impl<D: BlockDevice> Writer<D> {
 
     /// The largest write clock any bucket recorded (alloc_v4 word 4), for
     /// the buckets this writer fills.
-    fn write_clock(&self) -> Result<u64> {
+    pub(super) fn write_clock(&self) -> Result<u64> {
         Ok(self
             .keys(aids::ALLOC)?
             .iter()
@@ -216,12 +226,10 @@ impl<D: BlockDevice> Writer<D> {
         // that never had one has no lru btree: its root is made here, in one
         // more bucket (S8: the reference made exactly that for its first
         // large file).
-        let lru_root = !sectors.is_multiple_of(bucket) && self.root(aids::LRU).is_err();
-        let mut buckets = self.take_buckets(data_buckets + u64::from(lru_root), t)?;
-        if lru_root {
-            let node_bucket = buckets.pop().expect("one more was taken");
-            self.create_root(aids::LRU, node_bucket, t)?;
+        if !sectors.is_multiple_of(bucket) && self.root(aids::LRU).is_err() {
+            self.create_root(aids::LRU, t)?;
         }
+        let buckets = self.take_buckets(data_buckets, t)?;
         let clock = self.write_clock()?;
 
         // Plan the extents: each within one bucket, at most 128 sectors.
@@ -392,137 +400,15 @@ impl<D: BlockDevice> Writer<D> {
     /// POS_MIN, max key SPOS_MAX, the 64/64/32 unpacked key format. The
     /// root key goes into the superblock's clean field; the bucket's alloc
     /// key, its backpointer and the accounting go into `t`.
-    pub(super) fn create_root(&mut self, id: u8, bucket: u64, t: &mut Txn) -> Result<()> {
-        let bucket_sectors = self.bucket_sectors()?;
-        let node_sectors = u64::from(self.sb.btree_node_size());
-        if node_sectors > bucket_sectors {
-            return Err(Error::Unsupported(
-                "btree nodes larger than a bucket".into(),
-            ));
-        }
-        let block = (self.sb.block_size as usize * 512).max(512);
-        // A template: the extents btree's root node.
-        let (_, ext_root) = self.root(ids::EXTENTS)?;
-        let ext_ptr = crate::btree::NodePtr::from_key(&ext_root)?;
-        let mut tmpl = vec![0u8; 160];
-        self.dev.read_at(ext_ptr.ptrs[0].offset * 512, &mut tmpl)?;
-        let tmpl_flags = le64(&tmpl, 24);
-        let first_bset_flags = crate::util::le32(&tmpl, 136 + 16);
-        let version = crate::util::le16(&tmpl, 136 + 20);
-
-        let gen = u64::from(self.bucket_gen(bucket)?);
-        let seq =
-            crate::siphash::siphash24(self.journal_seq, bucket, b"rust-fs-bcachefs node seq") | 1;
-        let mut node = vec![0u8; 160];
-        node[16..24].copy_from_slice(&crate::btree::node_magic(&self.sb.uuid).to_le_bytes());
-        node[24..32].copy_from_slice(
-            &crate::btree::flags_with_id_and_level(tmpl_flags, id, 0).to_le_bytes(),
-        );
-        // min_key 32..52 stays POS_MIN; max_key 52..72 is SPOS_MAX.
-        node[52..72].fill(0xff);
-        // The key format: 3 u64s, 6 fields, 64/64/32 bits, no offsets.
-        node[80..88].copy_from_slice(&[3, 6, 64, 64, 32, 0, 0, 0]);
-        node[136..144].copy_from_slice(&seq.to_le_bytes());
-        node[152..156].copy_from_slice(&(first_bset_flags & 0xf).to_le_bytes());
-        node[156..158].copy_from_slice(&version.to_le_bytes());
-        let csum = crate::csum::compute((first_bset_flags & 0xf) as u8, &node[16..160])?;
-        node[0..8].copy_from_slice(&csum.to_le_bytes());
-        node.resize(160usize.div_ceil(block) * block, 0);
-        let dev_sector = bucket * bucket_sectors;
-        self.dev.write_at(dev_sector * 512, &node)?;
-
-        // The root key: btree_ptr_v2 at SPOS_MAX.
-        let mut v = Vec::with_capacity(48);
-        v.extend_from_slice(&0u64.to_le_bytes());
-        v.extend_from_slice(&seq.to_le_bytes());
-        v.extend_from_slice(&((node.len() / 512) as u16).to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
-        v.extend_from_slice(&[0u8; 20]);
-        v.extend_from_slice(&(1u64 | dev_sector << 4 | gen << 56).to_le_bytes());
-        let root = Bkey {
-            key_type: key_type::BTREE_PTR_V2,
-            size: 0,
-            version_hi: 0,
-            version_lo: 0,
-            pos: SPOS_MAX,
-            value: v,
-        };
+    pub(super) fn create_root(&mut self, id: u8, t: &mut Txn) -> Result<()> {
+        let root = self.new_node(id, 0, Bpos::default(), SPOS_MAX, &[], t)?;
         if self.session.is_some() {
             // Journalled: every entry from now on records the new root.
             self.session_add_root(id, 0, root);
-            self.mark_btree_bitmap(dev_sector, node_sectors)?;
             self.write_superblock()?;
         } else {
             self.add_root_entry(id, &super::encode_key(&root)?)?;
-            self.mark_btree_bitmap(dev_sector, node_sectors)?;
         }
-
-        let clock = self.write_clock()?;
-        let mut a = Vec::with_capacity(64);
-        for w in [
-            self.journal_seq,
-            u64::from(DATA_BTREE) << 48 | gen << 40 | gen << 32 | 0x23,
-            node_sectors,
-            1,
-            clock,
-            0,
-            0,
-            0,
-        ] {
-            a.extend_from_slice(&w.to_le_bytes());
-        }
-        t.put_uncounted(
-            aids::ALLOC,
-            Bkey {
-                key_type: aids::ALLOC_V4,
-                size: 0,
-                version_hi: 0,
-                version_lo: 0,
-                pos: Bpos {
-                    inode: 0,
-                    offset: bucket,
-                    snapshot: 0,
-                },
-                value: a,
-            },
-        );
-        // The node's backpointer names the key pointing at it: the root key,
-        // one level up (S8: btree=lru level=1 pos=SPOS_MAX).
-        let mut bp = Vec::with_capacity(32);
-        bp.extend_from_slice(&[id, 1, DATA_BTREE, 0, 0, 0, 0, 0]);
-        bp.extend_from_slice(&(node_sectors as u32).to_le_bytes());
-        bp.extend_from_slice(&SPOS_MAX.snapshot.to_le_bytes());
-        bp.extend_from_slice(&SPOS_MAX.offset.to_le_bytes());
-        bp.extend_from_slice(&SPOS_MAX.inode.to_le_bytes());
-        t.put_uncounted(
-            aids::BACKPOINTERS,
-            Bkey {
-                key_type: aids::BACKPOINTER,
-                size: 0,
-                version_hi: 0,
-                version_lo: 0,
-                pos: Bpos {
-                    inode: 0,
-                    offset: dev_sector << 16,
-                    snapshot: 0,
-                },
-                value: bp,
-            },
-        );
-        let n = node_sectors as i64;
-        t.count(acct_replicas(DATA_BTREE, 0), 1, 0, n);
-        let btree = acct_dev_data_type(0, DATA_BTREE);
-        t.count(btree, 3, 0, 1);
-        t.count(btree, 3, 1, n);
-        t.count(btree, 3, 2, bucket_sectors as i64 - n);
-        t.count(acct_dev_data_type(0, 0), 3, 0, -1);
-        let per_btree = Bpos {
-            inode: 6 << 56 | u64::from(id) << 48,
-            offset: 0,
-            snapshot: 0,
-        };
-        t.count(per_btree, 3, 0, n);
-        t.count(per_btree, 3, 1, 1);
         Ok(())
     }
 
@@ -532,7 +418,7 @@ impl<D: BlockDevice> Writer<D> {
     /// "Btree allocated bitmap" read most significant bit first, blocksize
     /// 128, against the bytes; the reference set bit 48 for a node at sector
     /// 6144). The reference checker names a node outside it.
-    fn mark_btree_bitmap(&mut self, dev_sector: u64, sectors: u64) -> Result<()> {
+    pub(super) fn mark_btree_bitmap(&mut self, dev_sector: u64, sectors: u64) -> Result<()> {
         let mut p = super::SB_HEADER_BYTES;
         let raw = &mut self.sb_raw;
         while p + 8 <= raw.len() {
@@ -550,15 +436,25 @@ impl<D: BlockDevice> Writer<D> {
                         "members_v2 too short for the btree bitmap".into(),
                     ));
                 }
-                let shift = u32::from(raw[m + 28]);
+                let mut shift = u32::from(raw[m + 28]);
+                let mut bits = le64(raw, m + 128);
+                // A node past the 64 regions the bitmap covers: each region
+                // doubles, the bits folded pairwise, until it fits -- a
+                // superset of what was marked, which is all the checker asks
+                // (it names nodes outside the bitmap, S8).
+                while (dev_sector + sectors - 1) >> shift >= 64 {
+                    let mut folded = 0u64;
+                    for i in 0..32 {
+                        if (bits >> (2 * i)) & 0b11 != 0 {
+                            folded |= 1 << i;
+                        }
+                    }
+                    bits = folded;
+                    shift += 1;
+                }
+                raw[m + 28] = shift as u8;
                 let first = dev_sector >> shift;
                 let last = (dev_sector + sectors - 1) >> shift;
-                if last >= 64 {
-                    return Err(Error::Unsupported(
-                        "a btree node past the btree bitmap's 64 regions".into(),
-                    ));
-                }
-                let mut bits = le64(raw, m + 128);
                 for b in first..=last {
                     bits |= 1 << b;
                 }
@@ -608,9 +504,9 @@ const SPOS_MAX: Bpos = Bpos {
     snapshot: u32::MAX,
 };
 
-const DATA_BTREE: u8 = 3;
+pub(super) const DATA_BTREE: u8 = 3;
 
-fn acct_replicas(data_type: u8, dev: u8) -> Bpos {
+pub(super) fn acct_replicas(data_type: u8, dev: u8) -> Bpos {
     Bpos {
         inode: 0x0200_0101_0000_0000 | u64::from(data_type) << 48 | u64::from(dev) << 24,
         offset: 0,
@@ -620,7 +516,7 @@ fn acct_replicas(data_type: u8, dev: u8) -> Bpos {
 
 /// Data type of a bucket emptied and waiting for a discard (S3: the lister
 /// names 9 need_discard).
-const DATA_NEED_DISCARD: u8 = 9;
+pub(super) const DATA_NEED_DISCARD: u8 = 9;
 const NEED_DISCARD: u8 = 12;
 
 impl<D: BlockDevice> Writer<D> {
@@ -706,15 +602,11 @@ impl<D: BlockDevice> Writer<D> {
                 }
             }
         }
-        let mut node_buckets = self.take_buckets(need_roots.len() as u64, t)?;
         for id in need_roots {
-            let b = node_buckets.pop().expect("taken");
-            self.create_root(id, b, t)?;
+            self.create_root(id, t)?;
         }
 
         let mut frag_delta = 0i64;
-        let mut gens_updates: std::collections::BTreeMap<u64, Vec<(usize, u8)>> =
-            std::collections::BTreeMap::new();
         for (&b, &s) in &freed {
             let a = allocs
                 .get(&b)
@@ -736,35 +628,15 @@ impl<D: BlockDevice> Writer<D> {
             }
             v[16..20].copy_from_slice(&(new as u32).to_le_bytes());
             if new == 0 {
-                let w1 = le64(&v, 8);
-                let gen = ((w1 >> 32) as u8).wrapping_add(1);
-                let flags = (w1 & 0xff) & !0b10;
-                let w1 = u64::from(DATA_NEED_DISCARD) << 48
-                    | u64::from(gen) << 40
-                    | u64::from(gen) << 32
-                    | flags;
-                v[8..16].copy_from_slice(&w1.to_le_bytes());
-                v[48..56].copy_from_slice(&self.journal_seq.to_le_bytes());
-                t.put_uncounted(
-                    NEED_DISCARD,
-                    Bkey {
-                        key_type: aids::SET,
-                        size: 0,
-                        version_hi: 0,
-                        version_lo: 0,
-                        pos: Bpos {
-                            inode: self.journal_seq,
-                            offset: b,
-                            snapshot: 0,
-                        },
-                        value: Vec::new(),
+                self.empty_bucket(
+                    &Bkey {
+                        value: v,
+                        ..a.clone()
                     },
-                );
-                gens_updates
-                    .entry(b >> 8)
-                    .or_default()
-                    .push(((b & 0xff) as usize, gen));
+                    t,
+                )?;
                 frag_delta -= (bucket - old) as i64;
+                continue;
             } else {
                 t.put_uncounted(
                     aids::LRU,
@@ -791,39 +663,6 @@ impl<D: BlockDevice> Writer<D> {
                 },
             );
         }
-        if !gens_updates.is_empty() {
-            let existing = match self.keys(aids::BUCKET_GENS) {
-                Err(Error::NotFound(_)) => Vec::new(),
-                r => r?,
-            };
-            for (group, sets) in gens_updates {
-                let mut k = existing
-                    .iter()
-                    .find(|k| {
-                        k.key_type == aids::BUCKET_GENS_KEY
-                            && k.pos.inode == 0
-                            && k.pos.offset == group
-                    })
-                    .cloned()
-                    .unwrap_or(Bkey {
-                        key_type: aids::BUCKET_GENS_KEY,
-                        size: 0,
-                        version_hi: 0,
-                        version_lo: 0,
-                        pos: Bpos {
-                            inode: 0,
-                            offset: group,
-                            snapshot: 0,
-                        },
-                        value: vec![0; 256],
-                    });
-                for (i, g) in sets {
-                    k.value[i] = g;
-                }
-                t.put_uncounted(aids::BUCKET_GENS, k);
-            }
-        }
-
         let n_emptied = emptied.len() as i64;
         t.count(acct_replicas_user(0), 1, 0, -(total as i64));
         let user = acct_dev_data_type(0, DATA_USER);
@@ -836,6 +675,137 @@ impl<D: BlockDevice> Writer<D> {
         t.count(inum, 3, 1, -(total as i64));
         t.count(inum, 3, 2, -(total as i64));
         Ok(())
+    }
+}
+
+impl<D: BlockDevice> Writer<D> {
+    /// An emptied bucket, its alloc key `a` (dirty sectors already 0): it
+    /// becomes need_discard with its generation and oldest generation one
+    /// higher, need_inc_gen cleared and journal_seq_empty set, gets a
+    /// need_discard key at `journal_seq_empty:bucket`, and bucket_gens
+    /// records the new generation (S8: unlink-large). The btrees it needs
+    /// get roots when they have none.
+    pub(super) fn empty_bucket(&mut self, a: &Bkey, t: &mut Txn) -> Result<()> {
+        for id in [NEED_DISCARD, aids::BUCKET_GENS] {
+            if self.root(id).is_err() {
+                self.create_root(id, t)?;
+            }
+        }
+        let b = a.pos.offset;
+        let mut v = a.value.clone();
+        v[16..20].copy_from_slice(&0u32.to_le_bytes());
+        let w1 = le64(&v, 8);
+        let gen = ((w1 >> 32) as u8).wrapping_add(1);
+        let flags = (w1 & 0xff) & !0b10;
+        let w1 = u64::from(DATA_NEED_DISCARD) << 48
+            | u64::from(gen) << 40
+            | u64::from(gen) << 32
+            | flags;
+        v[8..16].copy_from_slice(&w1.to_le_bytes());
+        v[48..56].copy_from_slice(&self.journal_seq.to_le_bytes());
+        t.put_uncounted(
+            aids::ALLOC,
+            Bkey {
+                value: v,
+                ..a.clone()
+            },
+        );
+        t.put_uncounted(
+            NEED_DISCARD,
+            Bkey {
+                key_type: aids::SET,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: Bpos {
+                    inode: self.journal_seq,
+                    offset: b,
+                    snapshot: 0,
+                },
+                value: Vec::new(),
+            },
+        );
+        // The bucket_gens key of its group, as this transaction has it so
+        // far (an earlier bucket of the same group may be in it already).
+        let at = Bpos {
+            inode: 0,
+            offset: b >> 8,
+            snapshot: 0,
+        };
+        let inflight = t
+            .inflight
+            .as_ref()
+            .filter(|(id, _)| *id == aids::BUCKET_GENS)
+            .map(|(_, ks)| ks.as_slice())
+            .unwrap_or(&[]);
+        // Newest first: what this transaction queued, then what is being
+        // written right now.
+        let pending = inflight
+            .iter()
+            .chain(
+                t.keys
+                    .get(&aids::BUCKET_GENS)
+                    .map(|ks| ks.as_slice())
+                    .unwrap_or(&[]),
+            )
+            .rev()
+            .find(|k| k.pos == at)
+            .cloned();
+        let mut k = match pending {
+            Some(k) => k,
+            None => match self.keys(aids::BUCKET_GENS) {
+                Err(Error::NotFound(_)) => None,
+                r => r?
+                    .into_iter()
+                    .find(|k| k.key_type == aids::BUCKET_GENS_KEY && k.pos == at),
+            }
+            .unwrap_or(Bkey {
+                key_type: aids::BUCKET_GENS_KEY,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: at,
+                value: vec![0; 256],
+            }),
+        };
+        k.value[(b & 0xff) as usize] = gen;
+        t.put_uncounted(aids::BUCKET_GENS, k);
+        Ok(())
+    }
+}
+
+/// A btree bucket's share of the accounting (S8): btree sectors in the
+/// replicas and on the device, the device's btree buckets and the part of
+/// them no node uses, the btree's own node count, and one free bucket fewer
+/// for each bucket taken.
+pub(super) fn count_btree_bucket(
+    t: &mut Txn,
+    id: u8,
+    level: u8,
+    sectors: i64,
+    bucket_sectors: i64,
+    nodes: i64,
+) {
+    t.count(acct_replicas(DATA_BTREE, 0), 1, 0, sectors);
+    let dev = acct_dev_data_type(0, DATA_BTREE);
+    t.count(dev, 3, 0, nodes);
+    t.count(dev, 3, 1, sectors);
+    t.count(dev, 3, 2, nodes * bucket_sectors - sectors);
+    let per_btree = Bpos {
+        inode: 6 << 56 | u64::from(id) << 48,
+        offset: 0,
+        snapshot: 0,
+    };
+    t.count(per_btree, 3, 0, sectors);
+    t.count(per_btree, 3, 1, nodes);
+    // The third counts interior nodes (S8: the checker's "btree btree=inodes
+    // ... should be 256 4 1" once a root split made one; the aged fixture's
+    // two-level btrees carry 1).
+    if level > 0 {
+        t.count(per_btree, 3, 2, nodes);
+    }
+    if nodes > 0 {
+        t.count(acct_dev_data_type(0, 0), 3, 0, -nodes);
     }
 }
 

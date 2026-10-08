@@ -328,40 +328,23 @@ fn files_on_4096_byte_blocks_are_read_by_the_reference() {
 
 /// The same creation in the aged image, whose btrees are two levels deep
 /// and whose leaves hold many bsets. How full its leaves are differs from
-/// one fixture build to the next, so this test has two acceptable
-/// outcomes, each checked in full: the file lands and the reference reads
-/// it back, or the create is refused for a full node before anything is
-/// written and the untouched image still passes the reference checker.
-/// The unconditional create-and-read-back is
-/// `small_files_created_here_are_read_by_the_reference`, on the write-study
-/// base, whose leaves have room.
+/// one fixture build to the next; a full one is rewritten or split, so the
+/// create lands whatever their state, and the reference reads it back.
 #[test]
-fn a_create_in_the_aged_image_lands_or_is_refused_without_writing() {
+fn a_file_created_in_the_aged_image_is_read_by_the_reference() {
     let img = scratch("aged.img", "create-aged");
     let dir = {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         fs.lookup("/many").unwrap()
     };
-    let before = std::fs::read(&img).unwrap();
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
-    match w.create_file(
+    w.create_file(
         dir,
         b"written-by-this-crate",
         b"appended to an aged tree\n",
         0o644,
-    ) {
-        Ok(_) => {}
-        Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("the node is full") => {
-            drop(w);
-            assert!(
-                std::fs::read(&img).unwrap() == before,
-                "refused, but written"
-            );
-            assert_fsck_clean(&img);
-            return;
-        }
-        Err(e) => panic!("{e}"),
-    }
+    )
+    .unwrap();
     drop(w);
     assert_fsck_clean(&img);
     with_reference_mount(&img, |m| {
@@ -453,31 +436,19 @@ fn large_files_created_here_are_read_by_the_reference() {
             fs.lookup(dir_path).unwrap()
         };
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
-        // How full the aged image's leaves are differs from one fixture
-        // build to the next. Until nodes are split, a create that finds one
-        // full is refused with no metadata written: what was created before
-        // it must still pass the reference checker and read back.
-        let mut created = 0;
         for (i, &n) in sizes.iter().enumerate() {
-            match w.create_file(
+            w.create_file(
                 dir,
                 format!("large-{i}").as_bytes(),
                 &pattern(n, i as u8),
                 0o644,
-            ) {
-                Ok(_) => created += 1,
-                Err(fs_bcachefs::Error::Unsupported(m))
-                    if test == "large-aged" && m.contains("the node is full") =>
-                {
-                    break
-                }
-                Err(e) => panic!("{test}: {n} bytes: {e}"),
-            }
+            )
+            .unwrap_or_else(|e| panic!("{test}: {n} bytes: {e}"));
         }
         drop(w);
         assert_fsck_clean(&img);
         with_reference_mount(&img, |m| {
-            for (i, &n) in sizes.iter().enumerate().take(created) {
+            for (i, &n) in sizes.iter().enumerate() {
                 let got = std::fs::read(
                     m.join(dir_path.trim_start_matches('/'))
                         .join(format!("large-{i}")),
@@ -654,5 +625,50 @@ fn long_xattr_names_set_here_are_read_by_the_reference() {
                 "{name}: {text}"
             );
         }
+    });
+}
+
+/// Hundreds of operations on 32 KiB nodes: full nodes are rewritten into
+/// fresh buckets or split, roots grow a level, old buckets are freed; the
+/// checker passes the image and the mount reads every file.
+#[test]
+fn full_nodes_rewritten_and_split_pass_the_reference() {
+    let img = scratch("write-study/base.img", "many");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..400 {
+        w.create_file(
+            d,
+            format!("f{i:05}").as_bytes(),
+            format!("file {i}\n").as_bytes(),
+            0o644,
+        )
+        .unwrap_or_else(|e| panic!("create {i}: {e}"));
+    }
+    for i in (0..400).step_by(3) {
+        w.unlink(d, format!("f{i:05}").as_bytes()).unwrap();
+    }
+    let big = pattern(50_000, 9);
+    for i in 0..10 {
+        w.create_file(d, format!("big{i}").as_bytes(), &big, 0o644)
+            .unwrap();
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert_eq!(
+            std::fs::read_dir(m.join("d")).unwrap().count(),
+            400 - 134 + 10 + 1
+        );
+        for i in (1..400).filter(|i| i % 3 != 0) {
+            assert_eq!(
+                std::fs::read(m.join(format!("d/f{i:05}"))).unwrap(),
+                format!("file {i}\n").as_bytes()
+            );
+        }
+        assert!(std::fs::read(m.join("d/big9")).unwrap() == big);
     });
 }

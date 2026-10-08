@@ -27,6 +27,8 @@ use fs_core::BlockDevice;
 mod alloc;
 #[path = "write_journal.rs"]
 mod journal_commit;
+#[path = "write_nodes.rs"]
+mod nodes;
 
 const SB_OFFSET: u64 = 4096;
 pub(crate) const SB_HEADER_BYTES: usize = 0x2f0;
@@ -84,6 +86,9 @@ pub struct Writer<D: BlockDevice> {
     journal_seq: u64,
     /// Set by [`Writer::journal_commits`]: commits go to the journal.
     session: Option<journal_commit::Session>,
+    /// Buckets taken during this writer's life, which the freespace btree
+    /// may not show as taken yet.
+    reserved: std::collections::BTreeSet<u64>,
 }
 
 impl<D: BlockDevice> Writer<D> {
@@ -124,6 +129,7 @@ impl<D: BlockDevice> Writer<D> {
             sb_raw,
             journal_seq,
             session: None,
+            reserved: Default::default(),
         })
     }
 
@@ -133,73 +139,99 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Insert `keys` into btree `id`: each replaces the key at its position
     /// (a key of type `deleted` removes it). Keys going to the same leaf are
-    /// appended as one bset; the new lengths are carried up to the root.
-    pub fn insert(&mut self, id: u8, mut keys: Vec<Bkey>) -> Result<()> {
+    /// appended as one bset; the new lengths are carried up to the root. A
+    /// node that is full is rewritten -- compacted, or split in two -- in
+    /// fresh buckets.
+    pub fn insert(&mut self, id: u8, keys: Vec<Bkey>) -> Result<()> {
+        let mut t = Txn::default();
+        t.keys.insert(id, keys);
+        self.commit_in_place(t)
+    }
+
+    /// Insert into one btree, collecting what rewriting nodes adds to other
+    /// btrees and to accounting in `t`.
+    fn insert_one(&mut self, id: u8, mut keys: Vec<Bkey>, t: &mut Txn) -> Result<()> {
         if keys.is_empty() {
             // An empty bset is one the reference checker rejects ("empty
             // bset"): nothing to add is nothing to write.
             return Ok(());
         }
         keys.sort_by_key(|k| k.pos);
+        // A later key at the same position replaces an earlier one.
+        let mut deduped: Vec<Bkey> = Vec::with_capacity(keys.len());
+        for k in keys {
+            match deduped.last_mut() {
+                Some(last) if last.pos == k.pos => *last = k,
+                _ => deduped.push(k),
+            }
+        }
         let (root_level, root_key) = self.root(id)?;
-        let new_root = self.insert_at(&root_key, root_level, &keys, true)?;
-        self.set_root(id, &new_root)?;
+        let new = self.insert_at(id, &root_key, root_level, &deduped, t)?;
+        if new.len() == 1 {
+            self.set_root(id, root_level, &new[0])?;
+        } else {
+            // The root split: a new root one level up holds both halves.
+            let root = self.new_node(
+                id,
+                root_level + 1,
+                Bpos::default(),
+                nodes::SPOS_MAX,
+                &new,
+                t,
+            )?;
+            self.set_root(id, root_level + 1, &root)?;
+        }
         self.write_superblock()
     }
 
-    /// Fail, writing nothing, when inserting `keys` into btree `id` would
-    /// need a node that has no room for another bset. A transaction checks
-    /// every btree it touches before writing any of them, so a refusal
-    /// never leaves one btree updated and another not.
-    fn check_fits(&self, id: u8, keys: &[Bkey]) -> Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        let mut keys = keys.to_vec();
-        keys.sort_by_key(|k| k.pos);
-        let (root_level, root_key) = self.root(id)?;
-        self.insert_at(&root_key, root_level, &keys, false)
-            .map(|_| ())
-    }
-
     /// Insert into the subtree under `ptr_key` (at `level`); returns the
-    /// pointer key with its new `sectors_written`. With `write` false
-    /// nothing is written: only whether every node has room is checked.
-    fn insert_at(&self, ptr_key: &Bkey, level: u8, keys: &[Bkey], write: bool) -> Result<Bkey> {
+    /// pointer keys that now stand for it: one, with its new
+    /// `sectors_written` or its new place; or two, when it split.
+    fn insert_at(
+        &mut self,
+        id: u8,
+        ptr_key: &Bkey,
+        level: u8,
+        keys: &[Bkey],
+        t: &mut Txn,
+    ) -> Result<Vec<Bkey>> {
         let ptr = NodePtr::from_key(ptr_key)?;
-        if level == 0 {
-            let written = self.append_bset(&ptr, keys, write)?;
-            return with_sectors_written(ptr_key, written);
-        }
-        let node = btree::read_node(&self.dev, &self.sb, &ptr)?;
-        // Each key goes to the first child whose pointer position (its max
-        // key) is at or after it.
-        let mut updated = Vec::new();
-        let mut rest = keys;
-        for child in node
-            .keys
-            .iter()
-            .filter(|k| k.key_type == key_type::BTREE_PTR_V2)
-        {
-            let n = rest.iter().take_while(|k| k.pos <= child.pos).count();
-            if n > 0 {
-                updated.push(self.insert_at(child, level - 1, &rest[..n], write)?);
-                rest = &rest[n..];
+        let own = if level == 0 {
+            keys.to_vec()
+        } else {
+            let node = btree::read_node(&self.dev, &self.sb, &ptr)?;
+            // Each key goes to the first child whose pointer position (its
+            // max key) is at or after it.
+            let mut updated = Vec::new();
+            let mut rest = keys;
+            for child in node
+                .keys
+                .iter()
+                .filter(|k| k.key_type == key_type::BTREE_PTR_V2)
+            {
+                let n = rest.iter().take_while(|k| k.pos <= child.pos).count();
+                if n > 0 {
+                    updated.extend(self.insert_at(id, child, level - 1, &rest[..n], t)?);
+                    rest = &rest[n..];
+                }
             }
+            if !rest.is_empty() {
+                return Err(Error::Corrupt(format!(
+                    "key {} is past the last child of an interior node",
+                    rest[0].pos
+                )));
+            }
+            updated
+        };
+        match self.append_bset(&ptr, &own)? {
+            Some(written) => Ok(vec![with_sectors_written(ptr_key, written)?]),
+            None => self.rewrite_node(id, level, ptr_key, &own, t),
         }
-        if !rest.is_empty() {
-            return Err(Error::Corrupt(format!(
-                "key {} is past the last child of an interior node",
-                rest[0].pos
-            )));
-        }
-        let written = self.append_bset(&ptr, &updated, write)?;
-        with_sectors_written(ptr_key, written)
     }
 
-    /// Append one bset holding `keys` to the node, or with `write` false
-    /// only check that it fits; returns the node's new `sectors_written`.
-    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey], write: bool) -> Result<u16> {
+    /// Append one bset holding `keys` to the node; returns the node's new
+    /// `sectors_written`, or `None` when it does not fit.
+    fn append_bset(&self, ptr: &NodePtr, keys: &[Bkey]) -> Result<Option<u16>> {
         let block = (self.sb.block_size as usize * 512).max(512);
         let node_bytes = self.sb.btree_node_size() as usize * 512;
         let written = ptr.sectors_written as usize * 512;
@@ -222,8 +254,9 @@ impl<D: BlockDevice> Writer<D> {
         for k in keys {
             body.extend(encode_key(k)?);
         }
-        let u64s = u16::try_from(body.len() / 8)
-            .map_err(|_| Error::Unsupported("a bset of more than 65535 u64s".into()))?;
+        let Ok(u64s) = u16::try_from(body.len() / 8) else {
+            return Ok(None);
+        };
         let sector = u32::try_from(start / 512)
             .map_err(|_| Error::Corrupt("node offset overflows".into()))?;
         let mut rec = vec![0u8; 16 + BSET_HEADER];
@@ -237,15 +270,12 @@ impl<D: BlockDevice> Writer<D> {
         rec[0..8].copy_from_slice(&csum.to_le_bytes());
         let padded = rec.len().div_ceil(block) * block;
         if start + padded > node_bytes {
-            return Err(Error::Unsupported(
-                "the node is full: splitting a node is not implemented".into(),
-            ));
+            return Ok(None);
         }
         rec.resize(padded, 0);
-        if write {
-            self.dev.write_at(at + start as u64, &rec)?;
-        }
+        self.dev.write_at(at + start as u64, &rec)?;
         u16::try_from((start + padded) / 512)
+            .map(Some)
             .map_err(|_| Error::Corrupt("sectors_written overflows".into()))
     }
 
@@ -268,13 +298,15 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     /// Replace btree `id`'s root key in the clean field (same length).
-    fn set_root(&mut self, id: u8, key: &Bkey) -> Result<()> {
+    fn set_root(&mut self, id: u8, level: u8, key: &Bkey) -> Result<()> {
         let bytes = encode_key(key)?;
         let (off, len) = self.clean_root_span(id)?;
         if len != bytes.len() {
             return Err(Error::Corrupt("the new root key's length differs".into()));
         }
         self.sb_raw[off..off + len].copy_from_slice(&bytes);
+        // The entry's level byte: u16 u64s, btree id, level.
+        self.sb_raw[off - 8 + 3] = level;
         self.sb = Superblock::parse_unchecked(&self.sb_raw)?;
         Ok(())
     }
@@ -432,6 +464,9 @@ struct Txn {
     keys: std::collections::BTreeMap<u8, Vec<Bkey>>,
     /// Accounting: per accounting key position, a delta per counter.
     acct: std::collections::BTreeMap<Bpos, Vec<i64>>,
+    /// The keys being inserted right now, out of `keys`: a read-modify-write
+    /// made while they are (freeing a node of the same btree) must see them.
+    inflight: Option<(u8, Vec<Bkey>)>,
 }
 
 impl Txn {
@@ -781,22 +816,34 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     /// Write a transaction: the accounting it implies first computed from
-    /// the keys as they stand, every btree checked for room, then each
-    /// btree's keys, then accounting.
+    /// the keys as they stand, then each btree's keys, then accounting.
     fn commit(&mut self, mut t: Txn) -> Result<()> {
         if self.session.is_some() {
             return self.commit_journal(t);
         }
-        let accounting = self.accounting_deltas(&t.acct)?;
-        // Every btree is checked for room before any is written.
-        for (id, keys) in &t.keys {
-            self.check_fits(*id, keys)?;
+        self.commit_in_place(std::mem::take(&mut t))
+    }
+
+    /// Write a transaction in place: btree by btree, lowest id first, then
+    /// accounting; rewriting a node adds keys to other btrees and to
+    /// accounting, which are written in turn until nothing is left.
+    fn commit_in_place(&mut self, mut t: Txn) -> Result<()> {
+        loop {
+            if let Some(id) = t.keys.keys().next().copied() {
+                let keys = t.keys.remove(&id).unwrap_or_default();
+                t.inflight = Some((id, keys.clone()));
+                self.insert_one(id, keys, &mut t)?;
+                t.inflight = None;
+                continue;
+            }
+            if t.acct.values().any(|d| d.iter().any(|&x| x != 0)) {
+                let acct = std::mem::take(&mut t.acct);
+                let keys = self.accounting_deltas(&acct)?;
+                self.insert_one(ids::ACCOUNTING, keys, &mut t)?;
+                continue;
+            }
+            return Ok(());
         }
-        self.check_fits(ids::ACCOUNTING, &accounting)?;
-        for (id, keys) in std::mem::take(&mut t.keys) {
-            self.insert(id, keys)?;
-        }
-        self.insert(ids::ACCOUNTING, accounting)
     }
 
     fn create(
@@ -1186,8 +1233,7 @@ impl<D: BlockDevice> Writer<D> {
         if self.root(XATTRS).is_err() {
             // The first xattr of a filesystem that never had one: its
             // btree's root is made, as for lru.
-            let b = self.take_buckets(1, &mut t)?;
-            self.create_root(XATTRS, b[0], &mut t)?;
+            self.create_root(XATTRS, &mut t)?;
         }
         t.put(
             XATTRS,
