@@ -738,24 +738,15 @@ impl<D: BlockDevice> Writer<D> {
         }
     }
 
-    /// [`data_layout`] on this filesystem's blocks. Extents are written
-    /// in 512-byte sectors, so a layout that needs them on larger blocks is
-    /// refused.
-    fn layout(&self, len: usize) -> Result<(usize, usize)> {
-        let block = (self.sb.block_size as usize * 512).max(512);
-        let (extents, inline) = data_layout(len, block);
-        if extents > 0 && block != 512 {
-            return Err(Error::Unsupported(format!(
-                "data extents on {block}-byte blocks are not written"
-            )));
-        }
-        Ok((extents, inline))
+    /// [`data_layout`] on this filesystem's blocks.
+    fn layout(&self, len: usize) -> (usize, usize) {
+        data_layout(len, (self.sb.block_size as usize * 512).max(512))
     }
 
     /// Put `data` for inode `ino` into `t` as [`Self::layout`] says.
     /// Returns the sectors it covers, the inode's `bi_sectors`.
     fn put_data(&mut self, ino: u64, data: &[u8], t: &mut Txn) -> Result<u64> {
-        let (extents, inline) = self.layout(data.len())?;
+        let (extents, inline) = self.layout(data.len());
         let mut sectors = 0;
         if extents > 0 {
             sectors = self.allocate_data(ino, &data[..extents], t)?;

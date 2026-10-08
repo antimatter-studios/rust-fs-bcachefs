@@ -345,7 +345,10 @@ by operation (positions `inode:offset:snapshot`):
   counted at the unpacked size (S8, every pair).
 - File data is laid out as the reference lays it out (#79, above): inline
   up to min(block_size / 2, 1024) bytes, else full blocks in extents with
-  a short final block inline. Extents are written on 512-byte blocks only.
+  a short final block inline. Data extents are cut and sized in whole
+  blocks, the last zero-padded, with the checksum over the padded block
+  (#87, S8: a 1500-byte file is one 8-sector extent on 4096-byte blocks,
+  its crc32c that of the data and 2596 zero bytes).
   Symlink targets stay at most 248 bytes, the longest seen.
 - mkdir: a 25-field directory inode with `depth` one more than its
   parent's, and the parent's stored subdirectory count raised; unlink and

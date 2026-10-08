@@ -199,7 +199,18 @@ impl<D: BlockDevice> Writer<D> {
                 "writing compressed data is not implemented".into(),
             ));
         }
-        let sectors = (data.len() as u64).div_ceil(512);
+        // Data is written in whole blocks: the last one is zero-padded,
+        // and the extent and its checksum cover it (S8: 1500 bytes are 3
+        // sectors on 512-byte blocks and 8 on 4096-byte ones). Buckets
+        // and the longest extent are whole blocks, so every extent the plan
+        // cuts starts and ends on a block.
+        let block = u64::from(self.sb.block_size).max(1);
+        if !bucket.is_multiple_of(block) || !MAX_EXTENT_SECTORS.is_multiple_of(block) {
+            return Err(Error::Unsupported(format!(
+                "{block}-sector blocks do not divide the bucket ({bucket} sectors)"
+            )));
+        }
+        let sectors = (data.len() as u64).div_ceil(block * 512) * block;
         let data_buckets = sectors.div_ceil(bucket);
         // A bucket left partly empty needs an lru entry, and a filesystem
         // that never had one has no lru btree: its root is made here, in one
