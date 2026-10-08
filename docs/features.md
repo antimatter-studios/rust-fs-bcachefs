@@ -78,6 +78,7 @@ reads back byte for byte through the reference implementation's mount
 | Data in allocated buckets, freed on unlink and rewrite | Experimental | Unreleased (#35, #36) | | `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | Unreleased (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | Unreleased (#37) | | `write_oracle.rs` |
+| A journal left for replay is continued by the next writing session (`Writer::open_journalled`) | Experimental | Unreleased (#46) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Symlinks, hard links, mode and owner | Experimental | Unreleased (#43) | | `write_oracle.rs` |
 | Extended attributes, any name length, at the slot the reference uses | Experimental | Unreleased (#43, #91) | | `oracle_xattr_slots.rs`, `write_oracle.rs` |
 | Colliding names (hash runs, whiteouts) | Experimental | Unreleased (#88) | | `oracle_write_local.rs`, `write_oracle.rs` |
@@ -95,4 +96,4 @@ reads back byte for byte through the reference implementation's mount
 |---|---|---|---|---|
 | C ABI: mount (path or fs_core device), volume info, stat, readdir, directory iterator, read, readlink, listxattr, getxattr | Supported | Unreleased (#34) | | `capi.rs`, `oracle_capi.rs` |
 | `fs.bcachefs info`, `ls`, `cat`, `stat`, `tree` (`--features cli`) | Supported | Unreleased (#33) | | `tests/cli/` |
-| `fs.bcachefs` write verbs | Upcoming | | PR #46 | |
+| `fs.bcachefs` write verbs: `put`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `chmod`, `chown`, `setfattr`, `rmfattr` (experimental; the `cli` feature now includes `write`) | Experimental | Unreleased (#46) | | `tests/cli/test-write.sh`, `write_oracle.rs` |
