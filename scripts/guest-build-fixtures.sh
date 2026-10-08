@@ -399,6 +399,32 @@ PY
     fi
 } > "$out/probe.txt" 2>&1
 bcachefs-ref fsck -y "$probe_img" > "$out/probe.replay.txt" 2>&1 || true
+# SNAPSHOTS BY THE REFERENCE'S OWN EDITOR (#12). The mount cannot make a
+# subvolume or a snapshot, but the reference tool's `kvdb` reads and writes
+# btree keys by field name, through the normal transactional path, and by
+# its own help anticipates fabricated snapshots. First its read-only view
+# (the default open, which by its help never writes) of the subvolume,
+# snapshot and snapshot-tree keys every image holds: the field names a
+# fabricated snapshot is written in. Then one attempt at a second snapshot
+# key, on a copy, and what the reference checker says of the result.
+kvdb_img=/var/tmp/age/probe-kvdb.img
+{
+    echo "## kvdb read-only"
+    timeout 120 bcachefs-ref kvdb "$probe_img" \
+        -c "get subvolumes 0:1:0" -c "get snapshots 0:4294967295:0" \
+        -c "get snapshot_trees 0:1:0" -c "list subvolume_children" \
+        -c "snapshot 4294967295" -c "get inodes 0:4096" 2>&1 || echo "exit $?"
+    echo "## kvdb set a second snapshot key (--rw, on a copy)"
+    cp --sparse=always "$ROOT$probe_img" "$ROOT$kvdb_img"
+    timeout 120 bcachefs-ref kvdb --rw "$kvdb_img" \
+        -c "set snapshots 0:4294967294:0 snapshot parent=4294967295 subvol=1 tree=1 depth=1" \
+        -c "get snapshots 0:4294967294:0" -c "list snapshots" 2>&1 || echo "exit $?"
+    echo "## the reference checker on the copy"
+    bcachefs-ref fsck -n "$kvdb_img" 2>&1 || echo "exit $?"
+    echo "## the lister's snapshots on the copy"
+    bcachefs-ref list -b snapshots "$kvdb_img" 2>&1 || echo "exit $?"
+} > "$out/probe.kvdb.txt" 2>&1
+rm -f "$ROOT$kvdb_img"
 bcachefs-ref show-super "$probe_img" > "$out/probe.super.txt" 2>&1 || true
 for b in inodes dirents extents subvolumes snapshots reflink; do
     bcachefs-ref list -b "$b" "$probe_img" > "$out/probe.$b.txt" 2>&1 || true
