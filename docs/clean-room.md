@@ -754,13 +754,17 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     **crc128 (kind 3) and flags (kind 6, poisoned at bit 7) are answered**
     by the `crc128` fixture and the `crc128-overwrite` and `poison` images
     (see Extents above); a crc128 nonce, only ever 0, is refused unless 0.
-    **The stripe pointer** is the
-    one kind left: the fixture build's erasure-coding probe (three devices,
-    `--erasure_code --replicas=2`, `probe-ec.txt`, S3) shows the reference
-    writing `[crc32, stripe_ptr, ptr]` keys of 8 u64s, so it is one word,
-    printed `stripe_ptr: idx N block B`; its bit is 4 or 5 by elimination
-    and is not named until the probe's bytes show which. This reader
-    refuses several devices anyway (issue #52).
+    **The stripe pointer is kind 4**, one word (S8, S3, S4: the fixture
+    build's erasure-coding probe, three devices, `--erasure_code
+    --replicas=2`, `probe-ec.txt`). The reference first writes each extent
+    with two pointers, then rewrites it as `[crc32, stripe_ptr, ptr]` keys
+    of 8 u64s once the stripe is made; in that copy `stripe_ptr: idx 1
+    block 0` is the word 0x22010, `idx 1 block 1` 0x22030 and `idx 2 block
+    0` 0x42010, through `idx 4`. So bits 5..12 are the block and bits
+    17..63 the stripe index; bits 13..16, which the lister does not
+    print, hold 1 in every one (S1 names a 4-bit redundancy). This reader
+    reads one device, so a stripe pointer is refused by name. Kind 5 is
+    the one kind no image has shown.
 
 ## Confirmation
 

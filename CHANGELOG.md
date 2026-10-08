@@ -147,6 +147,8 @@ API, a patch never does.
   mount writes when a read finds bad data: a poisoned extent now fails to
   read with an I/O error, as the reference's does, and `fsck.bcachefs`
   passes the image as the reference checker does (`extent::poisoned`).
+  The stripe pointer of an erasure-coded extent, seen on a three-device
+  probe, is refused by name.
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both

@@ -25,6 +25,8 @@
 //!        extent seen; not read unless 0); 56..59 csum type; 60..63
 //!        compression type; second and third words: checksum low and high
 //!        64 bits
+//! stripe bits 0..4 = 0b1_0000; 5..12 block; 13..16 not printed (1 in
+//!        every one seen); 17..63 stripe index; one word (refused)
 //! flags  bits 0..6 = 0b100_0000; bit 7 poisoned; one word
 //! ```
 
@@ -125,14 +127,16 @@ fn bits(w: u64, lo: u32, n: u32) -> u64 {
 /// each OBSERVED against the lister's line for it (docs/clean-room.md,
 /// open question 19): crc128 on the `crc128` fixture (`crc128:`), flags on
 /// the `poison` image (`flags: poisoned`), reconcile on `bgcompress`
-/// (`reconcile: need_rb=...`). 4 and 5 are left unnamed: the stripe
-/// pointer is one of them, and erasure coding needs several devices.
+/// (`reconcile: need_rb=...`), and the stripe pointer on the fixture
+/// build's erasure-coding probe (`stripe_ptr: idx N block B`, three
+/// devices). 5 is the one kind left unnamed.
 pub fn entry_kind_name(first_set_bit: u32) -> &'static str {
     match first_set_bit {
         0 => "ptr",
         1 => "crc32",
         2 => "crc64",
         3 => "crc128",
+        4 => "stripe_ptr",
         6 => "flags",
         7 => "reconcile",
         _ => "unknown",
@@ -240,6 +244,19 @@ fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
                     csum_lo: le64(v, p + 8),
                 }));
                 p += 24;
+            }
+            4 => {
+                // A stripe pointer: the extent is erasure coded, which
+                // takes several devices (S1 9.1.3.3), and this reader
+                // reads one. OBSERVED on the fixture build's three-device
+                // probe: `stripe_ptr: idx 1 block 1` is the word 0x22030
+                // between the crc32 and the pointer.
+                return Err(Error::Unsupported(format!(
+                    "extent entry type 4 (stripe_ptr idx {} block {}): an erasure-coded extent \
+                     is not read",
+                    w >> 17,
+                    bits(w, 5, 8)
+                )));
             }
             6 => {
                 // Flags: one word (S3, S4: the poisoned extent's key is
@@ -364,8 +381,11 @@ mod tests {
 
     #[test]
     fn unknown_or_truncated_entries_are_refused_by_name() {
-        match parse_entries(&0x10u64.to_le_bytes()) {
-            Err(Error::Unsupported(m)) => assert!(m.contains("type 4 (unknown)"), "{m}"),
+        // The erasure-coding probe's "stripe_ptr: idx 1 block 1".
+        match parse_entries(&0x2_2030u64.to_le_bytes()) {
+            Err(Error::Unsupported(m)) => {
+                assert!(m.contains("type 4 (stripe_ptr idx 1 block 1)"), "{m}")
+            }
             other => panic!("{other:?}"),
         }
         match parse_entries(&0x20u64.to_le_bytes()) {
