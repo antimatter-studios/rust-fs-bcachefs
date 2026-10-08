@@ -484,9 +484,11 @@ ec=/var/tmp/age/ec
     done
     # The stripe pointer's own bytes: each crc32 entry the lister prints
     # before a stripe_ptr line is built from its printed fields (the crc32
-    # layout in src/extent.rs) and found in the images; the words after it
-    # are the stripe pointer and the pointer.
-    echo "## the words after each crc32 entry that precedes a stripe_ptr"
+    # layout in src/extent.rs) and found in the images, at every place it
+    # is (an older copy of the key, from before the stripe was made, holds
+    # two pointers instead: CI run 37812305157); the words after the copy
+    # that holds it are the stripe pointer and the pointer.
+    echo "## the words after each copy of each crc32 entry that precedes a stripe_ptr"
     python3 - "$work/ec.extents.txt" "$ROOT$ec-0.img" "$ROOT$ec-1.img" "$ROOT$ec-2.img" <<'PY'
 import mmap, re, struct, sys
 lines = open(sys.argv[1]).read().splitlines()
@@ -499,15 +501,16 @@ for i, l in enumerate(lines[:-2]):
         continue
     cs, size, off, csum = int(m[1]), int(m[2]), int(m[3]), int(m[4], 16)
     w = csum << 32 | 5 << 24 | off << 16 | (size - 1) << 9 | (cs - 1) << 2 | 2
-    for d, mm in enumerate(maps):
+    copies = set()
+    for mm in maps:
         at = mm.find(struct.pack("<Q", w))
-        if at >= 0:
-            after = struct.unpack_from("<3Q", mm, at)
-            print(f"{lines[i + 1].strip()} | {lines[i + 2].strip()} | device {d} byte {at}:",
-                  " ".join(f"{x:#018x}" for x in after))
-            break
-    else:
-        print(f"{l.strip()}: crc32 word {w:#018x} not found")
+        while at >= 0:
+            if at + 24 <= len(mm):
+                copies.add(struct.unpack_from("<3Q", mm, at))
+            at = mm.find(struct.pack("<Q", w), at + 1)
+    print(f"{lines[i + 1].strip()} | {lines[i + 2].strip()} | {len(copies)} distinct copies:")
+    for c in sorted(copies):
+        print("   ", " ".join(f"{x:#018x}" for x in c))
     shown += 1
     if shown == 8:
         break
