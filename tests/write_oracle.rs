@@ -196,6 +196,61 @@ fn small_files_created_here_are_read_by_the_reference() {
     });
 }
 
+/// Files at and either side of the inline bounds (#79), created here and
+/// one existing file rewritten to a mixed size: the extents btree holds the
+/// key kinds `data_layout` chose, the reference checker passes the image,
+/// and the reference implementation reads every byte back.
+#[test]
+fn files_at_the_inline_bounds_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "inline-bounds");
+    let sizes = [256usize, 257, 512, 513, 768, 769, 1025, 2100];
+    let file = |n: usize| -> Vec<u8> { (0..n).map(|i| (i * 13 + n) as u8).collect() };
+    let (dir, existing) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        (fs.lookup("/d").unwrap(), fs.lookup("/d/existing").unwrap())
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for n in sizes {
+        w.create_file(dir, format!("s{n}").as_bytes(), &file(n), 0o644)
+            .unwrap_or_else(|e| panic!("create s{n}: {e}"));
+    }
+    w.write_file(existing, &file(600)).unwrap();
+    drop(w);
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let extents = btree::walk(&dev, &sb, btree_id::EXTENTS).unwrap();
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let all: Vec<(String, usize)> = sizes
+        .iter()
+        .map(|&n| (format!("s{n}"), n))
+        .chain([("existing".to_string(), 600)])
+        .collect();
+    for (name, n) in &all {
+        let ino = fs.lookup(&format!("/d/{name}")).unwrap();
+        let kinds: Vec<u8> = extents
+            .iter()
+            .filter(|k| k.pos.inode == ino)
+            .map(|k| k.key_type)
+            .collect();
+        let (e, i) = fs_bcachefs::write::data_layout(*n, 512);
+        assert_eq!(
+            (kinds.contains(&6), kinds.contains(&17)),
+            (e > 0, i > 0),
+            "{name}: key types {kinds:?}"
+        );
+    }
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        for (name, n) in &all {
+            assert_eq!(
+                std::fs::read(m.join("d").join(name)).unwrap(),
+                file(*n),
+                "{name}: bytes, as the reference reads them"
+            );
+        }
+    });
+}
+
 /// The same creation in the aged image, whose btrees are two levels deep
 /// and whose leaves hold many bsets. How full its leaves are differs from
 /// one fixture build to the next, so this test has two acceptable

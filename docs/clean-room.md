@@ -183,6 +183,19 @@ all eight fixture sets.
   lister's `datalen` is the value length), and the key covers `size`
   sectors ending at its position like any extent (S3, S4, S8; checked by
   reading every file of `aged`).
+- How much is inline (#79): S1 (9.1.7) says the end of a file being
+  written is stored inline when smaller than min(block_size / 2, 1024)
+  bytes. The write study's `inline-*` images (one file of every size from
+  1 to 2100 bytes, written through the reference mount) put the bound
+  inclusive: on 512-byte blocks files of 1 to 256 bytes are inline only;
+  a longer file has its full blocks in extents and its final partial block
+  inline when that holds 1 to 256 bytes (1025 bytes: an extent of 2
+  sectors, then inline data of 1), else nothing inline. On 4096-byte
+  blocks 1 to 1024 bytes are inline and 1025 to 2100 are extents only.
+  The inline key covers one block (8 sectors on 4096-byte blocks), and
+  the inode's `bi_sectors` counts it with the extents' sectors (S8,
+  checked for every size by tests/oracle_inline_limit.rs). A file grown
+  from 100 to 3000 bytes holds no inline data afterwards (S8).
 
 ### What an aged filesystem added (`aged`, S8)
 
@@ -330,7 +343,10 @@ by operation (positions `inode:offset:snapshot`):
 - Accounting: `nr_inodes` at POS_MIN (value: count), and per btree the key
   at inode `0x05ffffffff000000 | id << 16` (value: keys, bytes, 0), bytes
   counted at the unpacked size (S8, every pair).
-- The largest inline file written is 248 bytes, the largest seen inline.
+- File data is laid out as the reference lays it out (#79, above): inline
+  up to min(block_size / 2, 1024) bytes, else full blocks in extents with
+  a short final block inline. Extents are written on 512-byte blocks only.
+  Symlink targets stay at most 248 bytes, the longest seen.
 - mkdir: a 25-field directory inode with `depth` one more than its
   parent's, and the parent's stored subdirectory count raised; unlink and
   rmdir: deleted keys over the dirent, the inode and its inline data (or
@@ -500,12 +516,6 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     slot is taken (none occurred in any fixture). The writer refuses.
 13. **Node flags for btree ids of 16 and more**: the writer only makes
     roots for ids under 16 (the lru btree, 10).
-11. **The inline-data limit**: SETTLED by S1 (9.1.7): the end of a file
-    being written is stored inline when it is smaller than
-    min(block_size / 2, 1024) bytes. Observed: inline up to 248 bytes and
-    not at 2024, consistent with that. The writer's 248-byte limit stays
-    inside the documented bound; raising it needs an observation at the
-    bound, not only the sentence.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
     accounting keys' versions: copied and left unchanged by the writer;
     the reference checker accepts both.

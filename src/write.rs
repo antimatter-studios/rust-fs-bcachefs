@@ -353,11 +353,37 @@ mod ids {
     pub const ACCOUNTING_KEY: u8 = 34;
 }
 
-/// The largest file this writer stores inline. The reference
-/// implementation was seen storing up to 248 bytes inline (the aged
-/// fixture) and nothing of 2024 bytes or more; past what was seen is not
-/// guessed.
-pub const INLINE_MAX: usize = 248;
+/// The longest symlink target this writer stores: the longest the aged
+/// fixture showed (S8). Past what was seen is not guessed.
+pub const SYMLINK_MAX: usize = 248;
+
+/// How much data the reference keeps inline on blocks of `block_bytes`: a
+/// whole file of up to this many bytes, and, after a longer file's full
+/// blocks, a final partial block of up to this many. S1 (9.1.7) gives
+/// min(block size / 2, 1024); the write study's `inline-*` images show both
+/// bounds are inclusive (S8: 256 on 512-byte blocks, 1024 on 4096).
+pub fn inline_max(block_bytes: usize) -> usize {
+    (block_bytes / 2).min(1024)
+}
+
+/// Where `len` bytes of file data go on blocks of `block_bytes`, as the
+/// reference puts them (S8): `(bytes in extents, bytes inline after them)`.
+/// A file of up to [`inline_max`] bytes is inline; a longer one has its
+/// full blocks in extents and keeps a final partial block of up to that
+/// size inline, or is all extents when the partial block is larger.
+pub fn data_layout(len: usize, block_bytes: usize) -> (usize, usize) {
+    let max = inline_max(block_bytes);
+    if len <= max {
+        return (0, len);
+    }
+    let tail = len % block_bytes;
+    let extents = if tail != 0 && tail <= max {
+        len - tail
+    } else {
+        len
+    };
+    (extents, len - extents)
+}
 
 /// Varint positions in an `inode_v3`, as the lister orders the fields
 /// (the four times take two varints each).
@@ -647,20 +673,53 @@ impl<D: BlockDevice> Writer<D> {
         }
     }
 
-    fn inline_key(ino: u64, data: &[u8]) -> Option<Bkey> {
-        (!data.is_empty()).then(|| {
-            let sectors = data.len().div_ceil(512) as u64;
-            let mut value = data.to_vec();
-            value.resize(value.len().div_ceil(8) * 8, 0);
-            Bkey {
-                key_type: key_type::INLINE_DATA,
-                size: sectors as u32,
-                version_hi: 0,
-                version_lo: 0,
-                pos: pos(ino, sectors),
-                value,
-            }
-        })
+    /// Inline data covering the one block after `start` sectors: the
+    /// value is the bytes zero-padded to a whole u64 (S8).
+    fn inline_key(ino: u64, start: u64, data: &[u8], block_sectors: u64) -> Bkey {
+        let mut value = data.to_vec();
+        value.resize(value.len().div_ceil(8) * 8, 0);
+        Bkey {
+            key_type: key_type::INLINE_DATA,
+            size: block_sectors as u32,
+            version_hi: 0,
+            version_lo: 0,
+            pos: pos(ino, start + block_sectors),
+            value,
+        }
+    }
+
+    /// [`data_layout`] on this filesystem's blocks. Extents are written
+    /// in 512-byte sectors, so a layout that needs them on larger blocks is
+    /// refused.
+    fn layout(&self, len: usize) -> Result<(usize, usize)> {
+        let block = (self.sb.block_size as usize * 512).max(512);
+        let (extents, inline) = data_layout(len, block);
+        if extents > 0 && block != 512 {
+            return Err(Error::Unsupported(format!(
+                "data extents on {block}-byte blocks are not written"
+            )));
+        }
+        Ok((extents, inline))
+    }
+
+    /// Put `data` for inode `ino` into `t` as [`Self::layout`] says.
+    /// Returns the sectors it covers, the inode's `bi_sectors`.
+    fn put_data(&mut self, ino: u64, data: &[u8], t: &mut Txn) -> Result<u64> {
+        let (extents, inline) = self.layout(data.len())?;
+        let mut sectors = 0;
+        if extents > 0 {
+            sectors = self.allocate_data(ino, &data[..extents], t)?;
+        }
+        if inline > 0 {
+            let block_sectors = u64::from(self.sb.block_size).max(1);
+            t.put(
+                ids::EXTENTS,
+                None,
+                Self::inline_key(ino, sectors, &data[extents..], block_sectors),
+            );
+            sectors += block_sectors;
+        }
+        Ok(sectors)
     }
 
     fn dirent_key(at: Bpos, name: &[u8], ino: u64, d_type: u8) -> Bkey {
@@ -722,8 +781,8 @@ impl<D: BlockDevice> Writer<D> {
         let mut t = Txn::default();
         t.inodes(1);
         let mut new = self.new_inode(ino, &p, at.offset, mode, kind, data.len() as u64, now, name);
-        if data.len() > INLINE_MAX {
-            let sectors = self.allocate_data(ino, data, &mut t)?;
+        if !data.is_empty() {
+            let sectors = self.put_data(ino, data, &mut t)?;
             let mut raw = crate::inode::InodeV3Raw::parse(&new.value)?;
             raw.sectors = sectors;
             new.value = raw.encode();
@@ -742,11 +801,6 @@ impl<D: BlockDevice> Writer<D> {
             None,
             Self::dirent_key(at, name, ino, d_type(kind)),
         );
-        if data.len() <= INLINE_MAX {
-            if let Some(k) = Self::inline_key(ino, data) {
-                t.put(ids::EXTENTS, None, k);
-            }
-        }
         // The cursor replaces itself; logged_ops has no counter.
         t.put_uncounted(ids::LOGGED_OPS, cursor);
         self.commit(t)?;
@@ -754,7 +808,7 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     /// Create a regular file named `name` in directory `parent` holding
-    /// `data` (at most [`INLINE_MAX`] bytes, stored inline). Returns its
+    /// `data`, laid out as the reference would (see [`inline_max`]). Returns its
     /// inode number.
     pub fn create_file(&mut self, parent: u64, name: &[u8], data: &[u8], mode: u32) -> Result<u64> {
         self.create(parent, name, data, mode, S_IFREG)
@@ -876,8 +930,8 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// Replace a file's whole contents with `data`: inline up to
-    /// [`INLINE_MAX`] bytes, in allocated buckets beyond; empty truncates it.
+    /// Replace a file's whole contents with `data`, laid out as the
+    /// reference would (see [`inline_max`]); empty truncates it.
     /// The old contents' space is freed.
     pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
         let mut i = self.inode(ino)?;
@@ -888,14 +942,7 @@ impl<D: BlockDevice> Writer<D> {
         let mut t = Txn::default();
         let old_extents = self.extents_of(ino)?;
         self.free_extents(ino, &old_extents, &mut t)?;
-        let sectors = if data.len() > INLINE_MAX {
-            self.allocate_data(ino, data, &mut t)?
-        } else {
-            if let Some(n) = Self::inline_key(ino, data) {
-                t.put(ids::EXTENTS, None, n);
-            }
-            (data.len() as u64).div_ceil(512)
-        };
+        let sectors = self.put_data(ino, data, &mut t)?;
         let old = i.key.clone();
         i.raw.size = data.len() as u64;
         i.raw.sectors = sectors;
@@ -986,9 +1033,9 @@ impl<D: BlockDevice> Writer<D> {
     /// inode of mode 120777 whose inline data is the target (S8: the aged
     /// fixture's symlinks).
     pub fn symlink(&mut self, parent: u64, name: &[u8], target: &[u8]) -> Result<u64> {
-        if target.is_empty() || target.len() > INLINE_MAX || target.contains(&0) {
+        if target.is_empty() || target.len() > SYMLINK_MAX || target.contains(&0) {
             return Err(Error::Unsupported(format!(
-                "symlink targets of 1 to {INLINE_MAX} bytes without NUL are written"
+                "symlink targets of 1 to {SYMLINK_MAX} bytes without NUL are written"
             )));
         }
         self.create(parent, name, target, 0o777, S_IFLNK)

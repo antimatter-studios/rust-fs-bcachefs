@@ -1,9 +1,11 @@
-//! Where the reference stops storing a file inline (#79): the write study's
+//! Where the reference stores a file's data (#79): the write study's
 //! `inline-*` images hold one file of every size from 1 to 2100 bytes,
-//! written through the reference mount (scripts/guest-write-study.sh). The
-//! mount's own `stat` gives each file's inode and size, and the reference
-//! lister's extents dump gives each inode's key types, so the limit is read
-//! without this crate's reader. The writer's [`INLINE_MAX`] must be it.
+//! written through the reference mount (scripts/guest-write-study.sh), on
+//! 512- and 4096-byte blocks. The mount's own `stat` gives each file's
+//! inode and size, and the reference lister's extents dump gives each
+//! inode's key types, so what the reference did is read without this
+//! crate's reader. The writer's [`data_layout`] must choose the same for
+//! every size.
 
 #![cfg(feature = "write")]
 
@@ -11,8 +13,8 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{fixture, read_text};
-use fs_bcachefs::write::INLINE_MAX;
+use common::{fixture, parse_size, read_text};
+use fs_bcachefs::write::{data_layout, inline_max};
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
@@ -47,52 +49,49 @@ fn key_types(image: &str) -> BTreeMap<u64, BTreeSet<String>> {
     out
 }
 
-/// The largest size the reference stored inline, checked to be a clean
-/// threshold: every file up to it inline only, every file past it without
-/// inline data.
-fn observed_limit(image: &str) -> usize {
-    let types = key_types(image);
-    let mut by_size: Vec<(usize, bool)> = sizes(image)
-        .iter()
-        .filter(|(n, _)| n.starts_with('s'))
-        .map(|(n, &(ino, size))| {
-            let t = types
-                .get(&ino)
-                .unwrap_or_else(|| panic!("{image}: {n} (inode {ino}) has no extents key"));
-            let inline = t.contains("inline_data");
-            assert!(
-                !inline || t.len() == 1,
-                "{image}: {n} mixes inline data with {t:?}"
-            );
-            (size, inline)
-        })
-        .collect();
-    by_size.sort();
-    assert_eq!(by_size.len(), 2100, "{image}: one file per size, 1 to 2100");
-    let limit = by_size
-        .iter()
-        .take_while(|(_, inline)| *inline)
-        .last()
-        .map_or(0, |&(s, _)| s);
-    let past: Vec<usize> = by_size
-        .iter()
-        .filter(|&&(s, inline)| s > limit && inline)
-        .map(|&(s, _)| s)
-        .collect();
-    assert!(
-        past.is_empty(),
-        "{image}: inline up to {limit} bytes, then inline again at {past:?}"
-    );
-    limit
+/// The image's block size in bytes, as the superblock printer shows it.
+fn block_bytes(image: &str) -> usize {
+    let text = read_text(&format!("write-study/{image}.super.txt"));
+    let v = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("block_size:"))
+        .unwrap_or_else(|| panic!("{image}: no block_size line"));
+    parse_size(v.trim()) as usize
 }
 
 #[test]
-fn the_writer_stores_inline_exactly_what_the_reference_does() {
+fn the_writer_lays_out_every_size_as_the_reference_did() {
     for image in IMAGES {
-        let limit = observed_limit(image);
+        let block = block_bytes(image);
+        let types = key_types(image);
+        let mut files = 0;
+        let mut largest_inline = 0;
+        for (name, &(ino, size)) in sizes(image).iter().filter(|(n, _)| n.starts_with('s')) {
+            let t = types
+                .get(&ino)
+                .unwrap_or_else(|| panic!("{image}: {name} (inode {ino}) has no extents key"));
+            let seen = (t.contains("extent"), t.contains("inline_data"));
+            assert_eq!(
+                t.len(),
+                usize::from(seen.0) + usize::from(seen.1),
+                "{image} {name}: {t:?}"
+            );
+            let (extents, inline) = data_layout(size, block);
+            assert_eq!(
+                (extents > 0, inline > 0),
+                seen,
+                "{image} {name}: the writer would put {extents} bytes in extents and {inline} inline; the reference keyed {t:?}"
+            );
+            if !seen.0 {
+                largest_inline = largest_inline.max(size);
+            }
+            files += 1;
+        }
+        assert_eq!(files, 2100, "{image}: one file per size, 1 to 2100");
         assert_eq!(
-            INLINE_MAX, limit,
-            "{image}: the reference stored files of up to {limit} bytes inline"
+            largest_inline,
+            inline_max(block),
+            "{image}: {block}-byte blocks"
         );
     }
 }
