@@ -21,8 +21,8 @@
 //!        type; 44..47 compression type; 48..63 checksum high 16 bits;
 //!        second word: checksum low 64 bits
 //! crc128 bits 0..3 = 0b1000; 4..16 compressed_size-1; 17..29
-//!        uncompressed_size-1; 30..42 and 43..55 offset and nonce (0 in
-//!        every extent seen; not read unless 0); 56..59 csum type; 60..63
+//!        uncompressed_size-1; 30..42 offset; 43..55 nonce (0 in every
+//!        extent seen; not read unless 0); 56..59 csum type; 60..63
 //!        compression type; second and third words: checksum low and high
 //!        64 bits
 //! flags  bits 0..6 = 0b100_0000; bit 7 poisoned; one word
@@ -216,20 +216,23 @@ fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
                 if p + 24 > v.len() {
                     return Err(Error::Corrupt("crc128 entry runs past the value".into()));
                 }
-                // Offset and nonce are 0 in every crc128 the reference
-                // wrote (S3); which of bits 30..42 and 43..55 is which is
-                // not observed, so a value there is not guessed at.
-                if bits(w, 30, 26) != 0 {
+                // The offset is bits 30..42, MEASURED on the
+                // `crc128-overwrite` image: of one extent split by a 4K
+                // overwrite, the part after it (`offset 16`) differs from
+                // the part before (`offset 0`) in 16 << 30 alone. The nonce is
+                // 0 in every entry seen, and S1 gives it only encryption,
+                // which this reader refuses: a value there is not read.
+                if bits(w, 43, 13) != 0 {
                     return Err(Error::Unsupported(format!(
-                        "crc128 entry with offset or nonce bits {:#x}: not observed, so the \
-                         extent is not read (docs/clean-room.md, open question 19)",
-                        bits(w, 30, 26)
+                        "crc128 entry with nonce bits {:#x}: never seen, so the extent is not \
+                         read (docs/clean-room.md, open question 19)",
+                        bits(w, 43, 13)
                     )));
                 }
                 out.push(ExtentEntry::Crc(Crc {
                     compressed_size: bits(w, 4, 13) as u32 + 1,
                     uncompressed_size: bits(w, 17, 13) as u32 + 1,
-                    offset: 0,
+                    offset: bits(w, 30, 13) as u32,
                     nonce: 0,
                     csum_type: bits(w, 56, 4) as u8,
                     compression_type: bits(w, 60, 4) as u8,
@@ -408,11 +411,21 @@ mod tests {
             (c.compressed_size, c.uncompressed_size, c.compression_type),
             (256, 2048, compression::LZ4)
         );
-        // Offset and nonce were 0 in every crc128 seen: anything else is
-        // refused, not guessed.
-        let offset = parse_entries(&words(&[0x5500_0000_067e_33f8 | 16 << 30, 0, 0]));
-        match offset {
-            Err(Error::Unsupported(m)) => assert!(m.contains("offset or nonce"), "{m}"),
+        // The `crc128-overwrite` image's "crc128: c_size 1024 size 1024
+        // offset 16 ... 0:f1c6c44 compress none".
+        let v = words(&[0x0500_0004_07fe_3ff8, 0x0f1c_6c44, 0]);
+        let e = parse_entries(&v).unwrap();
+        let ExtentEntry::Crc(c) = e[0] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(
+            (c.offset, c.compressed_size, c.csum_lo),
+            (16, 1024, 0x0f1c_6c44)
+        );
+        // A nonce was never seen: refused, not guessed.
+        let nonce = parse_entries(&words(&[0x0500_0000_07fe_3ff8 | 1 << 43, 0, 0]));
+        match nonce {
+            Err(Error::Unsupported(m)) => assert!(m.contains("nonce"), "{m}"),
             other => panic!("{other:?}"),
         }
         let truncated = parse_entries(&words(&[0x5500_0000_067e_33f8, 0]));

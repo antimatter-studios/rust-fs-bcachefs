@@ -5,6 +5,9 @@
 //! - `crc128`: encoded extents up to 1M, so extents outgrow the 512
 //!   sectors a crc64 entry holds. Every file reads back to the manifest's
 //!   SHA-256.
+//! - `crc128-overwrite`: a crc128 extent written through the reference
+//!   mount and partly overwritten, so the part after the overwrite keeps
+//!   the entry with an offset. The file reads back to the mount's SHA-256.
 //! - `poison`: one data sector corrupted, then read through the reference
 //!   mount, which failed the read and marked the extent poisoned (S1
 //!   5.5.5); a later mount with reconcile on moved the file's other extents
@@ -74,6 +77,38 @@ fn every_file_with_crc128_entries_reads_back_to_the_manifest() {
     }
     assert!(files > 300, "only {files} files");
     println!("crc128: {files} files read, {entries} crc128 entries in the listing");
+}
+
+#[test]
+fn a_crc128_extent_with_an_offset_reads_back_to_what_the_mount_wrote() {
+    let listing = read_text("crc128-overwrite.extents.txt");
+    let offset = listing
+        .lines()
+        .any(|l| l.contains("crc128:") && !l.contains(" offset 0 "));
+    assert!(
+        offset,
+        "no crc128 entry with an offset (crc128-overwrite.extents.txt; crc128-overwrite.txt has \
+         each step)"
+    );
+    let fs = Filesystem::open(FileDevice::open(fixture("crc128-overwrite.img")).unwrap()).unwrap();
+    let mut files = 0;
+    for e in manifest("crc128-overwrite") {
+        if e.kind != "file" {
+            continue;
+        }
+        let ino = fs.lookup(&e.path).unwrap();
+        let data = fs
+            .read(ino)
+            .unwrap_or_else(|err| panic!("{}: {err}", e.path));
+        assert_eq!(
+            Some(format!("{:x}", Sha256::digest(&data))),
+            e.sha256,
+            "{}",
+            e.path
+        );
+        files += 1;
+    }
+    assert_eq!(files, 1);
 }
 
 #[test]

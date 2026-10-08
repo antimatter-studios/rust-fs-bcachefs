@@ -490,7 +490,8 @@ ec=/var/tmp/age/ec
     python3 - "$work/ec.extents.txt" "$ROOT$ec-0.img" "$ROOT$ec-1.img" "$ROOT$ec-2.img" <<'PY'
 import mmap, re, struct, sys
 lines = open(sys.argv[1]).read().splitlines()
-maps = [mmap.mmap(open(p, "rb").fileno(), 0, access=mmap.ACCESS_READ) for p in sys.argv[2:]]
+files = [open(p, "rb") for p in sys.argv[2:]]
+maps = [mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) for f in files]
 shown = 0
 for i, l in enumerate(lines[:-2]):
     m = re.match(r"\s+crc32: c_size (\d+) size (\d+) offset (\d+) .*csum crc32c \w+:(\w+)\s+compress none", l)

@@ -183,9 +183,13 @@ all eight fixture sets.
   less one (13 bits, S1's 8192 sectors); bits 56..59 the checksum type and
   60..63 the compression type; the second word holds the checksum the
   lister prints after the colon (the low half), the third the high half,
-  0 for every checksum seen. Bits 30..55 were 0 in every entry: S1 puts the
-  offset and a 13-bit nonce there, but which is which is not observed, so
-  a non-zero value is refused.
+  0 for every checksum seen. Bits 30..42 are the offset (S8, S4: the
+  `crc128-overwrite` image, a 1 MiB file written through the reference
+  mount with the same options, then 4K of it overwritten: the extent's
+  part after the overwrite, `offset 16`, differs from the part before
+  only in 16 << 30, and the file reads back to the mount's SHA-256). Bits
+  43..55 are then the 13-bit nonce S1 gives encryption alone; 0 in every
+  entry seen, and a non-zero value is refused.
 - The flags entry is kind 6, one word, and bit 7 is `poisoned` (S8, S4: the
   `poison` image). A data sector of a settled image was corrupted and the
   file read through the reference mount: the read failed, and the
@@ -748,9 +752,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     mount's SHA-256 (`tests/oracle_bgcompress.rs`). Still open: the
     word's fields, and whether it can be longer with other options set.
     **crc128 (kind 3) and flags (kind 6, poisoned at bit 7) are answered**
-    by the `crc128` fixture and the `poison` image (see Extents above);
-    still open for crc128: which of bits 30..42 and 43..55 is the offset
-    and which the nonce, refused unless 0. **The stripe pointer** is the
+    by the `crc128` fixture and the `crc128-overwrite` and `poison` images
+    (see Extents above); a crc128 nonce, only ever 0, is refused unless 0.
+    **The stripe pointer** is the
     one kind left: the fixture build's erasure-coding probe (three devices,
     `--erasure_code --replicas=2`, `probe-ec.txt`, S3) shows the reference
     writing `[crc32, stripe_ptr, ptr]` keys of 8 u64s, so it is one word,
