@@ -1,7 +1,7 @@
 //! A btree node's header flags (#80): where the btree id and the level
 //! go, for every id the reference writes, 16 and above included. Every
 //! node of every btree of every clean fixture and write-study image is
-//! read, and its flags checked against the layout this crate infers; a
+//! read, and its flags checked against `btree::flags_id_and_level`; a
 //! mismatch prints every distinct `(btree id, level, flags)` seen.
 
 mod common;
@@ -75,12 +75,11 @@ fn node_flags(image: &str) -> BTreeSet<(u8, u8, u64)> {
     out
 }
 
-/// HYPOTHESIS, checked here: the id's low four bits are bits 0..4, the
-/// level bits 4..8, and the id's higher bits start at bit 9.
+/// Whether `flags` carry `id` and `level` as this crate reads and writes
+/// them, the other bits aside.
 fn fits(id: u8, level: u8, flags: u64) -> bool {
-    flags & 0xf == u64::from(id & 0xf)
-        && (flags >> 4) & 0xf == u64::from(level)
-        && (flags >> 9) & 0xf == u64::from(id >> 4)
+    btree::flags_id_and_level(flags) == (id, level)
+        && btree::flags_with_id_and_level(flags, id, level) == flags
 }
 
 #[test]

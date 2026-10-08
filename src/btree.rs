@@ -101,6 +101,24 @@ impl NodePtr {
     }
 }
 
+/// The btree id and level a node header's flags carry: the id's low four
+/// bits in bits 0..4, the level in bits 4..8, the id's higher bits from
+/// bit 9 (S8: every node of every btree of every clean fixture and
+/// write-study image, ids 16 and above included; tests/oracle_node_flags.rs).
+pub fn flags_id_and_level(flags: u64) -> (u8, u8) {
+    (
+        ((flags & 0xf) | ((flags >> 9) & 0xf) << 4) as u8,
+        ((flags >> 4) & 0xf) as u8,
+    )
+}
+
+/// `flags` with its btree id and level replaced (see
+/// [`flags_id_and_level`]); every other bit is kept.
+pub fn flags_with_id_and_level(flags: u64, id: u8, level: u8) -> u64 {
+    let id = u64::from(id);
+    (flags & !(0xff | 0xf << 9)) | (id & 0xf) | u64::from(level & 0xf) << 4 | (id >> 4) << 9
+}
+
 /// One parsed node: its header facts and its keys, merged across bsets.
 #[derive(Debug, Clone)]
 pub struct Node {
