@@ -357,6 +357,11 @@ mod ids {
 /// fixture showed (S8). Past what was seen is not guessed.
 pub const SYMLINK_MAX: usize = 248;
 
+/// The inline bound on 512-byte blocks, the default; kept so the public
+/// API does not lose it. Other block sizes have their own bound.
+#[deprecated(note = "use inline_max(block size in bytes)")]
+pub const INLINE_MAX: usize = 256;
+
 /// How much data the reference keeps inline on blocks of `block_bytes`: a
 /// whole file of up to this many bytes, and, after a longer file's full
 /// blocks, a final partial block of up to this many. S1 (9.1.7) gives
