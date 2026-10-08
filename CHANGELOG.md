@@ -139,8 +139,8 @@ API, a patch never does.
   The checker reports it as `reflink` instead of passing it unread, and the
   writer will not free it as if it were data. The fixture build tries every
   route to a clone through the reference mount (FICLONE, FICLONERANGE,
-  `copy_file_range`, FIDEDUPERANGE). None makes a reflink, so the layout
-  stays unobservable.
+  `copy_file_range`, FIDEDUPERANGE). None makes a reflink. The reference
+  tool's `kvdb` key editor is the route left for learning the layout.
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both

@@ -549,7 +549,8 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
    reflink, multiple devices and replicas**: not seen in any fixture.
    (inline_data and xattrs: seen and read, see above.)
-   **Reflink** (#7) is UNOBSERVABLE with the pinned reference. S1 (9.1.6)
+   **Reflink** (#7): no reflink COPY can be made with the pinned reference
+   through its mount. S1 (9.1.6)
    gives the shape: a `reflink_p` in the extents btree holds a 56-bit index
    into the reflink btree (id 7) and front and back pads, and a `reflink_v`
    there holds a refcount followed by extent entries (or, for inline data,
@@ -565,8 +566,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    reference tool's own help (`probe.help.txt`, S3) lists no format or
    mount option that makes a reflink. So the reader refuses a `reflink_p`
    by name, the checker reports it (`reflink`), and the writer will not
-   free one (`tests/oracle_refused_local.rs`). A kernel mount (#110) would
-   make one.
+   free one (`tests/oracle_refused_local.rs`). Two routes remain. A kernel
+   mount (#110) would make a real reflink. And the reference tool's `kvdb`,
+   by its own help a btree editor that sets keys by field name through the
+   normal transactional path (journalled, with triggers), could set a
+   `reflink_p` whose fields it encodes itself, which would show the bit
+   layout. Its help says only a value's fixed header is editable for
+   entry-stream values, so it cannot build a `reflink_v`'s pointers.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
