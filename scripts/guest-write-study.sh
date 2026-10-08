@@ -228,4 +228,28 @@ mkdir "$M/o/sub"
 settle "$img" options
 dump "$img" options
 cp --sparse=always "$ROOT$img" "$out/options.img"
+# XATTR SLOTS (#77): two of aged's xattrs, the first set on a fresh file
+# and one set on a directory, are not at the SipHash slot the inode's
+# hash_seed gives. The same steps are taken here one mount each, settled
+# and dumped after each, so a slot can be checked against the seed the
+# inode had when it was set: the first xattr of the filesystem, one on a
+# directory, one on a second file; then the aging script's order in a
+# single mount under /y.
+SETX='import os,sys; os.setxattr(sys.argv[1], sys.argv[2], sys.argv[3].encode())'
+img="$work/xattr.img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q "$img" >"$out/xattr.format.txt" 2>&1
+for step in \
+    'xattr-first|mkdir "$M/x"; printf "one attribute" >"$M/x/one.txt"; python3 -c "$SETX" "$M/x/one.txt" user.greeting hello' \
+    'xattr-dir|python3 -c "$SETX" "$M/x" user.on-a-directory dir' \
+    'xattr-second|printf "many" >"$M/x/many.txt"; python3 -c "$SETX" "$M/x/many.txt" user.attr00 ""' \
+    'xattr-together|mkdir "$M/y"; printf "one attribute" >"$M/y/one.txt"; python3 -c "$SETX" "$M/y/one.txt" user.greeting hello; printf "many" >"$M/y/many.txt"; for i in 00 01 02; do python3 -c "$SETX" "$M/y/many.txt" user.attr$i v; done; python3 -c "$SETX" "$M/y" user.on-a-directory dir'; do
+    name="${step%%|*}"
+    echo "== write-study: $name"
+    mount_rw "$img"
+    M="$ROOT$mnt" SETX="$SETX" bash -euc "${step#*|}"
+    settle "$img" "$name"
+    dump "$img" "$name"
+    cp --sparse=always "$ROOT$img" "$out/$name.img"
+done
 rm -rf "${ROOT:?}$work"
