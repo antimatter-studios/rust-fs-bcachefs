@@ -483,8 +483,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    S1 9.1.3.1), one for another device, or one with any flag bit set (bits
    1..3; cached and unwritten pointers, never observed). Btree node
    pointers are not yet judged the same way.
-3. **Btree node flags**: where the btree id and level are, and what bit 8 and
-   bit 32 mean. The reader does not need them yet (it trusts the parent).
+3. **Btree node flags**: what bit 8 and bit 32 mean. The btree id and
+   level are settled (question 13); the reader does not need them (it
+   trusts the parent), and the writer copies the other bits from an
+   existing node.
 4. **Unclean filesystems**: SETTLED for single-device images (see Journal
    above), and the superblock's `journal_seq_blacklist` (type 8) is
    SETTLED too: pairs of u64 `(start, end)` with the end EXCLUSIVE. S1
@@ -534,8 +536,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     from its hash slot up, past other names and whiteouts, to an empty
     slot; the reader and the writer both do this. INFERRED for SipHash
     directories, where no collision can be made: the same rule.
-13. **Node flags for btree ids of 16 and more**: the writer only makes
-    roots for ids under 16 (the lru btree, 10).
+13. **Node flags for btree ids of 16 and more** (#80). SETTLED (S8): a
+    node's flags carry the id's low four bits in bits 0..4, the level in
+    bits 4..8 and the id's higher bits from bit 9, for every node of every
+    btree of every clean fixture and write-study image, ids 16 and above
+    included (`btree::flags_id_and_level`, tests/oracle_node_flags.rs).
+    The writer builds a new root's flags that way for any id. No write it
+    makes yet needs a root for an id of 16 or more, so no such root has
+    been judged by the reference checker.
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
     accounting keys' versions: copied and left unchanged by the writer;
     the reference checker accepts both.

@@ -393,11 +393,6 @@ impl<D: BlockDevice> Writer<D> {
     /// root key goes into the superblock's clean field; the bucket's alloc
     /// key, its backpointer and the accounting go into `t`.
     pub(super) fn create_root(&mut self, id: u8, bucket: u64, t: &mut Txn) -> Result<()> {
-        if id >= 16 {
-            return Err(Error::Unsupported(format!(
-                "a root for btree {id}: where ids of 16 and more go in a node's flags is not known"
-            )));
-        }
         let bucket_sectors = self.bucket_sectors()?;
         let node_sectors = u64::from(self.sb.btree_node_size());
         if node_sectors > bucket_sectors {
@@ -420,7 +415,9 @@ impl<D: BlockDevice> Writer<D> {
             crate::siphash::siphash24(self.journal_seq, bucket, b"rust-fs-bcachefs node seq") | 1;
         let mut node = vec![0u8; 160];
         node[16..24].copy_from_slice(&crate::btree::node_magic(&self.sb.uuid).to_le_bytes());
-        node[24..32].copy_from_slice(&((tmpl_flags & !0xff) | u64::from(id)).to_le_bytes());
+        node[24..32].copy_from_slice(
+            &crate::btree::flags_with_id_and_level(tmpl_flags, id, 0).to_le_bytes(),
+        );
         // min_key 32..52 stays POS_MIN; max_key 52..72 is SPOS_MAX.
         node[52..72].fill(0xff);
         // The key format: 3 u64s, 6 fields, 64/64/32 bits, no offsets.
