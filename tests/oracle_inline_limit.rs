@@ -1,5 +1,6 @@
 //! Where the reference stores a file's data (#79): the write study's
-//! `inline-*` images hold one file of every size from 1 to 2100 bytes,
+//! `inline-*` images hold one file of every size from 1 to 2100 bytes and
+//! around one and two 4096-byte blocks (4090..4200, 8190..8300),
 //! written through the reference mount (scripts/guest-write-study.sh), on
 //! 512- and 4096-byte blocks. The mount's own `stat` gives each file's
 //! inode and size, and the reference lister's extents dump gives each
@@ -32,6 +33,20 @@ fn sizes(image: &str) -> BTreeMap<String, (u64, usize)> {
             )
         })
         .collect()
+}
+
+/// `inode -> the sectors its extent keys cover`, from the lister's `len`.
+fn extent_sectors(image: &str) -> BTreeMap<u64, u64> {
+    let mut out: BTreeMap<u64, u64> = BTreeMap::new();
+    for l in read_text(&format!("write-study/{image}.extents.txt"))
+        .lines()
+        .filter(|l| l.starts_with("u64s ") && l.split_whitespace().nth(3) == Some("extent"))
+    {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let ino = w[4].split(':').next().unwrap().parse().unwrap();
+        *out.entry(ino).or_default() += w[6].parse::<u64>().unwrap();
+    }
+    out
 }
 
 /// `inode -> the key types the lister shows for it` in the extents btree.
@@ -87,12 +102,31 @@ fn the_writer_lays_out_every_size_as_the_reference_did() {
             }
             files += 1;
         }
-        assert_eq!(files, 2100, "{image}: one file per size, 1 to 2100");
+        assert_eq!(files, 2100 + 111 + 111, "{image}: one file per size");
         assert_eq!(
             largest_inline,
             inline_max(block),
             "{image}: {block}-byte blocks"
         );
+    }
+}
+
+/// The extents of a file cover its extent bytes rounded up to whole
+/// blocks (#87: 8 sectors for 1500 bytes on 4096-byte blocks, 3 on 512).
+#[test]
+fn extents_cover_whole_blocks() {
+    for image in IMAGES {
+        let block = block_bytes(image);
+        let sectors = extent_sectors(image);
+        for (name, &(ino, size)) in sizes(image).iter().filter(|(n, _)| n.starts_with('s')) {
+            let (extents, _) = data_layout(size, block);
+            let want = (extents.div_ceil(block) * block / 512) as u64;
+            assert_eq!(
+                sectors.get(&ino).copied().unwrap_or(0),
+                want,
+                "{image} {name}: {extents} bytes in extents"
+            );
+        }
     }
 }
 

@@ -296,6 +296,36 @@ fn colliding_names_placed_here_are_read_by_the_reference() {
     });
 }
 
+/// Files this crate writes on 4096-byte blocks (#87), around one and two
+/// blocks: the reference checker passes the image and the reference
+/// implementation reads every byte back.
+#[test]
+fn files_on_4096_byte_blocks_are_read_by_the_reference() {
+    let img = scratch("write-study/inline-bs4k.img", "bs4k");
+    let sizes = [1500usize, 2000, 4096, 5000, 9000];
+    let file = |n: usize| -> Vec<u8> { (0..n).map(|i| (i * 31 + n) as u8).collect() };
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for n in sizes {
+        w.create_file(dir, format!("w{n}").as_bytes(), &file(n), 0o644)
+            .unwrap_or_else(|e| panic!("w{n}: {e}"));
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        for n in sizes {
+            assert_eq!(
+                std::fs::read(m.join("d").join(format!("w{n}"))).unwrap(),
+                file(n),
+                "w{n}: bytes, as the reference reads them"
+            );
+        }
+    });
+}
+
 /// The same creation in the aged image, whose btrees are two levels deep
 /// and whose leaves hold many bsets. How full its leaves are differs from
 /// one fixture build to the next, so this test has two acceptable

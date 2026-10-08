@@ -116,9 +116,11 @@ for entry in "${ops[@]}"; do
 done
 
 # THE INLINE LIMIT (#79): where the reference stops storing a file inline.
-# One file of every size from 1 to 2100 bytes is written through the mount,
-# once on a default image and once with 4096-byte blocks (the block4k
-# fixture's option), and the lister shows which became inline_data. /d/grow
+# One file of every size from 1 to 2100 bytes, and from just under to just
+# over one and two 4096-byte blocks (4090..4200, 8190..8300; #87), is
+# written through the mount, once on a default image and once with
+# 4096-byte blocks (the block4k fixture's option), and the lister shows
+# which became inline_data and how the extents are cut. /d/grow
 # is written at 100 bytes, flushed, then grown to 3000, to show what growing
 # past the limit does. sizes.txt is the mount's own `inode size name` for
 # each file, so a test can join the lister's keys to sizes without this
@@ -135,7 +137,7 @@ for variant in 'inline-default|' 'inline-bs4k|--block_size=4096'; do
     M="$ROOT$mnt"
     mkdir "$M/d"
     head -c 100 /dev/zero | tr '\0' g >"$M/d/grow"
-    for n in $(seq 1 2100); do
+    for n in $(seq 1 2100) $(seq 4090 4200) $(seq 8190 8300); do
         head -c "$n" /dev/zero | tr '\0' x >"$M/d/s$n"
     done
     sync

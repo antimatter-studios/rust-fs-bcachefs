@@ -478,3 +478,54 @@ fn colliding_names_are_placed_as_the_reference_places_them() {
         assert!(fs.lookup(&format!("/d/{gone}")).is_err(), "{gone}");
     }
 }
+
+/// Files written here on 4096-byte blocks (#87): each extent is cut and
+/// sized in whole blocks, and a short last block stays inline, as
+/// `data_layout` says; this crate reads every byte back.
+#[test]
+fn files_on_4096_byte_blocks_are_written_in_whole_blocks() {
+    use fs_bcachefs::btree::{self, btree_id};
+    let img = scratch("write-study/inline-bs4k.img", "bs4k");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let sizes = [1500usize, 2000, 4096, 5000, 9000];
+    let file = |n: usize| -> Vec<u8> { (0..n).map(|i| (i * 31 + n) as u8).collect() };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for n in sizes {
+        w.create_file(dir, format!("w{n}").as_bytes(), &file(n), 0o644)
+            .unwrap_or_else(|e| panic!("w{n}: {e}"));
+    }
+    drop(w);
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = fs_bcachefs::superblock::Superblock::read(&dev).unwrap();
+    let keys = btree::walk(&dev, &sb, btree_id::EXTENTS).unwrap();
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    for n in sizes {
+        let ino = fs.lookup(&format!("/d/w{n}")).unwrap();
+        let (extents, inline) = fs_bcachefs::write::data_layout(n, 4096);
+        let mine: Vec<_> = keys.iter().filter(|k| k.pos.inode == ino).collect();
+        for k in mine.iter().filter(|k| k.key_type == 6) {
+            assert_eq!(k.size % 8, 0, "w{n}: an extent of {} sectors", k.size);
+            assert_eq!(
+                k.pos.offset % 8,
+                0,
+                "w{n}: an extent ending at {}",
+                k.pos.offset
+            );
+        }
+        let ext: u64 = mine
+            .iter()
+            .filter(|k| k.key_type == 6)
+            .map(|k| u64::from(k.size))
+            .sum();
+        assert_eq!(ext, (extents.div_ceil(4096) * 8) as u64, "w{n}");
+        assert_eq!(
+            mine.iter().any(|k| k.key_type == 17),
+            inline > 0,
+            "w{n}: inline"
+        );
+        assert_eq!(fs.read(ino).unwrap(), file(n), "w{n}: bytes");
+    }
+}
