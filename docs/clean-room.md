@@ -448,9 +448,10 @@ checker judged each attempt and named what was missing until nothing was.
   fixture's three-name file points at the last one made).
 - Permissions are the mode bits in the flags word; owner and group the uid
   and gid varints (S8 field order, above).
-- An xattr's key sits at SipHash-2-4 keyed `(inode hash_seed, 0)` over the
-  namespace byte then the name, shifted right by one (S4: 43 of the aged
-  fixture's 45 xattrs; open question 15). The first xattr of a filesystem
+- An xattr's key sits at `xattr::name_slot`: SipHash-2-4 keyed `(inode
+  hash_seed, 0)` over the namespace byte then the name, shifted right by
+  one, with the final partial word of a longer message taken as question
+  15 records (#77; every xattr of every image checked). The first xattr of a filesystem
   without an xattrs btree makes its root, as for lru.
 - An empty bset is rejected by the reference checker ("empty bset"), so
   nothing is appended when an operation leaves a btree unchanged (S8,
@@ -557,10 +558,19 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     is open, and the writer copies them from the parent, which keeps them
     3. The accounting keys' versions are copied unchanged too; the
     reference checker accepts both.
-15. **Two of the aged fixture's xattrs** (`user.on-a-directory`,
-    `user.greeting`, the first set in the session) are not at the computed
-    slot, and no candidate tried places them; the writer puts new ones at
-    the computed slot, where the reference's own lookups find them.
+15. **The xattr slot** (#77). SETTLED, INFERRED and checked (S8). The two
+    of `aged`'s xattrs that did not fit (`user.on-a-directory`,
+    `user.greeting`) were not about when they were set: their inodes'
+    seeds never changed, and the same names misfit again on fresh images.
+    One xattr of every name length from 1 to 24 showed the rule: the
+    message is the namespace byte then the name, and SipHash-2-4 keyed
+    `(hash_seed, 0)` over it, shifted right by one, gives the slot, except
+    that a message longer than 8 bytes and not a whole number of words has
+    a final partial word of a zero byte then all but the message's last
+    byte. Names of 1 to 7, 15 and 23 bytes therefore fit the plain hash;
+    the rest do not. `xattr::name_slot`, checked on every xattr of the
+    write study's xattr images and all 45 of `aged`
+    (tests/oracle_xattr_slots.rs).
 16. **Superblock copies.** SETTLED. S1 (9.5.1): the copy with the highest
     valid `seq` is authoritative, and the standalone layout at sector 7 is
     consulted when the primary cannot be read. Observed (S4): every fixture

@@ -4,14 +4,14 @@
 //! set one xattr of every name length from 1 to 24
 //! (scripts/guest-write-study.sh). Names of 1 to 7 bytes, 15 and 23 fit;
 //! the others fit once the message's final partial word is taken as the
-//! reference takes it ([`slot`]).
+//! reference takes it (`xattr::name_slot`).
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::read_text;
-use fs_bcachefs::siphash::siphash24;
+use fs_bcachefs::xattr::name_slot;
 
 const STEPS: &[&str] = &[
     "xattr-first",
@@ -61,22 +61,8 @@ fn xattrs(step: &str) -> Vec<(u64, u64, u8, String)> {
         .collect()
 }
 
-/// INFERRED from the observations below: SipHash-2-4 keyed
-/// `(hash_seed, 0)` over the namespace byte then the name, shifted right by
-/// one, except that when that message is longer than 8 bytes and not a
-/// whole number of 8-byte words, its final partial word is a zero byte
-/// followed by all but the last of its bytes: the message's last byte is
-/// not hashed. A message of 8 bytes or fewer, or of whole words, is hashed
-/// as it is.
 fn slot(seed: u64, ns: u8, name: &str) -> u64 {
-    let mut msg = vec![ns];
-    msg.extend_from_slice(name.as_bytes());
-    let (whole, tail) = (msg.len() / 8 * 8, msg.len() % 8);
-    if msg.len() > 8 && tail != 0 {
-        msg.insert(whole, 0);
-        msg.pop();
-    }
-    siphash24(seed, 0, &msg) >> 1
+    name_slot(seed, ns, name.as_bytes())
 }
 
 /// Every xattr of every step, and every one of `aged`'s 45, sits at
