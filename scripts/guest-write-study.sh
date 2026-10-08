@@ -110,4 +110,36 @@ for entry in "${ops[@]}"; do
     dump "$img" "$name"
     cp --sparse=always "$ROOT$img" "$out/$name.img"
 done
+
+# THE INLINE LIMIT (#79): where the reference stops storing a file inline.
+# One file of every size from 1 to 2100 bytes is written through the mount,
+# once on a default image and once with 4096-byte blocks (the block4k
+# fixture's option), and the lister shows which became inline_data. /d/grow
+# is written at 100 bytes, flushed, then grown to 3000, to show what growing
+# past the limit does. sizes.txt is the mount's own `inode size name` for
+# each file, so a test can join the lister's keys to sizes without this
+# crate's reader.
+for variant in 'inline-default|' 'inline-bs4k|--block_size=4096'; do
+    name="${variant%%|*}"
+    opts="${variant#*|}"
+    echo "== write-study: $name"
+    img="$work/$name.img"
+    truncate -s 128M "$ROOT$img"
+    # shellcheck disable=SC2086 # $opts is empty or one option
+    bcachefs-ref format -q $opts "$img" >"$out/$name.format.txt" 2>&1
+    mount_rw "$img"
+    M="$ROOT$mnt"
+    mkdir "$M/d"
+    head -c 100 /dev/zero | tr '\0' g >"$M/d/grow"
+    for n in $(seq 1 2100); do
+        head -c "$n" /dev/zero | tr '\0' x >"$M/d/s$n"
+    done
+    sync
+    sleep 2
+    head -c 2900 /dev/zero | tr '\0' g >>"$M/d/grow"
+    (cd "$M/d" && stat -c '%i %s %n' grow s*) >"$out/$name.sizes.txt"
+    settle "$img" "$name"
+    dump "$img" "$name"
+    cp --sparse=always "$ROOT$img" "$out/$name.img"
+done
 rm -rf "${ROOT:?}$work"
