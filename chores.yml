@@ -69,12 +69,14 @@ tasks:
   # fewer dependencies than now; 21 tests executed. oracle: 53 lines / 2086
   # bytes warm; 9 tests. The line budgets leave room for a cold build's
   # `Compiling` lines (one per dependency); a floor moves up with its suite
-  # and never down.
+  # and never down. FLOORS RAISED 2026-10-08 (#83) to the counts CI run
+  # 37689702536 on main (dbeced4, 2026-10-07) executed: unit 34, oracle 62,
+  # vm 105, coverage 81.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 21'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 34'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
@@ -86,7 +88,7 @@ tasks:
       # refusals), about eight lines each: 300 lines / 20000 bytes leaves
       # room for a cold runner's Compiling lines on top of that.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 300 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 9'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -111,10 +113,11 @@ tasks:
     # The siblings are staged on the share from their pinned HEAD first
     # (rust-fs-core's stage-siblings, run in place); the toolchain and the
     # build live on the VM's own disk, so later runs are incremental.
-    # BUDGET: not yet measured on CI; set generously for a cold guest build
-    # (one `Compiling` line per dependency, twice: debug and release) and
-    # to be lowered to the measurement the first green suite-in-vm run
-    # records. FLOOR: the unit and oracle floors together.
+    # BUDGET MEASURED on CI run 37689702536 (main, dbeced4, 2026-10-07), a
+    # cold guest build: 396 lines / 18716 bytes, four lines under the old
+    # 400. 520 lines / 28000 bytes leaves room for the next few test
+    # binaries (about eight lines each, twice: debug and release). FLOOR:
+    # 105 tests, what that run executed.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -126,10 +129,10 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 400 40000 -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 520 28000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 30'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 105'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -206,7 +209,7 @@ tasks:
       # Raised with the oracle tier's budget (2026-10-07): the same nine new
       # test binaries print here too.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 450 40000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 30'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 81'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
