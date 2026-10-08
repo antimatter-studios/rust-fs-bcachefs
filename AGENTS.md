@@ -176,6 +176,16 @@ and must stay that way, so:
 - **Dependencies are permissive only** (MIT, BSD, Apache-2.0, Zlib, ISC, 0BSD).
   Check the licence of every crate before adding it.
 
+## Keep the features page current
+
+`docs/features.md` lists every feature with its state, the release it shipped
+in, its tracking issue and the test that checks it. **A pull request that
+adds, fixes, refuses or removes behaviour updates its row in the same pull
+request**, with the PR number under **Since** (`Unreleased (#N)` until a
+release, then the version). A finding that leaves something unsupported or
+unobservable gets a row too, naming its issue. Releases turn every
+`Unreleased` into the version they ship as.
+
 ## Byte order
 
 bcachefs is **little-endian on disk**. Use `from_le_bytes`; never cast a raw
