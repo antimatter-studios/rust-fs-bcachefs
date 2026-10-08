@@ -20,6 +20,12 @@
 //!        uncompressed_size-1; 21..29 offset; 30..39 nonce; 40..43 csum
 //!        type; 44..47 compression type; 48..63 checksum high 16 bits;
 //!        second word: checksum low 64 bits
+//! crc128 bits 0..3 = 0b1000; 4..16 compressed_size-1; 17..29
+//!        uncompressed_size-1; 30..42 and 43..55 offset and nonce (0 in
+//!        every extent seen; not read unless 0); 56..59 csum type; 60..63
+//!        compression type; second and third words: checksum low and high
+//!        64 bits
+//! flags  bits 0..6 = 0b100_0000; bit 7 poisoned; one word
 //! ```
 
 use crate::error::{Error, Result};
@@ -115,27 +121,47 @@ fn bits(w: u64, lo: u32, n: u32) -> u64 {
     (w >> lo) & ((1u64 << n) - 1)
 }
 
-/// The name of an extent entry kind, by the position of its first set bit.
-/// 0 to 2 are decoded here and checked against the lister. 7 is the
-/// reconcile entry, OBSERVED on the `bgcompress` fixture: the lister prints
-/// `reconcile: need_rb=...` for each extent whose value carries a word with
-/// bit 7 first. S1 9.1.3 lists crc128, the stripe pointer and the flags
-/// entry before reconcile, but reconcile sitting at 7 rather than 6 shows
-/// that order does not give the bit positions, so 3 to 6 are left unnamed
-/// until a fixture shows them (docs/clean-room.md, open question 19).
+/// The name of an extent entry kind, by the position of its first set bit,
+/// each OBSERVED against the lister's line for it (docs/clean-room.md,
+/// open question 19): crc128 on the `crc128` fixture (`crc128:`), flags on
+/// the `poison` image (`flags: poisoned`), reconcile on `bgcompress`
+/// (`reconcile: need_rb=...`). 4 and 5 are left unnamed: the stripe
+/// pointer is one of them, and erasure coding needs several devices.
 pub fn entry_kind_name(first_set_bit: u32) -> &'static str {
     match first_set_bit {
         0 => "ptr",
         1 => "crc32",
         2 => "crc64",
+        3 => "crc128",
+        6 => "flags",
         7 => "reconcile",
         _ => "unknown",
     }
 }
 
+/// The flags entry's poisoned bit (S1 5.5.5, 9.1.3.4: the extent's data
+/// failed its checksum with no good copy left, and reads of it fail).
+/// OBSERVED on the `poison` image: the reference's read of a corrupted
+/// extent put the word 0xc0 in front of its crc32 entry, and the lister
+/// printed `flags: poisoned` for it.
+const FLAG_POISONED: u64 = 1 << 7;
+
 /// Parse an extent value into its entries.
 pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
+    Ok(entries(v)?.0)
+}
+
+/// Whether an extent value carries a flags entry marking it poisoned:
+/// its data is known to be bad, and the reference refuses to read it.
+pub fn poisoned(v: &[u8]) -> Result<bool> {
+    Ok((entries(v)?.1 & FLAG_POISONED) != 0)
+}
+
+/// The data entries of a value, and the bits of its flags entry (0 when
+/// it has none).
+fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
     let mut out = Vec::new();
+    let mut flags = 0;
     let mut p = 0;
     while p + 8 <= v.len() {
         let w = le64(v, p);
@@ -181,6 +207,51 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
                 }));
                 p += 16;
             }
+            3 => {
+                // Three words, MEASURED on the `crc128` fixture: every key
+                // with a crc128 and one pointer is 9 u64s (the 5 of the key,
+                // then 3 and 1), and for `c_size 832 size 832 ... csum
+                // crc32c 0:d6f4f09 compress incompressible` the words read
+                // 0x5500_0000_067e_33f8, 0x0d6f_4f09, 0.
+                if p + 24 > v.len() {
+                    return Err(Error::Corrupt("crc128 entry runs past the value".into()));
+                }
+                // Offset and nonce are 0 in every crc128 the reference
+                // wrote (S3); which of bits 30..42 and 43..55 is which is
+                // not observed, so a value there is not guessed at.
+                if bits(w, 30, 26) != 0 {
+                    return Err(Error::Unsupported(format!(
+                        "crc128 entry with offset or nonce bits {:#x}: not observed, so the \
+                         extent is not read (docs/clean-room.md, open question 19)",
+                        bits(w, 30, 26)
+                    )));
+                }
+                out.push(ExtentEntry::Crc(Crc {
+                    compressed_size: bits(w, 4, 13) as u32 + 1,
+                    uncompressed_size: bits(w, 17, 13) as u32 + 1,
+                    offset: 0,
+                    nonce: 0,
+                    csum_type: bits(w, 56, 4) as u8,
+                    compression_type: bits(w, 60, 4) as u8,
+                    csum_hi: le64(v, p + 16),
+                    csum_lo: le64(v, p + 8),
+                }));
+                p += 24;
+            }
+            6 => {
+                // Flags: one word (S3, S4: the poisoned extent's key is
+                // 8 u64s, the flags word, then crc32 and ptr). S1 names one
+                // flag; any other bit is a meaning not seen, and refused.
+                let f = w & !0x7f;
+                if (f & !FLAG_POISONED) != 0 {
+                    return Err(Error::Unsupported(format!(
+                        "extent flags {f:#x}: a flag other than poisoned is not known, so the \
+                         extent is not read"
+                    )));
+                }
+                flags |= f;
+                p += 8;
+            }
             7 => {
                 // Reconcile: pending background work and the IO options it
                 // is for, not where the data is. One word, MEASURED: on the
@@ -200,7 +271,7 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
             }
         }
     }
-    Ok(out)
+    Ok((out, flags))
 }
 
 /// One piece of a file's data: `len` sectors of the file starting at file
@@ -290,15 +361,81 @@ mod tests {
 
     #[test]
     fn unknown_or_truncated_entries_are_refused_by_name() {
-        match parse_entries(&0x8u64.to_le_bytes()) {
-            Err(Error::Unsupported(m)) => assert!(m.contains("type 3 (unknown)"), "{m}"),
+        match parse_entries(&0x10u64.to_le_bytes()) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("type 4 (unknown)"), "{m}"),
             other => panic!("{other:?}"),
         }
-        match parse_entries(&0x40u64.to_le_bytes()) {
-            Err(Error::Unsupported(m)) => assert!(m.contains("type 6 (unknown)"), "{m}"),
+        match parse_entries(&0x20u64.to_le_bytes()) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("type 5 (unknown)"), "{m}"),
             other => panic!("{other:?}"),
         }
         assert!(parse_entries(&0x4u64.to_le_bytes()).is_err());
+        let truncated = parse_entries(&0x8u64.to_le_bytes());
+        assert!(matches!(truncated, Err(Error::Corrupt(_))));
+    }
+
+    fn words(ws: &[u64]) -> Vec<u8> {
+        ws.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// The `crc128` fixture's entries and pointers, as found in its image
+    /// beside the lister's lines for them.
+    #[test]
+    fn a_crc128_entry_decodes_as_the_lister_printed_it() {
+        // "crc128: c_size 832 size 832 offset 0 nonce 0 csum crc32c
+        // 0:d6f4f09 compress incompressible", "ptr: 0:57:192 gen 0"
+        let v = words(&[0x5500_0000_067e_33f8, 0x0d6f_4f09, 0, 0xe_4c01]);
+        let e = parse_entries(&v).unwrap();
+        let ExtentEntry::Crc(c) = e[0] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(
+            (c.compressed_size, c.uncompressed_size, c.offset, c.nonce),
+            (832, 832, 0, 0)
+        );
+        assert_eq!(
+            (c.csum_type, c.compression_type, c.csum_hi, c.csum_lo),
+            (5, compression::INCOMPRESSIBLE, 0, 0x0d6f_4f09)
+        );
+        assert!(matches!(e[1], ExtentEntry::Ptr(p) if p.offset == 58560));
+        // "crc128: c_size 256 size 2048 ... csum crc32c 0:c50c3e7e compress lz4"
+        let v = words(&[0x3500_0000_0ffe_0ff8, 0xc50c_3e7e, 0]);
+        let e = parse_entries(&v).unwrap();
+        let ExtentEntry::Crc(c) = e[0] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(
+            (c.compressed_size, c.uncompressed_size, c.compression_type),
+            (256, 2048, compression::LZ4)
+        );
+        // Offset and nonce were 0 in every crc128 seen: anything else is
+        // refused, not guessed.
+        let offset = parse_entries(&words(&[0x5500_0000_067e_33f8 | 16 << 30, 0, 0]));
+        match offset {
+            Err(Error::Unsupported(m)) => assert!(m.contains("offset or nonce"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        let truncated = parse_entries(&words(&[0x5500_0000_067e_33f8, 0]));
+        assert!(matches!(truncated, Err(Error::Corrupt(_))));
+    }
+
+    /// The `poison` image's poisoned extent: a flags word of 0xc0, then the
+    /// crc32 and pointer it had before the reference's read failed.
+    #[test]
+    fn a_poisoned_flags_entry_is_seen_and_the_data_entries_still_decode() {
+        let v = words(&[0xc0, 0xffa6_681b_0500_7efe, 0x1_7001]);
+        assert!(poisoned(&v).unwrap());
+        let e = parse_entries(&v).unwrap();
+        assert!(matches!(e[0], ExtentEntry::Crc(c) if c.csum_lo == 0xffa6_681b));
+        assert!(matches!(e[1], ExtentEntry::Ptr(p) if p.offset == 5888));
+        assert!(!poisoned(&words(&[0xffa6_681b_0500_7efe, 0x1_7001])).unwrap());
+        // A flags word with only its kind bit set marks nothing; any flag
+        // but poisoned is refused.
+        assert!(!poisoned(&words(&[0x40, 0x1_7001])).unwrap());
+        match parse_entries(&words(&[0x140, 0x1_7001])) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("extent flags 0x100"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// The `bgcompress` fixture's crc32, ptr and reconcile words, as found

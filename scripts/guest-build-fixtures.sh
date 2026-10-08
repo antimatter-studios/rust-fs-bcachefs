@@ -320,6 +320,56 @@ if ! bcachefs-ref fsck -n "$out/crc128.img" >"$out/crc128.fsck.txt" 2>&1; then
     tail -n 30 "$out/crc128.fsck.txt" >&2
     exit 1
 fi
+# A crc128 whose offset is not 0: every extent the formatter wrote starts at
+# its data's start, so which of the crc128's two 13-bit fields after the
+# sizes is the offset is not seen there. An extent partly overwritten keeps
+# its entry and starts its live part further in (S1 9.1.3.2), so a file is
+# written through the mount with the crc128 set's options, settled, and 4K
+# of it overwritten. crc128-overwrite.txt records the steps; nothing here
+# fails the build.
+echo "== crc128-overwrite (a crc128 extent partly overwritten, through the mount)"
+img=/var/tmp/age/crc128-overwrite.img
+rm -f "$ROOT$img"
+truncate -s 1G "$ROOT$img"
+bcachefs-ref format -q --encoded_extent_max=1M "$img" >"$out/crc128-overwrite.format.txt" 2>&1
+{
+    if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, random, sys
+with open(os.path.join(sys.argv[1], "f"), "wb") as f:
+    f.write(random.Random(128).randbytes(1 << 20))
+PY
+        sync
+        sleep 2
+        fuse_kill
+        bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.written.settle.txt" 2>&1 ||
+            echo "settle written: exit $?"
+        bcachefs-ref list -b extents "$img" >"$out/crc128-overwrite.written.extents.txt" 2>&1 || true
+        if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+            python3 - "$ROOT$mnt" <<'PY' || echo "overwrite: exit $?"
+import os, sys
+with open(os.path.join(sys.argv[1], "f"), "r+b") as f:
+    f.seek(4096)
+    f.write(b"overwritten\n" * 341 + b"end\n")
+PY
+            sync
+            sleep 2
+            manifest "$ROOT$mnt" "$out/crc128-overwrite.json" live
+            fuse_kill
+            bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.replay.txt" 2>&1 ||
+                echo "settle overwritten: exit $?"
+            for b in inodes dirents extents; do
+                bcachefs-ref list -b "$b" "$img" >"$out/crc128-overwrite.$b.txt" 2>&1 || true
+            done
+            bcachefs-ref fsck -n "$img" >"$out/crc128-overwrite.fsck.txt" 2>&1 &&
+                echo "fsck -n: clean" || echo "fsck -n: exit $?"
+            grep -c 'crc128:' "$out/crc128-overwrite.extents.txt" | sed 's/$/ crc128 entries/'
+            grep 'crc128:.* offset [1-9]' "$out/crc128-overwrite.extents.txt" || echo "no crc128 offset above 0"
+            cp --sparse=always "$ROOT$img" "$out/crc128-overwrite.img"
+        fi
+    fi
+} >"$out/crc128-overwrite.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/crc128-overwrite.txt"
+sed 's/^/crc128-overwrite: /' "$out/crc128-overwrite.txt"
 
 # POISONED EXTENTS. S1 (5.5.5, 9.1.2.1): an extent whose data fails its
 # checksum, with no good copy, is marked poisoned -- when it is read, or
@@ -342,7 +392,7 @@ poison_settle() { # STEP
     fuse_kill
     bcachefs-ref fsck -y "$img" >"$out/poison.$1.settle.txt" 2>&1 || echo "settle $1: exit $?"
     bcachefs-ref list -b extents "$img" >"$out/poison.$1.extents.txt" 2>&1 || true
-    echo "after $1: $(grep -c -i poison "$out/poison.$1.extents.txt") lister lines name poison"
+    echo "after $1: $(grep -c 'flags: poisoned' "$out/poison.$1.extents.txt") extents poisoned"
 }
 {
     echo "## write (reconcile_enabled=0)"
@@ -428,12 +478,39 @@ ec=/var/tmp/age/ec
     timeout 300 bcachefs-ref fsck -y "$ec-0.img" "$ec-1.img" "$ec-2.img" || echo "fsck: exit $?"
     for b in extents stripes; do
         echo "## list -b $b"
-        { timeout 300 bcachefs-ref list -b "$b" "$ec-0.img" "$ec-1.img" "$ec-2.img" 2>&1 |
-            head -n 400; } || true
+        timeout 300 bcachefs-ref list -b "$b" "$ec-0.img" "$ec-1.img" "$ec-2.img" \
+            >"$work/ec.$b.txt" 2>&1 || echo "list $b: exit $?"
+        head -n 400 "$work/ec.$b.txt"
     done
-    echo "## list -b extents -m nodes-ondisk"
-    { timeout 300 bcachefs-ref list -b extents -m nodes-ondisk "$ec-0.img" "$ec-1.img" "$ec-2.img" 2>&1 |
-        head -n 400; } || true
+    # The stripe pointer's own bytes: each crc32 entry the lister prints
+    # before a stripe_ptr line is built from its printed fields (the crc32
+    # layout in src/extent.rs) and found in the images; the words after it
+    # are the stripe pointer and the pointer.
+    echo "## the words after each crc32 entry that precedes a stripe_ptr"
+    python3 - "$work/ec.extents.txt" "$ROOT$ec-0.img" "$ROOT$ec-1.img" "$ROOT$ec-2.img" <<'PY'
+import mmap, re, struct, sys
+lines = open(sys.argv[1]).read().splitlines()
+maps = [mmap.mmap(open(p, "rb").fileno(), 0, access=mmap.ACCESS_READ) for p in sys.argv[2:]]
+shown = 0
+for i, l in enumerate(lines[:-2]):
+    m = re.match(r"\s+crc32: c_size (\d+) size (\d+) offset (\d+) .*csum crc32c \w+:(\w+)\s+compress none", l)
+    if not m or "stripe_ptr:" not in lines[i + 1]:
+        continue
+    cs, size, off, csum = int(m[1]), int(m[2]), int(m[3]), int(m[4], 16)
+    w = csum << 32 | 5 << 24 | off << 16 | (size - 1) << 9 | (cs - 1) << 2 | 2
+    for d, mm in enumerate(maps):
+        at = mm.find(struct.pack("<Q", w))
+        if at >= 0:
+            after = struct.unpack_from("<3Q", mm, at)
+            print(f"{lines[i + 1].strip()} | {lines[i + 2].strip()} | device {d} byte {at}:",
+                  " ".join(f"{x:#018x}" for x in after))
+            break
+    else:
+        print(f"{l.strip()}: crc32 word {w:#018x} not found")
+    shown += 1
+    if shown == 8:
+        break
+PY
 } >"$out/probe-ec.txt" 2>&1 || echo "the probe stopped: exit $?" >>"$out/probe-ec.txt"
 rm -f "$ROOT$ec"-*.img
 

@@ -141,6 +141,12 @@ API, a patch never does.
   route to a clone through the reference mount (FICLONE, FICLONERANGE,
   `copy_file_range`, FIDEDUPERANGE). None makes a reflink. The reference
   tool's `kvdb` key editor is the route left for learning the layout.
+- **crc128 and flags extent entries are read** (#52). A `crc128` fixture
+  (`--encoded_extent_max=1M`) shows the entry the reference writes for
+  extents over 512 sectors, and a `poison` image shows the flags entry its
+  mount writes when a read finds bad data: a poisoned extent now fails to
+  read with an I/O error, as the reference's does, and `fsck.bcachefs`
+  passes the image as the reference checker does (`extent::poisoned`).
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both

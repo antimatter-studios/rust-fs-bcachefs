@@ -176,6 +176,23 @@ all eight fixture sets.
 - Entry types by lowest set bit (S1); bit layouts in `src/extent.rs` found by
   hexdump against the lister's printed fields (S3, S4), checked by reading
   every file of every fixture byte for byte.
+- crc128 is kind 3, three words (S3, S4: the `crc128` fixture, formatted
+  with `--encoded_extent_max=1M` on 512k buckets, gave six incompressible
+  extents of 832 and 1024 sectors and one lz4 extent of 2048, each a 9-u64
+  key). Bits 4..16 and 17..29 are the compressed and uncompressed sizes
+  less one (13 bits, S1's 8192 sectors); bits 56..59 the checksum type and
+  60..63 the compression type; the second word holds the checksum the
+  lister prints after the colon (the low half), the third the high half,
+  0 for every checksum seen. Bits 30..55 were 0 in every entry: S1 puts the
+  offset and a 13-bit nonce there, but which is which is not observed, so
+  a non-zero value is refused.
+- The flags entry is kind 6, one word, and bit 7 is `poisoned` (S8, S4: the
+  `poison` image). A data sector of a settled image was corrupted and the
+  file read through the reference mount: the read failed, and the
+  extent's value became `0xc0`, then its crc32 and pointer, which the
+  lister prints as `flags: poisoned` (its reconcile entry was dropped). A
+  later mount with reconcile on moved the file's other extents and left
+  that one. The reference checker passes the image.
 - Data checksums: type 5 = crc32c from zero, not inverted; 6 = CRC-64/WE
   from zero, not inverted; 7 = XXH64 seed 0 (S4, checked).
 - Compression numbering in crc entries: gzip 2, lz4 3, zstd 4,
@@ -591,9 +608,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    passes the image clean. The editor edits an inode only up to its fixed
    header, so that inode would come from this crate's writer. That image is
    the fixture a snapshot-aware reader is written against.
-6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
-   reflink, multiple devices and replicas**: not seen in any fixture.
-   (inline_data and xattrs: seen and read, see above.)
+6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
+   multiple devices and replicas**: not seen in any fixture read by this
+   crate. (inline_data, xattrs and crc128: seen and read, see above.)
    **Reflink** (#7): no reflink COPY can be made with the pinned reference
    through its mount. S1 (9.1.6)
    gives the shape: a `reflink_p` in the extents btree holds a 56-bit index
@@ -730,10 +747,16 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     over that one word and reads the data; the files read back to the
     mount's SHA-256 (`tests/oracle_bgcompress.rs`). Still open: the
     word's fields, and whether it can be longer with other options set.
-    Bit 7 rather than the 6 S1's order suggested shows the order does not
-    give bit positions, so 3 to 6 (crc128, stripe_ptr and flags in some
-    arrangement) are refused as unknown kinds until a fixture shows them
-    (issue #52).
+    **crc128 (kind 3) and flags (kind 6, poisoned at bit 7) are answered**
+    by the `crc128` fixture and the `poison` image (see Extents above);
+    still open for crc128: which of bits 30..42 and 43..55 is the offset
+    and which the nonce, refused unless 0. **The stripe pointer** is the
+    one kind left: the fixture build's erasure-coding probe (three devices,
+    `--erasure_code --replicas=2`, `probe-ec.txt`, S3) shows the reference
+    writing `[crc32, stripe_ptr, ptr]` keys of 8 u64s, so it is one word,
+    printed `stripe_ptr: idx N block B`; its bit is 4 or 5 by elimination
+    and is not named until the probe's bytes show which. This reader
+    refuses several devices anyway (issue #52).
 
 ## Confirmation
 

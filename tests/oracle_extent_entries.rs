@@ -5,10 +5,12 @@
 //! - `crc128`: encoded extents up to 1M, so extents outgrow the 512
 //!   sectors a crc64 entry holds. Every file reads back to the manifest's
 //!   SHA-256.
-//! - `poison`: one data sector corrupted, then read and moved through the
-//!   reference mount, which marks the extent poisoned (S1 5.5.5). The
-//!   poisoned file is refused as the reference refuses it, with an I/O
-//!   error, and the file beside it reads.
+//! - `poison`: one data sector corrupted, then read through the reference
+//!   mount, which failed the read and marked the extent poisoned (S1
+//!   5.5.5); a later mount with reconcile on moved the file's other extents
+//!   and left that one. The poisoned file is refused as the reference
+//!   refuses it, with an I/O error; the file beside it reads; and this
+//!   crate's checker passes the image, as the reference checker did.
 //!
 //! Each test first checks that its fixture holds the entry kind at all, so
 //! a formatter that stops making one fails here rather than passing on
@@ -17,6 +19,7 @@
 mod common;
 
 use common::{fixture, manifest, read_text};
+use fs_bcachefs::check::check;
 use fs_bcachefs::{Error, Filesystem};
 use fs_core::FileDevice;
 use sha2::{Digest, Sha256};
@@ -77,7 +80,7 @@ fn every_file_with_crc128_entries_reads_back_to_the_manifest() {
 fn a_poisoned_extent_is_refused_with_an_io_error_and_the_file_beside_it_reads() {
     let listing = read_text("poison.extents.txt");
     assert!(
-        listing.to_lowercase().contains("poison"),
+        listing.contains("  flags: poisoned"),
         "the reference marked no extent poisoned (poison.extents.txt; poison.txt has each step)"
     );
     let fs = Filesystem::open(FileDevice::open(fixture("poison.img")).unwrap()).unwrap();
@@ -92,4 +95,6 @@ fn a_poisoned_extent_is_refused_with_an_io_error_and_the_file_beside_it_reads() 
     }
     let intact = fs.read(fs.lookup("/intact").unwrap()).unwrap();
     assert_eq!(intact, b"an intact file\n".repeat(100));
+    let r = check(&FileDevice::open(fixture("poison.img")).unwrap()).unwrap();
+    assert!(r.clean(), "{:?}", r.problems);
 }
