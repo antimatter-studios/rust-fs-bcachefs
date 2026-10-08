@@ -22,10 +22,13 @@
 //!
 //! A dirent is keyed (directory inode, name hash); its value is the target
 //! inode (u64), the type (u8, `DT_*` numbering) and the name, NUL-padded.
+//! In a casefolded directory the type byte has bit 7 set and the value
+//! holds two names, as given and folded, with their lengths (see
+//! [`Dirent::from_key`]).
 
 use crate::bkey::{key_type, Bkey};
 use crate::error::{Error, Result};
-use crate::util::le64;
+use crate::util::{le16, le64};
 
 /// The root directory's inode number (the lister lists `/`'s entries
 /// under it).
@@ -41,6 +44,19 @@ pub const ROOT_INO: u64 = 4096;
 pub const HASH_TYPE_SIPHASH: u8 = 3;
 /// See [`HASH_TYPE_SIPHASH`].
 pub const HASH_TYPE_CRC32C: u8 = 0;
+
+/// Inode flag bit 10, which the reference lister prints as
+/// `has_case_insensitive`. OBSERVED (S3): set on every inode of a
+/// filesystem formatted with `--casefold` (the `casefold` set's 50, and
+/// the four the reference mount made on another), and on none of the
+/// 10199 inodes of every other image. A directory carrying it keeps its
+/// entries in the casefolded layout and finds them by their folded name.
+pub const INODE_HAS_CASE_INSENSITIVE: u32 = 1 << 10;
+
+/// Bit 7 of a dirent's type byte marks the casefolded layout. OBSERVED
+/// (S4): 0x88, 0x8a and 0x84 for a file, a symlink and a directory in the
+/// `casefold` set, against 8, 10 and 4 everywhere else.
+const DIRENT_CASEFOLDED: u8 = 0x80;
 
 /// The varint fields of an `inode_v3`, after the fixed part, in order.
 /// Times take two varints each.
@@ -82,6 +98,12 @@ impl Inode {
     }
     pub fn is_file(&self) -> bool {
         self.mode & 0o170000 == 0o100000
+    }
+
+    /// Whether this inode carries [`INODE_HAS_CASE_INSENSITIVE`]: as a
+    /// directory, its entries are found by their folded names.
+    pub fn is_casefolded(&self) -> bool {
+        self.flags & INODE_HAS_CASE_INSENSITIVE != 0
     }
 
     /// The string hash type of this inode's names: [`HASH_TYPE_SIPHASH`] on
@@ -197,6 +219,15 @@ impl Dirent {
         if v.len() < 10 {
             return Err(Error::Corrupt("dirent shorter than its fixed part".into()));
         }
+        if v[8] & DIRENT_CASEFOLDED != 0 {
+            let (name, _) = casefolded_names(v)?;
+            return Ok(Dirent {
+                dir: k.pos.inode,
+                name: name.to_vec(),
+                inum: le64(v, 0),
+                d_type: v[8] & !DIRENT_CASEFOLDED,
+            });
+        }
         let raw = &v[9..];
         let n = raw
             .iter()
@@ -227,6 +258,46 @@ impl Dirent {
             _ => "unknown",
         }
     }
+}
+
+/// A casefolded dirent value's two names, as given and folded. After the
+/// target inode and the type byte come two zero bytes, the name's length
+/// and the folded name's length (u16 each), the two names back to back,
+/// and zeros to a whole u64. OBSERVED (S4): every casefolded dirent of the
+/// `casefold` set, against the lister's `Name (casefold name)`; e.g.
+/// `Hello.TXT` is `00 00 09 00 09 00`, `Hello.TXThello.txt`, 7 zeros.
+fn casefolded_names(v: &[u8]) -> Result<(&[u8], &[u8])> {
+    if v.len() < 15 {
+        return Err(Error::Corrupt(
+            "casefolded dirent shorter than its fixed part".into(),
+        ));
+    }
+    if le16(v, 9) != 0 {
+        return Err(Error::Unsupported(format!(
+            "casefolded dirent with {:#06x} after its type, 0 in every one seen: not read",
+            le16(v, 9)
+        )));
+    }
+    let n = usize::from(le16(v, 11));
+    let f = usize::from(le16(v, 13));
+    let end = 15 + n + f;
+    if n == 0 || f == 0 || end > v.len() || v[end..].iter().any(|&b| b != 0) {
+        return Err(Error::Corrupt(format!(
+            "casefolded dirent names of {n} and {f} bytes do not fit its {}-byte value",
+            v.len()
+        )));
+    }
+    Ok((&v[15..15 + n], &v[15 + n..end]))
+}
+
+/// The folded name a dirent is found by, when it is in the casefolded
+/// layout; `None` for any other dirent.
+pub fn dirent_folded_name(k: &Bkey) -> Result<Option<Vec<u8>>> {
+    Dirent::from_key(k)?;
+    if k.value[8] & DIRENT_CASEFOLDED == 0 {
+        return Ok(None);
+    }
+    Ok(Some(casefolded_names(&k.value)?.1.to_vec()))
 }
 
 /// A dirent's offset in its directory: SipHash-2-4 of the name, keyed with
@@ -260,6 +331,43 @@ pub fn name_hash(hash_type: u8, dir_hash_seed: u64, name: &[u8]) -> Option<u64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Hello.TXT (casefold hello.txt) -> 2147483649 type reg`, in the root
+    /// of the `casefold` set, as its image holds it.
+    #[test]
+    fn a_casefolded_dirent_gives_its_name_as_given_and_its_folded_name() {
+        let mut value = vec![1, 0, 0, 0x80, 0, 0, 0, 0, 0x88, 0, 0, 9, 0, 9, 0];
+        value.extend_from_slice(b"Hello.TXThello.txt");
+        value.resize(40, 0);
+        let k = Bkey {
+            key_type: key_type::DIRENT,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: crate::bkey::Bpos {
+                inode: ROOT_INO,
+                offset: 6_254_422_998_957_400_532,
+                snapshot: u32::MAX,
+            },
+            value,
+        };
+        let d = Dirent::from_key(&k).unwrap();
+        assert_eq!(d.name, b"Hello.TXT");
+        assert_eq!((d.inum, d.d_type), (2_147_483_649, 8));
+        let folded = dirent_folded_name(&k).unwrap();
+        assert_eq!(folded.as_deref(), Some(&b"hello.txt"[..]));
+        // Bytes 9..10 were 0 in every one seen; lengths past the value are
+        // corrupt.
+        let mut odd = k.clone();
+        odd.value[9] = 1;
+        assert!(matches!(Dirent::from_key(&odd), Err(Error::Unsupported(_))));
+        let mut long = k.clone();
+        long.value[13] = 40;
+        assert!(matches!(Dirent::from_key(&long), Err(Error::Corrupt(_))));
+        let mut plain = k;
+        plain.value[8] = 8;
+        assert_eq!(dirent_folded_name(&plain).unwrap(), None);
+    }
 
     #[test]
     fn crc32c_name_hashes_are_the_offsets_the_lister_showed() {

@@ -15,6 +15,7 @@
 mod common;
 
 use common::{fixture, manifest, read_text, Entry};
+use fs_bcachefs::check::check;
 use fs_bcachefs::{Error, Filesystem};
 use fs_core::FileDevice;
 use sha2::{Digest, Sha256};
@@ -125,16 +126,23 @@ fn a_name_in_a_casefolded_directory_is_found_in_any_case() {
     assert!(matches!(missing, Err(Error::NotFound(_))), "{missing:?}");
 }
 
+/// The reference checker passes the set (casefold.txt: `fsck: clean`), and
+/// so does this crate's.
+#[test]
+fn the_checker_passes_the_casefold_set() {
+    let r = check(&FileDevice::open(fixture("casefold.img")).unwrap()).unwrap();
+    assert!(r.clean(), "{:?}", r.problems);
+    assert!(read_text("casefold.txt").contains("fsck: clean"));
+}
+
 /// The writer places names by their own hash in the plain dirent layout,
 /// so it must not touch a casefolded directory.
 #[cfg(feature = "write")]
 #[test]
 fn the_writer_refuses_to_change_a_casefolded_directory() {
     use fs_bcachefs::write::Writer;
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-casefold-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("rust-fs-bcachefs-casefold-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("casefold.img");
     std::fs::copy(fixture("casefold.img"), &img).unwrap();
