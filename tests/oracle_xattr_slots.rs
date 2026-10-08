@@ -1,9 +1,10 @@
-//! Where the reference puts an xattr (#77). Two of `aged`'s xattrs are not
-//! at SipHash-2-4 keyed `(hash_seed, 0)` over the namespace byte and the
-//! name, with the inode's hash_seed as the lister prints it. The write
-//! study repeats the steps that placed them, settled and dumped after each,
-//! then sets one xattr of every name length from 1 to 24
-//! (scripts/guest-write-study.sh).
+//! Where the reference puts an xattr (#77). Two of `aged`'s xattrs were
+//! not at SipHash-2-4 of the namespace byte and the name; the write study
+//! repeated the steps that placed them, settled and dumped after each, then
+//! set one xattr of every name length from 1 to 24
+//! (scripts/guest-write-study.sh). Names of 1 to 7 bytes, 15 and 23 fit;
+//! the others fit once the message's final partial word is taken as the
+//! reference takes it ([`slot`]).
 
 mod common;
 
@@ -24,7 +25,7 @@ const STEPS: &[&str] = &[
 fn seeds(step: &str) -> BTreeMap<u64, u64> {
     let mut out = BTreeMap::new();
     let mut ino = None;
-    for l in read_text(&format!("write-study/{step}.inodes.txt")).lines() {
+    for l in read_text(&format!("{step}.inodes.txt")).lines() {
         if l.starts_with("u64s ") {
             ino = l
                 .split_whitespace()
@@ -40,7 +41,7 @@ fn seeds(step: &str) -> BTreeMap<u64, u64> {
 
 /// `(inode, offset, namespace byte, name)` of every xattr in a step.
 fn xattrs(step: &str) -> Vec<(u64, u64, u8, String)> {
-    read_text(&format!("write-study/{step}.xattrs.txt"))
+    read_text(&format!("{step}.xattrs.txt"))
         .lines()
         .filter(|l| l.starts_with("u64s ") && l.split_whitespace().nth(3) == Some("xattr"))
         .map(|l| {
@@ -60,46 +61,43 @@ fn xattrs(step: &str) -> Vec<(u64, u64, u8, String)> {
         .collect()
 }
 
+/// INFERRED from the observations below: SipHash-2-4 keyed
+/// `(hash_seed, 0)` over the namespace byte then the name, shifted right by
+/// one, except that when that message is longer than 8 bytes and not a
+/// whole number of 8-byte words, its final partial word is a zero byte
+/// followed by all but the last of its bytes: the message's last byte is
+/// not hashed. A message of 8 bytes or fewer, or of whole words, is hashed
+/// as it is.
 fn slot(seed: u64, ns: u8, name: &str) -> u64 {
     let mut msg = vec![ns];
     msg.extend_from_slice(name.as_bytes());
+    let (whole, tail) = (msg.len() / 8 * 8, msg.len() % 8);
+    if msg.len() > 8 && tail != 0 {
+        msg.insert(whole, 0);
+        msg.pop();
+    }
     siphash24(seed, 0, &msg) >> 1
 }
 
-/// OBSERVED (#77): an xattr whose name has 1 to 7 bytes sits at
-/// SipHash-2-4 keyed `(hash_seed, 0)` over the namespace byte and the name,
-/// shifted right by one, with the seed its inode has in every step; one
-/// whose name has 8 bytes or more never does (8 to 24 tried), on files and
-/// directories alike. Where those go is open question 15.
+/// Every xattr of every step, and every one of `aged`'s 45, sits at
+/// [`slot`]: names of 1 to 24 bytes, on files and directories.
 #[test]
-fn short_xattr_names_sit_at_the_siphash_slot_and_long_ones_do_not() {
+fn every_xattr_sits_at_its_slot() {
     let mut wrong = Vec::new();
-    let (mut short, mut long) = (0, 0);
-    for step in STEPS {
-        let now = seeds(step);
-        for (ino, off, ns, name) in xattrs(step) {
-            let fits = slot(now[&ino], ns, &name) == off;
-            if name.len() < 8 {
-                short += 1;
-            } else {
-                long += 1;
-            }
-            if fits != (name.len() < 8) {
+    let mut n = 0;
+    let steps = STEPS.iter().map(|s| format!("write-study/{s}"));
+    for dump in steps.chain(["aged".to_string()]) {
+        let now = seeds(&dump);
+        for (ino, off, ns, name) in xattrs(&dump) {
+            n += 1;
+            if slot(now[&ino], ns, &name) != off {
                 wrong.push(format!(
-                    "{step}: inode {ino} {name} ({} bytes) at {off}: {}",
-                    name.len(),
-                    if fits {
-                        "at the slot"
-                    } else {
-                        "not at the slot"
-                    }
+                    "{dump}: inode {ino} {name} ({} bytes) at {off}",
+                    name.len()
                 ));
             }
         }
     }
-    assert!(
-        short >= 10 && long >= 10,
-        "{short} short names, {long} long"
-    );
+    assert!(n >= 60, "only {n} xattrs");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
