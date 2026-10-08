@@ -13,10 +13,11 @@ anyone writing this crate. The reference tools are built and run only inside
 the disposable Linux test VM (`scripts/vm-setup.sh`), are never linked or
 copied here, and are named by role: the **reference formatter**
 (`format`), the **reference superblock printer** (`show-super`), the
-**reference lister** (`list`), the **reference checker** (`fsck`), and the
-**reference implementation**: the tools' userspace copy of the filesystem
-mounted through FUSE (`fusemount`), which ages the `aged` fixture inside the
-VM by ordinary file operations.
+**reference lister** (`list`), the **reference checker** (`fsck`), the
+**reference key editor** (`kvdb`, which reads and sets btree keys by field
+name), and the **reference implementation**: the tools' userspace copy of
+the filesystem mounted through FUSE (`fusemount`), which ages the `aged`
+fixture inside the VM by ordinary file operations.
 
 Every source used is listed below with what it told us. A fact that could not
 be learned this way is an **open question**, not a guess.
@@ -546,6 +547,50 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    reference implementation's mount for a subvolume and a snapshot on a
    scratch image and records the answer and the lister's view in
    `probe.*` (scripts/guest-build-fixtures.sh).
+   **Not through the reference mount** (S3, S8). Pointed at it, the
+   reference tool's `subvolume create` and `subvolume snapshot` fail before
+   they reach it ("error reading superblock: Invalid argument", "Failed to
+   open the filesystem at /mnt/aged"). Their help (`probe.help.txt`, from
+   #100 on) takes paths only, with no device or image form. S1 (6.7 and
+   its list of ioctls) has subvolumes made by an ioctl on a mounted
+   filesystem, and no ioctl reaches this FUSE daemon (#7). The formatter
+   has no option that makes one. A kernel mount would (#110).
+   **Through the reference key editor** (S3: `probe.kvdb.txt`, from #114
+   on). The reference tool's `kvdb`, by its own help a btree editor that
+   sets keys by field name through the normal transactional path, can
+   fabricate snapshot keys. Observed so far:
+   - Every image holds one subvolume (1: `root 4096 snapshot id
+     4294967295 creation_parent 0 fs_parent 0 live`), one snapshot
+     (4294967295: `parent 0 children 0 0 subvol 1 tree 1 depth 0 skiplist
+     0 0 0 live`) and one snapshot tree (1: `subvol 1 root snapshot
+     4294967295`).
+   - The editor takes the snapshot fields `parent`, `children[0]`,
+     `children[1]`, `subvol`, `tree`, `depth` and `state=live`, and the
+     subvolume field `snapshot`. The subvolume's root inode is not a field
+     called `root` ("bch_subvolume has no field 'root'"), so no second
+     subvolume has been made yet.
+   - What the reference checker requires of a snapshot, in its own
+     messages:
+     - a parent that names it among its children; without one, the
+       filesystem does not start (`EINVAL_snapshot_parent_missing_child_ptr`);
+     - a state ("snapshot state unset, recovering from legacy flags");
+     - skiplist entries that are ancestors: it rewrote a depth-1 leaf's
+       `0 0 0` to its parent's id (`snapshot_bad_skiplist`);
+     - a subvolume, with a root inode, for each leaf's `subvol` ("snapshot
+       points to missing subvolume 2", "no root inode found for subvol 2");
+     - flags that agree with the subvolumes (`snapshot_subvol_flag_wrong`,
+       `snapshot_subvol_backref_wrong`).
+     An interior node prints `subvol_obsolete=1`.
+   - Visibility, from the editor's snapshot-filtered lookup. With the root
+     snapshot made interior and two leaves under it, each leaf sees the
+     root inode's key at the interior 4294967295 (`get -k inodes 0:4096` in
+     either leaf's context gives `inode_v3 0:4096:U32_MAX`): a key at an
+     ancestor is visible from its descendants, as S1 (9.4) says.
+   Next (#12): the subvolume's field names, the skiplists and flags as the
+   checker asks, and the second subvolume's root inode, until the checker
+   passes the image clean. The editor edits an inode only up to its fixed
+   header, so that inode would come from this crate's writer. That image is
+   the fixture a snapshot-aware reader is written against.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
    reflink, multiple devices and replicas**: not seen in any fixture.
    (inline_data and xattrs: seen and read, see above.)

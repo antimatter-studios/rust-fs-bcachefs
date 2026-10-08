@@ -51,7 +51,7 @@ States:
 | Encrypted filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | A second snapshot, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
-| Snapshots and subvolumes | Not supported | | #12; Unobservable: the reference mount makes none | `oracle_probes.rs` |
+| Snapshots and subvolumes (a second snapshot is refused, #65) | Not supported | | #12; Unobservable through the reference mount (no subvolume command works through it); the reference key editor fabricates snapshot keys, but no whole snapshot yet passes the reference checker (#114) | `oracle_probes.rs` |
 | Reflinked extents (`reflink_p`): refused by the reader and the writer, named by the checker | Refused | Unreleased (#100) | #7; Unobservable through the reference mount: no route makes a reflink (FICLONE, FICLONERANGE, `copy_file_range`, FIDEDUPERANGE); the reference's `kvdb` editor is the next route | `oracle_refused_local.rs`, `oracle_probes.rs` |
 | Casefolded directories | Not supported | | #54; Unobservable: the reference mount refuses casefold | `oracle_probes.rs` |
 | Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: neither the reference mount nor its offline editor sets one (#99) | `oracle_inode_fields.rs` |
