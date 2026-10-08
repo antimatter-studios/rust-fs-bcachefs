@@ -143,11 +143,14 @@ tasks:
     desc: 'Build the command-line tools (release, --features cli) and stage them as an install prefix in tmp/cli'
     cmds: ['scripts/cli-install.sh']
 
+  # Measured with test-write.sh (#46): 21 lines, 839 bytes, 3250 checks.
+  # Each test file prints three lines; the budget has room for one more.
+  # The floor is about 95% of the checks.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 20 1000 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3030'
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 24 1000 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3090'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
