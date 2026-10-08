@@ -90,11 +90,13 @@ printf 'an existing file\n' >"$ROOT$mnt/d/existing"
 settle "$base" base
 dump "$base" base
 cp --sparse=always "$ROOT$base" "$out/base.img"
-# The same base on 4096-byte blocks, for writes on larger blocks (#87):
-# small, so a write has room in every leaf.
+# The same base on 4096-byte blocks, for writes on larger blocks (#87).
+# Its nodes are 256k: at the 32k this size of image gets by default a node
+# is eight such blocks, the settled image's nodes had no block left, and
+# this writer appends to a node but cannot rewrite one (#44).
 base4k="$work/base-bs4k.img"
 truncate -s 64M "$ROOT$base4k"
-bcachefs-ref format -q --block_size=4096 "$base4k" >/dev/null
+bcachefs-ref format -q --block_size=4096 --btree_node_size=256k "$base4k" >/dev/null
 mount_rw "$base4k"
 mkdir "$ROOT$mnt/d"
 printf 'an existing file\n' >"$ROOT$mnt/d/existing"
