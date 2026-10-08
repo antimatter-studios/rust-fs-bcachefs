@@ -69,6 +69,10 @@ dump() { # IMAGE NAME
     for b in $BTREES; do
         bcachefs-ref list -b "$b" "$1" >"$out/$2.$b.txt" 2>&1 || true
     done
+    # The packed key format of every node (#82: tests/oracle_formats.rs).
+    for b in inodes dirents extents; do
+        bcachefs-ref list -b "$b" -m formats "$1" >"$out/$2.$b.formats.txt" 2>&1 || true
+    done
     if ! bcachefs-ref fsck -n "$1" >"$out/$2.fsck.txt" 2>&1; then
         echo "write-study: the reference checker did not pass $2" >&2
         tail -n 20 "$out/$2.fsck.txt" >&2

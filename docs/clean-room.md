@@ -461,10 +461,16 @@ checker judged each attempt and named what was missing until nothing was.
 Facts this reader needs that neither documentation nor black-box observation
 has settled yet. Each needs a fixture that exercises it, not a guess.
 
-1. **Packed fields that are not byte-aligned.** The aged image's formats are
-   narrower (8, 16 and 32 bits, with field offsets) and are read correctly,
-   but every width seen is still a whole number of bytes; the top-down bit
-   order is proven only for those.
+1. **Packed fields that are not byte-aligned** (#82). SETTLED as "the
+   reference does not write them" (S3): in the 125 node formats of `aged`
+   and `large` alone, 588 fields, every width is 0, 8, 16, 32 or 64 bits,
+   including 16-bit inode fields over ranges of about 470 that 9 bits would
+   hold. The reference rounds a field's width up to whole bytes. Every
+   format of every fixture and write-study image is read node for node as
+   the lister prints it, and every width checked to be whole bytes
+   (tests/oracle_formats.rs). The unpacker's handling of other widths is
+   tested only against this crate's own packing (self-consistency, not
+   correctness); no reference image can exercise it.
 2. **Pointer device and generation bits** (48..55 and 56..63): the
    generation bits are now checked -- every pointer of every fixture,
    including the aged image's nine pointers of generation 1 into reused
