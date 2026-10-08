@@ -228,7 +228,10 @@ impl<D: BlockRead> Filesystem<D> {
         };
         let Some(mut at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, &key) else {
             let keys = self.keys_of(btree_id::DIRENTS, dir.ino)?;
-            for k in keys.iter().filter(|k| k.key_type == crate::bkey::key_type::DIRENT) {
+            for k in keys
+                .iter()
+                .filter(|k| k.key_type == crate::bkey::key_type::DIRENT)
+            {
                 if let Some(d) = found(k)? {
                     return Ok(Some(d));
                 }
