@@ -11,6 +11,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{fixture, read_text};
+use fs_bcachefs::inode::{name_hash, HASH_TYPE_CRC32C};
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
@@ -155,4 +156,74 @@ fn a_name_created_again_takes_the_whiteout_slot() {
         );
     }
     reader_finds_every_name("collide-recreate", &NAMES);
+}
+
+/// `inode -> hash_seed`, from the reference lister's inodes dump.
+fn seeds(dump: &str) -> BTreeMap<u64, u64> {
+    let mut out = BTreeMap::new();
+    let mut ino = None;
+    for l in read_text(dump).lines() {
+        if l.starts_with("u64s ") {
+            ino = l
+                .split_whitespace()
+                .nth(4)
+                .and_then(|p| p.split(':').nth(1))
+                .and_then(|n| n.parse().ok());
+        } else if let (Some(i), Some(v)) = (ino, l.trim().strip_prefix("hash_seed=")) {
+            out.insert(i, u64::from_str_radix(v, 16).unwrap());
+        }
+    }
+    out
+}
+
+/// Every dirent of every crc32c image sits at its name's crc32c hash, or
+/// further along a run of used slots that starts there: the hash this crate
+/// computes is the one the reference used.
+#[test]
+fn every_crc32c_dirent_sits_on_its_hash_run() {
+    for (dirents, inodes) in [
+        ("strhash.dirents.txt", "strhash.inodes.txt"),
+        (
+            "write-study/collide.dirents.txt",
+            "write-study/collide.inodes.txt",
+        ),
+        (
+            "write-study/collide-unlink.dirents.txt",
+            "write-study/collide-unlink.inodes.txt",
+        ),
+        (
+            "write-study/collide-recreate.dirents.txt",
+            "write-study/collide-recreate.inodes.txt",
+        ),
+    ] {
+        let seed = seeds(inodes);
+        let keys: Vec<(u64, u64, String, Option<String>)> = read_text(dirents)
+            .lines()
+            .filter(|l| l.starts_with("u64s "))
+            .map(|l| {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                let mut p = w[4].split(':');
+                let dir = p.next().unwrap().parse().unwrap();
+                let off = p.next().unwrap().parse().unwrap();
+                let name = l
+                    .split_once(" : ")
+                    .and_then(|(_, r)| r.rsplit_once(" -> "))
+                    .map(|(n, _)| n.to_string());
+                (dir, off, w[3].to_string(), name)
+            })
+            .collect();
+        let used: std::collections::BTreeSet<(u64, u64)> =
+            keys.iter().map(|k| (k.0, k.1)).collect();
+        let mut n = 0;
+        for (dir, off, _, name) in keys.iter().filter(|k| k.2 == "dirent") {
+            let name = name.as_deref().unwrap();
+            let h = name_hash(HASH_TYPE_CRC32C, seed[dir], name.as_bytes()).unwrap();
+            assert!(
+                h <= *off && (h..*off).all(|o| used.contains(&(*dir, o))),
+                "{dirents}: {name} at {off}, its hash {h}"
+            );
+            n += 1;
+        }
+        assert!(n >= 3, "{dirents}: only {n} dirents");
+    }
 }

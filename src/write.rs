@@ -554,30 +554,75 @@ impl<D: BlockDevice> Writer<D> {
         if !i.is_dir() {
             return Err(Error::Corrupt(format!("inode {ino} is not a directory")));
         }
-        siphash_only(&i)?;
         Ok(i)
     }
 
-    /// The dirent named `name` in `dir`, if there is one. Names live at
-    /// their hash; a different name there is a collision, which is refused.
-    fn dirent(&self, dir: &InodeRef, name: &[u8]) -> Result<(Bpos, Option<Bkey>)> {
-        let at = pos(
-            dir.key.pos.offset,
-            crate::inode::dirent_hash(dir.raw.hash_seed, name),
-        );
-        match self.key_at(ids::DIRENTS, at)? {
-            Some(k) if k.key_type == key_type::DIRENT => {
-                let d = crate::inode::Dirent::from_key(&k)?;
-                if d.name != name {
-                    return Err(Error::Unsupported(
-                        "another name holds this name's hash slot: collisions are not handled"
-                            .into(),
-                    ));
+    /// Where `name` is in `dir`: `(slot, the dirent, the key a new dirent
+    /// replaces)`. From the name's hash slot up, every slot holding another
+    /// name or a `hash_whiteout` is passed, until the name or an empty
+    /// slot. A new name takes the first whiteout passed, else the empty
+    /// slot (S8: colliding names take consecutive offsets in creation
+    /// order, and a name created again takes the whiteout its removal
+    /// left).
+    fn dirent(&self, dir: &InodeRef, name: &[u8]) -> Result<(Bpos, Option<Bkey>, Option<Bkey>)> {
+        let ino = dir.key.pos.offset;
+        let start = crate::inode::name_hash(dir.raw.hash_type(), dir.raw.hash_seed, name)
+            .ok_or_else(|| Error::Unsupported(format!("directory {ino}: unknown string hash")))?;
+        let slots: std::collections::BTreeMap<u64, Bkey> = match self.keys(ids::DIRENTS) {
+            Err(Error::NotFound(_)) if self.root(ids::DIRENTS).is_err() => Default::default(),
+            r => r?
+                .into_iter()
+                .filter(|k| k.pos.inode == ino && k.pos.offset >= start)
+                .map(|k| (k.pos.offset, k))
+                .collect(),
+        };
+        let mut whiteout = None;
+        let mut at = start;
+        loop {
+            match slots.get(&at) {
+                Some(k) if k.key_type == key_type::DIRENT => {
+                    if crate::inode::Dirent::from_key(k)?.name == name {
+                        return Ok((pos(ino, at), Some(k.clone()), None));
+                    }
                 }
-                Ok((at, Some(k)))
+                Some(k) if k.key_type == key_type::HASH_WHITEOUT => {
+                    whiteout.get_or_insert_with(|| k.clone());
+                }
+                _ => break,
             }
-            _ => Ok((at, None)),
+            at = at
+                .checked_add(1)
+                .ok_or_else(|| Error::Unsupported("a hash run reaches the last offset".into()))?;
         }
+        Ok(match whiteout {
+            Some(w) => (w.pos, None, Some(w)),
+            None => (pos(ino, at), None, None),
+        })
+    }
+
+    /// Remove `dirent` in `t`: a `hash_whiteout` takes its slot when the
+    /// next slot is in use, so a name further along its run is still
+    /// reached; otherwise it is deleted (S8: a removal inside a run of
+    /// colliding names left a whiteout, the write study's unlink none).
+    fn remove_dirent(&self, t: &mut Txn, dirent: &Bkey) -> Result<()> {
+        let next = pos(dirent.pos.inode, dirent.pos.offset.wrapping_add(1));
+        let in_use = self.key_at(ids::DIRENTS, next)?.is_some_and(|k| {
+            k.key_type == key_type::DIRENT || k.key_type == key_type::HASH_WHITEOUT
+        });
+        if in_use {
+            let whiteout = Bkey {
+                key_type: key_type::HASH_WHITEOUT,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: dirent.pos,
+                value: Vec::new(),
+            };
+            t.put(ids::DIRENTS, Some(dirent), whiteout);
+        } else {
+            t.delete(ids::DIRENTS, dirent);
+        }
+        Ok(())
     }
 
     /// The extents of an inode, all of which must be inline: freeing
@@ -774,7 +819,7 @@ impl<D: BlockDevice> Writer<D> {
         let is_dir = kind == S_IFDIR;
         valid_name(name)?;
         let mut p = self.dir(parent)?;
-        let (at, existing) = self.dirent(&p, name)?;
+        let (at, existing, taken) = self.dirent(&p, name)?;
         if existing.is_some() {
             return Err(Error::Corrupt(format!(
                 "{:?} already exists",
@@ -803,7 +848,7 @@ impl<D: BlockDevice> Writer<D> {
         t.put(ids::INODES, Some(&old_parent), p.rekey());
         t.put(
             ids::DIRENTS,
-            None,
+            taken.as_ref(),
             Self::dirent_key(at, name, ino, d_type(kind)),
         );
         // The cursor replaces itself; logged_ops has no counter.
@@ -828,7 +873,7 @@ impl<D: BlockDevice> Writer<D> {
     fn remove(&mut self, parent: u64, name: &[u8], want_dir: bool) -> Result<()> {
         valid_name(name)?;
         let mut p = self.dir(parent)?;
-        let (_, dirent) = self.dirent(&p, name)?;
+        let (_, dirent, _) = self.dirent(&p, name)?;
         let dirent = dirent
             .ok_or_else(|| Error::NotFound(format!("{:?}", String::from_utf8_lossy(name))))?;
         let target = crate::inode::Dirent::from_key(&dirent)?.inum;
@@ -851,7 +896,7 @@ impl<D: BlockDevice> Writer<D> {
                 return Err(Error::Corrupt("the directory is not empty".into()));
             }
         }
-        t.delete(ids::DIRENTS, &dirent);
+        self.remove_dirent(&mut t, &dirent)?;
         if !want_dir && i.raw.varints[field::NLINK] > 0 {
             // Another name still links it: one link fewer.
             let old = i.key.clone();
@@ -889,12 +934,12 @@ impl<D: BlockDevice> Writer<D> {
         valid_name(name)?;
         valid_name(to_name)?;
         let src = self.dir(from)?;
-        let (_, dirent) = self.dirent(&src, name)?;
+        let (_, dirent, _) = self.dirent(&src, name)?;
         let dirent = dirent
             .ok_or_else(|| Error::NotFound(format!("{:?}", String::from_utf8_lossy(name))))?;
         let d = crate::inode::Dirent::from_key(&dirent)?;
         let dst = self.dir(to)?;
-        let (at, existing) = self.dirent(&dst, to_name)?;
+        let (at, existing, taken) = self.dirent(&dst, to_name)?;
         if existing.is_some() {
             return Err(Error::Unsupported(
                 "renaming over an existing name is not implemented".into(),
@@ -908,10 +953,10 @@ impl<D: BlockDevice> Writer<D> {
         }
         let now = self.now();
         let mut t = Txn::default();
-        t.delete(ids::DIRENTS, &dirent);
+        self.remove_dirent(&mut t, &dirent)?;
         t.put(
             ids::DIRENTS,
-            None,
+            taken.as_ref(),
             Self::dirent_key(at, to_name, d.inum, d.d_type),
         );
         // The inode names its dirent (S8: rename changed bi_dir_offset and
@@ -1056,7 +1101,7 @@ impl<D: BlockDevice> Writer<D> {
             return Err(Error::Corrupt("directories cannot be hard-linked".into()));
         }
         let mut p = self.dir(dir)?;
-        let (at, existing) = self.dirent(&p, name)?;
+        let (at, existing, taken) = self.dirent(&p, name)?;
         if existing.is_some() {
             return Err(Error::Corrupt(format!(
                 "{:?} already exists",
@@ -1067,7 +1112,7 @@ impl<D: BlockDevice> Writer<D> {
         let mut t = Txn::default();
         t.put(
             ids::DIRENTS,
-            None,
+            taken.as_ref(),
             Self::dirent_key(at, name, ino, d_type(i.raw.mode() & 0o170000)),
         );
         let old = i.key.clone();
@@ -1202,17 +1247,18 @@ impl<D: BlockDevice> Writer<D> {
     }
 }
 
-/// Names are placed at their SipHash slot, the only string hash observed
-/// (`inode::HASH_TYPE_SIPHASH`); a directory or inode hashed with crc32c or
-/// crc64 (S1 7.7) would get its names at positions the reference never
-/// looks at, so it is refused (open question 17).
+/// Xattrs are placed at their SipHash slot, the only xattr hash observed
+/// (`inode::HASH_TYPE_SIPHASH`); an inode hashed with crc32c or crc64
+/// (S1 7.7) would get its xattrs at positions the reference never looks
+/// at, so it is refused (open question 17). Dirents use
+/// `inode::name_hash`, which knows crc32c too.
 fn siphash_only(i: &InodeRef) -> Result<()> {
     let t = i.raw.hash_type();
     if t == crate::inode::HASH_TYPE_SIPHASH {
         Ok(())
     } else {
         Err(Error::Unsupported(format!(
-            "inode {} uses string hash type {t}, not SipHash ({}): names cannot be placed",
+            "inode {} uses string hash type {t}, not SipHash ({}): xattrs cannot be placed",
             i.key.pos.offset,
             crate::inode::HASH_TYPE_SIPHASH
         )))

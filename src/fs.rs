@@ -195,34 +195,39 @@ impl<D: BlockRead> Filesystem<D> {
             .collect()
     }
 
-    /// The entry named `name` in directory `dir`: at its name's hash, or
-    /// (a collision moved it) anywhere in the directory.
+    /// The entry named `name` in directory `dir`: from its name's hash slot
+    /// up, past slots holding other names or `hash_whiteout`s, until the
+    /// name or an empty slot (S8: names that collide take the next free
+    /// offset, and a removal inside a run leaves a whiteout). A directory
+    /// whose hash is not known (crc64, never seen in a fixture) is scanned.
     fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
-        // The slot is SipHash's; a directory hashed with crc32c or crc64
-        // (S1 7.7, never seen in a fixture) is scanned instead, which
-        // finds the name at the cost of reading the whole directory.
-        if dir.hash_type() != crate::inode::HASH_TYPE_SIPHASH {
+        let Some(mut at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, name) else {
             return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
-        }
-        let at = crate::inode::dirent_hash(dir.hash_seed, name);
+        };
         let mut c = self.cursor(btree_id::DIRENTS)?;
         c.seek(Bpos {
             inode: dir.ino,
             offset: at,
             snapshot: 0,
         })?;
-        if let Some(k) = c.next_key()? {
-            if k.pos.inode == dir.ino {
-                self.same_snapshot(&k)?;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != dir.ino || k.pos.offset != at {
+                break;
             }
-            if k.pos.inode == dir.ino && k.key_type == crate::bkey::key_type::DIRENT {
-                let d = Dirent::from_key(&k)?;
-                if d.name == name {
-                    return Ok(Some(d));
+            self.same_snapshot(&k)?;
+            match k.key_type {
+                crate::bkey::key_type::DIRENT => {
+                    let d = Dirent::from_key(&k)?;
+                    if d.name == name {
+                        return Ok(Some(d));
+                    }
                 }
+                crate::bkey::key_type::HASH_WHITEOUT => {}
+                _ => break,
             }
+            at += 1;
         }
-        Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name))
+        Ok(None)
     }
 
     /// Resolve an absolute path to an inode, without following a symlink

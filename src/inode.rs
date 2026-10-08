@@ -35,9 +35,12 @@ pub const ROOT_INO: u64 = 4096;
 /// extended attributes (flags bits 20..23). S1 (7.7) names three,
 /// `crc32c`, `crc64` and `siphash` (the default); SipHash is 3 by
 /// observation (S3, S4: every inode of every fixture carries 3 and the
-/// lister prints `hash_type=siphash` for each). The other two numbers are
-/// open question 17 in docs/clean-room.md.
+/// lister prints `hash_type=siphash` for each). crc32c is 0 (S3, S8: every
+/// inode of the `--str_hash=crc32c` images); crc64's number is open
+/// question 17 in docs/clean-room.md.
 pub const HASH_TYPE_SIPHASH: u8 = 3;
+/// See [`HASH_TYPE_SIPHASH`].
+pub const HASH_TYPE_CRC32C: u8 = 0;
 
 /// The varint fields of an `inode_v3`, after the fixed part, in order.
 /// Times take two varints each.
@@ -234,9 +237,46 @@ pub fn dirent_hash(dir_hash_seed: u64, name: &[u8]) -> u64 {
     crate::siphash::siphash24(dir_hash_seed, 0, name) >> 1
 }
 
+/// A name's hash slot in a directory of string hash type `hash_type`, or
+/// `None` for a type whose hash is not known. SipHash is
+/// [`dirent_hash`]; crc32c is CRC-32C, starting from all ones with no final
+/// XOR, over the directory's `hash_seed` (eight bytes, little-endian) and
+/// then the name. INFERRED by computing candidates against the write
+/// study's crc32c images and checked against every dirent of them and of
+/// the `strhash` fixture (docs/clean-room.md).
+pub fn name_hash(hash_type: u8, dir_hash_seed: u64, name: &[u8]) -> Option<u64> {
+    match hash_type {
+        HASH_TYPE_SIPHASH => Some(dirent_hash(dir_hash_seed, name)),
+        HASH_TYPE_CRC32C => {
+            let mut msg = dir_hash_seed.to_le_bytes().to_vec();
+            msg.extend_from_slice(name);
+            // The standard crc32c inverts its result; this hash does not.
+            Some(u64::from(!crate::csum::crc32c_nonzero(&msg)))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crc32c_name_hashes_are_the_offsets_the_lister_showed() {
+        // The write study's collide image: /d (seed bfe7aaa9b28e0da5) and
+        // the root (seed 998647e3513019f6), offsets as the lister printed.
+        let d = 0xbfe7_aaa9_b28e_0da5;
+        let root = 0x9986_47e3_5130_19f6;
+        for (seed, name, offset) in [
+            (d, &b"plain"[..], 1_929_410_222),
+            (d, b"CAAAAAAAAAAAAAAA", 762_833_578),
+            (root, b"d", 2_651_817_589),
+            (root, b"lost+found", 277_940_468),
+        ] {
+            assert_eq!(name_hash(HASH_TYPE_CRC32C, seed, name), Some(offset));
+        }
+        assert_eq!(name_hash(1, d, b"plain"), None);
+    }
 
     #[test]
     fn varints_decode_as_measured() {
