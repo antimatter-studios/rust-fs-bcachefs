@@ -434,6 +434,12 @@ checker judged each attempt and named what was missing until nothing was.
   replicas_v0 field lists the journal on the device (`02 01 00`; S4, and the
   checker's "superblock not marked as containing replicas for journal
   entry", its only finding on the first attempt).
+- Nothing is reclaimed: no entry's last_seq ever passes the session's
+  first, so every entry since then is in the replay window. The ring may
+  not come round into the bucket holding the window's first entry; the
+  entry that would is refused as "the journal is full" (#101). Reclaim,
+  as S1 9.7.2 describes it (write the nodes the oldest entries pin, then
+  advance last_seq), is #113.
 - Judged: entries 13-16 written to the write-study base (a small file, a
   large file with a new lru root, a mkdir, an unlink) are replayed by the
   reference checker with nothing to fix and read back through its mount;

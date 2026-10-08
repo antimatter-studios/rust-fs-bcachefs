@@ -43,6 +43,10 @@ pub(super) struct Session {
     /// an index into them and a byte offset inside the bucket.
     pub buckets: Vec<u64>,
     pub at: (usize, usize),
+    /// The bucket holding the oldest entry a replay needs, once there is
+    /// one: nothing is reclaimed, so the ring may not come round into it
+    /// again (#101).
+    pub window_bucket: Option<usize>,
     /// Whether the superblock already says "replay me".
     pub marked: bool,
     /// Test hook: stop each commit after its jset, before the superblock.
@@ -130,6 +134,14 @@ impl<D: BlockDevice> Writer<D> {
             }
             None => (0, 0),
         };
+        let window_bucket = entries
+            .iter()
+            .filter(|j| j.seq >= first_seq)
+            .min_by_key(|j| j.seq)
+            .and_then(|j| {
+                let bucket = j.sector * 512 / bucket_bytes as u64;
+                buckets.iter().position(|&b| b == bucket)
+            });
         self.session = Some(Session {
             roots,
             replay,
@@ -137,6 +149,7 @@ impl<D: BlockDevice> Writer<D> {
             next_seq,
             buckets,
             at,
+            window_bucket,
             // An unclean filesystem already says "replay me".
             marked: true,
             crash_before_superblock: false,
@@ -258,12 +271,27 @@ impl<D: BlockDevice> Writer<D> {
         if off + len > bucket_bytes {
             idx = (idx + 1) % s.buckets.len();
             off = 0;
+            // Every entry from the window's first on is still needed, and
+            // this writer reclaims none: going on into the bucket that
+            // holds the first would write over it (#101).
+            if s.window_bucket == Some(idx) {
+                return Err(Error::Unsupported(format!(
+                    "the journal is full: its {} buckets hold entries a replay still needs, from \
+                     sequence {} on, and this writer does not reclaim journal space; replay the \
+                     journal before writing more (#101)",
+                    s.buckets.len(),
+                    s.first_seq
+                )));
+            }
         }
         let where_ = s.buckets[idx] * bucket_bytes as u64 + off as u64;
         self.dev.write_at(where_, &jset)?;
         self.dev.flush()?;
 
         let s = self.session.as_mut().expect("journalled");
+        if s.window_bucket.is_none() {
+            s.window_bucket = Some(idx);
+        }
         s.at = (idx, off + len);
         s.next_seq = seq + 1;
         for (id, ks) in keys {
