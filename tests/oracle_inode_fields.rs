@@ -11,38 +11,9 @@ use std::collections::BTreeMap;
 
 use common::{fixture, read_text};
 use fs_bcachefs::btree::{self, btree_id};
-use fs_bcachefs::inode::InodeV3Raw;
+use fs_bcachefs::inode::{InodeV3Raw, FIELD_NAMES};
 use fs_bcachefs::superblock::Superblock;
 use fs_core::FileDevice;
-
-/// The varint fields after the four times (two varints each), in the
-/// order the lister prints them.
-const NAMES: &[&str] = &[
-    "uid",
-    "gid",
-    "nlink",
-    "generation",
-    "dev",
-    "data_checksum",
-    "compression",
-    "project",
-    "background_compression",
-    "data_replicas",
-    "promote_target",
-    "foreground_target",
-    "background_target",
-    "erasure_code",
-    "fields_set",
-    "dir",
-    "dir_offset",
-    "subvol",
-    "parent_subvol",
-    "nocow",
-    "depth",
-    "inodes_32bit",
-    "casefold",
-    "unused_ec_max_data_blocks",
-];
 
 /// Every `<image>.inodes.txt` beside a clean `<image>.img`.
 fn dumps() -> Vec<String> {
@@ -102,44 +73,49 @@ fn ours(image: &str) -> BTreeMap<u64, InodeV3Raw> {
         .collect()
 }
 
+/// OBSERVED: the reference mount refuses every per-inode option, set as a
+/// `bcachefs.*` xattr, with "Operation not supported" (the reference
+/// tool's `set-file-option` goes the same way: the probe's casefold
+/// attempt). So no image holds an inode with options, and the option
+/// fields are checked only as zeros. A reference that takes them fails
+/// this test, and the options image becomes the first to show them.
 #[test]
-fn the_options_were_set_through_the_reference_mount() {
+fn the_reference_mount_refuses_per_inode_options() {
     let text = read_text("write-study/options.txt");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 5, "options.txt:\n{text}");
     assert!(
-        !text.contains("error") && text.lines().count() >= 5,
+        lines
+            .iter()
+            .all(|l| l.starts_with("error ") && l.contains("Operation not supported")),
         "options.txt:\n{text}"
     );
 }
 
 #[test]
 fn every_varint_field_decodes_as_the_lister_prints_it() {
-    let mut nonzero_options = 0;
+    let mut nonzero = 0;
     for image in dumps() {
         let theirs = lister(&image);
         for (ino, raw) in ours(&image) {
             let fields = &theirs[&ino];
-            for (i, name) in NAMES.iter().enumerate() {
-                let v = raw.varints.get(8 + i).copied().unwrap_or(0);
+            for name in FIELD_NAMES {
+                let v = raw.field(name).unwrap();
                 assert_eq!(
                     Some(&v),
                     fields.get(*name),
                     "{image} inode {ino}: bi_{name}"
                 );
-                if (5..15).contains(&i) && v != 0 {
-                    nonzero_options += 1;
-                }
+                nonzero += usize::from(v != 0);
             }
         }
     }
-    assert!(
-        nonzero_options >= 3,
-        "only {nonzero_options} option fields set"
-    );
+    assert!(nonzero >= 1000, "only {nonzero} non-zero fields compared");
 }
 
-/// HYPOTHESIS, checked here: bits 32..35 of the flags word are 3 in every
-/// inode (open question 12), options or not. The lister prints only the
-/// low 32 bits, which must match this crate's.
+/// OBSERVED: bits 32..35 of the flags word are 3 in every inode of every
+/// image (open question 12). The lister prints only the low 32 bits, which
+/// must match this crate's.
 #[test]
 fn flag_bits_32_to_35_are_3_in_every_inode() {
     let mut other = Vec::new();
