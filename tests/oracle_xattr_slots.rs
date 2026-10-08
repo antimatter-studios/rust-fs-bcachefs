@@ -1,10 +1,9 @@
 //! Where the reference puts an xattr (#77). Two of `aged`'s xattrs are not
 //! at SipHash-2-4 keyed `(hash_seed, 0)` over the namespace byte and the
 //! name, with the inode's hash_seed as the lister prints it. The write
-//! study repeats the steps that placed them, settled and dumped after each
-//! (scripts/guest-write-study.sh): this checks every xattr of every step
-//! against the seed its inode has in that step, and names any earlier
-//! step whose seed places one that does not fit.
+//! study repeats the steps that placed them, settled and dumped after each,
+//! then sets one xattr of every name length from 1 to 24
+//! (scripts/guest-write-study.sh).
 
 mod common;
 
@@ -67,33 +66,40 @@ fn slot(seed: u64, ns: u8, name: &str) -> u64 {
     siphash24(seed, 0, &msg) >> 1
 }
 
+/// OBSERVED (#77): an xattr whose name has 1 to 7 bytes sits at
+/// SipHash-2-4 keyed `(hash_seed, 0)` over the namespace byte and the name,
+/// shifted right by one, with the seed its inode has in every step; one
+/// whose name has 8 bytes or more never does (8 to 24 tried), on files and
+/// directories alike. Where those go is open question 15.
 #[test]
-fn every_xattr_sits_at_the_slot_of_its_inodes_seed() {
-    let mut misfits = Vec::new();
-    let mut n = 0;
-    for (i, step) in STEPS.iter().enumerate() {
+fn short_xattr_names_sit_at_the_siphash_slot_and_long_ones_do_not() {
+    let mut wrong = Vec::new();
+    let (mut short, mut long) = (0, 0);
+    for step in STEPS {
         let now = seeds(step);
         for (ino, off, ns, name) in xattrs(step) {
-            n += 1;
-            if slot(now[&ino], ns, &name) == off {
-                continue;
+            let fits = slot(now[&ino], ns, &name) == off;
+            if name.len() < 8 {
+                short += 1;
+            } else {
+                long += 1;
             }
-            let earlier: Vec<String> = STEPS[..i]
-                .iter()
-                .filter(|s| {
-                    seeds(s)
-                        .get(&ino)
-                        .is_some_and(|&seed| slot(seed, ns, &name) == off)
-                })
-                .map(|s| s.to_string())
-                .collect();
-            misfits.push(format!(
-                "{step}: inode {ino} {name} at {off}, seed now {:x}; earlier seeds that place it: {earlier:?}; the inode's seed in each step: {:x?}",
-                now[&ino],
-                STEPS.iter().map(|s| seeds(s).get(&ino).copied()).collect::<Vec<_>>()
-            ));
+            if fits != (name.len() < 8) {
+                wrong.push(format!(
+                    "{step}: inode {ino} {name} ({} bytes) at {off}: {}",
+                    name.len(),
+                    if fits {
+                        "at the slot"
+                    } else {
+                        "not at the slot"
+                    }
+                ));
+            }
         }
     }
-    assert!(n >= 10, "only {n} xattrs");
-    assert!(misfits.is_empty(), "{}", misfits.join("\n"));
+    assert!(
+        short >= 10 && long >= 10,
+        "{short} short names, {long} long"
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
