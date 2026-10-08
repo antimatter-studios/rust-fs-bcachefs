@@ -340,6 +340,51 @@ bcachefs-ref format -q "$probe_img" > "$out/probe.format.txt" 2>&1
         echo "Mixed" > "$m/casefold/Name" 2>&1 || echo "exit $?"
         echo "## reflink via cp --reflink=always"
         cp --reflink=always "$m/sub/file" "$m/sub/clone" 2>&1 || echo "exit $?"
+        # Every other route to a clone (#7): the clone and dedupe ioctls,
+        # whole-file and ranged, and copy_file_range, the one call FUSE
+        # passes on to the daemon. Each on the inline file and on one too
+        # big to be inline (S1 9.1.7 says inline data reflinks as its own
+        # key type). A failure prints `exit 1`, as the shell's do.
+        python3 - "$m/sub" <<'PY' 2>&1 || echo "exit $?"
+import fcntl, os, struct, sys
+d = sys.argv[1]
+big = bytes((i * 7 + 3) & 0xFF for i in range(65536))
+for name in ("big", "big-twin"):
+    with open(os.path.join(d, name), "wb") as f:
+        f.write(big)
+os.sync()
+# Linux's generic clone and dedupe ioctls (ioctl_ficlone(2),
+# ioctl_fideduperange(2)).
+FICLONE, FICLONERANGE, FIDEDUPERANGE = 0x40049409, 0x4020940D, 0xC0189436
+def probe(title, src, dst, how):
+    print("## " + title, flush=True)
+    s = os.open(os.path.join(d, src), os.O_RDONLY)
+    t = os.open(os.path.join(d, dst), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        r = how(s, t, os.fstat(s).st_size)
+        print("ok" if isinstance(r, bytes) else f"ok {r}")
+    except OSError as e:
+        print(e)
+        print("exit 1")
+    finally:
+        os.close(s)
+        os.close(t)
+def dedupe(s, t, n):
+    arg = bytearray(struct.pack("=QQHHI", 0, n, 1, 0, 0) + struct.pack("=qQQiI", t, 0, 0, 0, 0))
+    fcntl.ioctl(s, FIDEDUPERANGE, arg)
+    done, status = struct.unpack_from("=Qi", arg, 24 + 16)
+    if status != 0:
+        raise OSError(-status if status < 0 else 0, f"dedupe status {status}, {done} bytes")
+    return f"{done} bytes deduplicated"
+for src in ("file", "big"):
+    probe(f"clone via FICLONE ({src})", src, src + "-ficlone",
+          lambda s, t, n: fcntl.ioctl(t, FICLONE, s))
+    probe(f"clone via FICLONERANGE ({src})", src, src + "-range",
+          lambda s, t, n: fcntl.ioctl(t, FICLONERANGE, struct.pack("=qQQQ", s, 0, 0, 0)))
+    probe(f"clone via copy_file_range ({src})", src, src + "-copied",
+          lambda s, t, n: os.copy_file_range(s, t, n))
+probe("clone via FIDEDUPERANGE (big onto big-twin)", "big", "big-twin", dedupe)
+PY
         echo "## listing"
         ls -laR "$m" 2>&1 || true
         # The daemon is killed, so what reaches the image is what the journal
@@ -359,6 +404,18 @@ for b in inodes dirents extents subvolumes snapshots reflink; do
     bcachefs-ref list -b "$b" "$probe_img" > "$out/probe.$b.txt" 2>&1 || true
 done
 cp --sparse=always "$ROOT$probe_img" "$out/probe.img"
+# What the daemon said while the probes ran: an operation it does not
+# implement may be named here and nowhere else.
+grep -v '^\[<0>\]' "$work/fuse-probe.log" 2>/dev/null | tail -n 60 > "$out/probe.fuse-log.txt" || true
+# What the reference tool offers, by its own account (#7, #12): its
+# commands, and the options of every one that might make a reflink, a
+# subvolume or a snapshot some other way than through the mount.
+for c in "" format fusemount subvolume "subvolume create" "subvolume snapshot" \
+    reflink-option-propagate; do
+    echo "## bcachefs $c --help"
+    # shellcheck disable=SC2086 # $c is a command of one or two words
+    bcachefs-ref $c --help 2>&1 || echo "exit $?"
+done > "$out/probe.help.txt" 2>&1
 
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
 rm -rf "$work"
