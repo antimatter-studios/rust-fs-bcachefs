@@ -95,7 +95,8 @@ cp --sparse=always "$ROOT$base" "$out/base.img"
 # is eight such blocks, the settled image's nodes had no block left, and
 # this writer appends to a node but cannot rewrite one (#44).
 base4k="$work/base-bs4k.img"
-truncate -s 64M "$ROOT$base4k"
+# 128M: the formatter refuses 256k nodes on anything smaller.
+truncate -s 128M "$ROOT$base4k"
 bcachefs-ref format -q --block_size=4096 --btree_node_size=256k "$base4k" >/dev/null
 mount_rw "$base4k"
 mkdir "$ROOT$mnt/d"
