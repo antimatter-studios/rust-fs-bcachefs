@@ -301,7 +301,7 @@ fn colliding_names_placed_here_are_read_by_the_reference() {
 /// implementation reads every byte back.
 #[test]
 fn files_on_4096_byte_blocks_are_read_by_the_reference() {
-    let img = scratch("write-study/inline-bs4k.img", "bs4k");
+    let img = scratch("write-study/base-bs4k.img", "bs4k");
     let sizes = [1500usize, 2000, 4096, 5000, 9000];
     let file = |n: usize| -> Vec<u8> { (0..n).map(|i| (i * 31 + n) as u8).collect() };
     let dir = {

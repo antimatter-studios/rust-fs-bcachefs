@@ -485,7 +485,7 @@ fn colliding_names_are_placed_as_the_reference_places_them() {
 #[test]
 fn files_on_4096_byte_blocks_are_written_in_whole_blocks() {
     use fs_bcachefs::btree::{self, btree_id};
-    let img = scratch("write-study/inline-bs4k.img", "bs4k");
+    let img = scratch("write-study/base-bs4k.img", "bs4k");
     let dir = {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         fs.lookup("/d").unwrap()

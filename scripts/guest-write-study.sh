@@ -90,6 +90,17 @@ printf 'an existing file\n' >"$ROOT$mnt/d/existing"
 settle "$base" base
 dump "$base" base
 cp --sparse=always "$ROOT$base" "$out/base.img"
+# The same base on 4096-byte blocks, for writes on larger blocks (#87):
+# small, so a write has room in every leaf.
+base4k="$work/base-bs4k.img"
+truncate -s 64M "$ROOT$base4k"
+bcachefs-ref format -q --block_size=4096 "$base4k" >/dev/null
+mount_rw "$base4k"
+mkdir "$ROOT$mnt/d"
+printf 'an existing file\n' >"$ROOT$mnt/d/existing"
+settle "$base4k" base-bs4k
+dump "$base4k" base-bs4k
+cp --sparse=always "$ROOT$base4k" "$out/base-bs4k.img"
 
 # name | what is done through the mount, with $M the mount point
 ops=(
