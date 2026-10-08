@@ -538,6 +538,15 @@ impl<D: BlockDevice> Writer<D> {
             if k.key_type == key_type::INLINE_DATA {
                 continue;
             }
+            // Deleting a reflink pointer must also drop a reference to the
+            // shared extent it points to (S1 9.1.6.2), which this writer
+            // cannot find: the pointer's layout is unknown (#7).
+            if k.key_type == key_type::REFLINK_P {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: freeing reflinked data (a `reflink_p`) is not implemented: the \
+                     shared extent's refcount would be left behind (#7)"
+                )));
+            }
             if k.key_type != key_type::EXTENT {
                 return Err(Error::Unsupported(format!(
                     "freeing an extent of key type {}",

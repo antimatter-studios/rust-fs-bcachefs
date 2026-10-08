@@ -409,9 +409,11 @@ cp --sparse=always "$ROOT$probe_img" "$out/probe.img"
 grep -v '^\[<0>\]' "$work/fuse-probe.log" 2>/dev/null | tail -n 60 > "$out/probe.fuse-log.txt" || true
 # What the reference tool offers, by its own account (#7, #12): its
 # commands, and the options of every one that might make a reflink, a
-# subvolume or a snapshot some other way than through the mount.
-for c in "" format fusemount subvolume "subvolume create" "subvolume snapshot" \
-    reflink-option-propagate; do
+# subvolume or a snapshot some other way than through the mount. The
+# first run's list (CI, PR #100) named a btree read/write REPL (`kvdb`)
+# and image commands; their help is asked for too.
+for c in "" format fusemount mount subvolume "subvolume create" "subvolume snapshot" \
+    reflink-option-propagate kvdb "image create" "image update" undump; do
     echo "## bcachefs $c --help"
     # shellcheck disable=SC2086 # $c is a command of one or two words
     bcachefs-ref $c --help 2>&1 || echo "exit $?"

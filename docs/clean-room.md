@@ -124,7 +124,10 @@ all eight fixture sets.
   btree_ptr_v2 18, inode_v3 29 (checked); also named from that order,
   not yet seen in a fixture: error 2 (reads are I/O errors, S1 9.1.2.1),
   inode 8 and inode_v2 23 (older encodings, refused by name),
-  extent_whiteout 36 (reads as a hole on a filesystem without snapshots).
+  extent_whiteout 36 (reads as a hole on a filesystem without snapshots),
+  reflink_p 15 (refused by name, see open question 6). S1's order also
+  puts reflink_v at 16 and indirect_inline_data at 19, the reflink btree's
+  own key types; nothing here reads that btree.
 
 ### Btree nodes (`src/btree.rs`) -- documented structure, inferred layout
 
@@ -544,8 +547,26 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    scratch image and records the answer and the lister's view in
    `probe.*` (scripts/guest-build-fixtures.sh).
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
-   reflink, xattrs, multiple devices and replicas**: not seen in any
-   fixture. (inline_data: seen and read, see above.)
+   reflink, multiple devices and replicas**: not seen in any fixture.
+   (inline_data and xattrs: seen and read, see above.)
+   **Reflink** (#7) is UNOBSERVABLE with the pinned reference. S1 (9.1.6)
+   gives the shape: a `reflink_p` in the extents btree holds a 56-bit index
+   into the reflink btree (id 7) and front and back pads, and a `reflink_v`
+   there holds a refcount followed by extent entries (or, for inline data,
+   an `indirect_inline_data`, 9.1.7). It does not give the bits. The fixture
+   build tries every route to a clone through the reference mount (S8),
+   on an inline file and on an allocated one, and records each answer in
+   `probe.txt`. FICLONE (and `cp --reflink=always`), FICLONERANGE and
+   FIDEDUPERANGE fail with "Operation not supported", and the daemon's
+   log (`probe.fuse-log.txt`) shows no call for any of them, so the kernel
+   refuses them before the mount sees them. `copy_file_range` succeeds,
+   but the log shows plain reads and writes: the kernel copied the data.
+   The reflink btree stays empty and no extent is a `reflink_p`. The
+   reference tool's own help (`probe.help.txt`, S3) lists no format or
+   mount option that makes a reflink. So the reader refuses a `reflink_p`
+   by name, the checker reports it (`reflink`), and the writer will not
+   free one (`tests/oracle_refused_local.rs`). A kernel mount (#110) would
+   make one.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
