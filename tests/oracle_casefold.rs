@@ -6,14 +6,16 @@
 //! folded form; a reader that takes the whole value for one name lists
 //! neither.
 //!
-//! The test first checks that the set holds a casefolded directory at all,
-//! so a formatter that stops making one fails here rather than passing on
-//! an image that never exercises the layout.
+//! The listing test first checks that the set holds casefolded entries at
+//! all (the lister prints each as `Name (casefold name)`), so a formatter
+//! that stops making them fails here rather than passing on an image that
+//! never exercises the layout. The reference mount finds `HELLO.txt` as
+//! `Hello.TXT` in such a directory (casefold.txt), and so must this reader.
 
 mod common;
 
 use common::{fixture, manifest, read_text, Entry};
-use fs_bcachefs::Filesystem;
+use fs_bcachefs::{Error, Filesystem};
 use fs_core::FileDevice;
 use sha2::{Digest, Sha256};
 
@@ -39,14 +41,14 @@ fn casefold_manifest() -> Vec<Entry> {
 
 #[test]
 fn every_name_in_a_casefolded_directory_lists_as_given_and_reads_back() {
-    let inodes = read_text("casefold.inodes.txt");
-    let casefolded = inodes
+    let dirents = read_text("casefold.dirents.txt");
+    let folded = dirents
         .lines()
-        .map(str::trim)
-        .any(|l| l.starts_with("bi_casefold=") && l != "bi_casefold=0");
+        .filter(|l| l.contains(" (casefold "))
+        .count();
     assert!(
-        casefolded,
-        "the casefold set holds no inode with bi_casefold set (casefold.inodes.txt; casefold.txt \
+        folded > 40,
+        "the casefold set holds {folded} casefolded entries (casefold.dirents.txt; casefold.txt \
          has the formatter's answer)"
     );
     let fs = Filesystem::open(FileDevice::open(fixture("casefold.img")).unwrap()).unwrap();
@@ -101,4 +103,53 @@ fn every_name_in_a_casefolded_directory_lists_as_given_and_reads_back() {
             _ => {}
         }
     }
+}
+
+#[test]
+fn a_name_in_a_casefolded_directory_is_found_in_any_case() {
+    let fs = Filesystem::open(FileDevice::open(fixture("casefold.img")).unwrap()).unwrap();
+    for (asked, stored) in [
+        ("/HELLO.txt", "/Hello.TXT"),
+        ("/hello.txt", "/Hello.TXT"),
+        ("/mixed/INNER.MD", "/MiXeD/Inner.md"),
+        ("/STRASSE.TXT", "/Stra\u{df}e.txt"),
+        ("/many/file-07.txt", "/Many/File-07.Txt"),
+    ] {
+        assert_eq!(
+            fs.lookup(asked).ok(),
+            Some(fs.lookup(stored).unwrap()),
+            "{asked} as {stored}"
+        );
+    }
+    let missing = fs.lookup("/Hello.TXT.not");
+    assert!(matches!(missing, Err(Error::NotFound(_))), "{missing:?}");
+}
+
+/// The writer places names by their own hash in the plain dirent layout,
+/// so it must not touch a casefolded directory.
+#[cfg(feature = "write")]
+#[test]
+fn the_writer_refuses_to_change_a_casefolded_directory() {
+    use fs_bcachefs::write::Writer;
+    let dir = std::env::temp_dir().join(format!(
+        "rust-fs-bcachefs-casefold-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("casefold.img");
+    std::fs::copy(fixture("casefold.img"), &img).unwrap();
+    let before = std::fs::read(&img).unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let root = fs_bcachefs::inode::ROOT_INO;
+    match w.create_file(root, b"new.txt", b"new\n", 0o644) {
+        Err(Error::Unsupported(m)) => assert!(m.contains("casefold"), "{m}"),
+        other => panic!("create in a casefolded directory: {other:?}"),
+    }
+    match w.mkdir(root, b"NewDir", 0o755) {
+        Err(Error::Unsupported(m)) => assert!(m.contains("casefold"), "{m}"),
+        other => panic!("mkdir in a casefolded directory: {other:?}"),
+    }
+    drop(w);
+    let after = std::fs::read(&img).unwrap();
+    assert!(after == before, "the image changed");
 }
