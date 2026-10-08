@@ -53,7 +53,9 @@ fn lister(image: &str) -> BTreeMap<u64, BTreeMap<String, u64>> {
             if let (Some(name), Ok(v)) = (k.strip_prefix("bi_"), v.parse()) {
                 out.entry(i).or_default().insert(name.to_string(), v);
             } else if k == "flags" {
-                let hex = v.trim_matches(|c| c == '(' || c == ')');
+                // `(15300000)`, or with the names of the set flags first:
+                // `has_case_insensitive(15300400)` (the casefold set).
+                let hex = v.rsplit('(').next().unwrap().trim_end_matches(')');
                 let f = u64::from_str_radix(hex, 16).unwrap();
                 out.entry(i).or_default().insert("flags".into(), f);
             }
