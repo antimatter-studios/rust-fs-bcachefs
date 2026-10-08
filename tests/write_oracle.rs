@@ -251,6 +251,51 @@ fn files_at_the_inline_bounds_are_read_by_the_reference() {
     });
 }
 
+/// Colliding names placed by this crate in the crc32c `collide` image
+/// (#78): a fifth after the reference's four, the third removed (leaving a
+/// whiteout), a sixth in its place, the fifth removed. The reference
+/// checker passes the image and the reference implementation reads every
+/// name that is left, and none that is not.
+#[test]
+fn colliding_names_placed_here_are_read_by_the_reference() {
+    let img = scratch("write-study/collide.img", "collide");
+    let names = [
+        "CAAAAAAAAAAAAAAA",
+        "CBBF@MBKAAAAAAAA",
+        "COA@GJOCFAAAAAAA",
+        "CLBGFFLIFAAAAAAA",
+        "CABBF@MBKAAAAAAA",
+        "CBAEGLNHKAAAAAAA",
+    ];
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(dir, names[4].as_bytes(), b"fifth\n", 0o644)
+        .unwrap();
+    w.unlink(dir, names[2].as_bytes()).unwrap();
+    w.create_file(dir, names[5].as_bytes(), b"sixth\n", 0o644)
+        .unwrap();
+    w.unlink(dir, names[4].as_bytes()).unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        let d = m.join("d");
+        for n in [names[0], names[1], names[3]] {
+            assert_eq!(
+                std::fs::read(d.join(n)).unwrap(),
+                format!("{n}\n").as_bytes(),
+                "{n}"
+            );
+        }
+        assert_eq!(std::fs::read(d.join(names[5])).unwrap(), b"sixth\n");
+        for gone in [names[2], names[4]] {
+            assert!(!d.join(gone).exists(), "{gone} is still listed");
+        }
+    });
+}
+
 /// The same creation in the aged image, whose btrees are two levels deep
 /// and whose leaves hold many bsets. How full its leaves are differs from
 /// one fixture build to the next, so this test has two acceptable

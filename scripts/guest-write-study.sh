@@ -142,4 +142,34 @@ for variant in 'inline-default|' 'inline-bs4k|--block_size=4096'; do
     dump "$img" "$name"
     cp --sparse=always "$ROOT$img" "$out/$name.img"
 done
+
+# DIRENT COLLISIONS (#78): where an entry goes when its name's hash slot is
+# taken. SipHash slots are 63 bits wide, so no collision can be had by
+# chance; with --str_hash=crc32c four names of one length collide by
+# construction: CRC is linear, so equal-length names whose XOR difference
+# has a CRC of 0 collide whatever the seed, init or final XOR
+# (tests/oracle_collisions.rs checks the four, and why). They are created in
+# order through the mount; then the second is removed, then created again,
+# each step settled and dumped, so the lister shows where each went.
+COLLIDE="CAAAAAAAAAAAAAAA CBBF@MBKAAAAAAAA COA@GJOCFAAAAAAA CLBGFFLIFAAAAAAA"
+echo "== write-study: collide"
+img="$work/collide.img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q --str_hash=crc32c "$img" >"$out/collide.format.txt" 2>&1
+mount_rw "$img"
+mkdir "$ROOT$mnt/d"
+for n in $COLLIDE plain; do printf '%s\n' "$n" >"$ROOT$mnt/d/$n"; done
+settle "$img" collide
+dump "$img" collide
+cp --sparse=always "$ROOT$img" "$out/collide.img"
+for step in 'collide-unlink|rm "$M/d/CBBF@MBKAAAAAAAA"' \
+    'collide-recreate|printf "%s\n" CBBF@MBKAAAAAAAA >"$M/d/CBBF@MBKAAAAAAAA"'; do
+    name="${step%%|*}"
+    echo "== write-study: $name"
+    mount_rw "$img"
+    M="$ROOT$mnt" bash -euc "${step#*|}"
+    settle "$img" "$name"
+    dump "$img" "$name"
+    cp --sparse=always "$ROOT$img" "$out/$name.img"
+done
 rm -rf "${ROOT:?}$work"

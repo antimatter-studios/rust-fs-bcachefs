@@ -512,8 +512,19 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    `whiteout` key type has not been seen yet.
 9. **Dirent names longer than one key, casefolded dirents, and the
    31-bit dirent offset change** (1.30) -- not exercised.
-10. **Dirent hash collisions**: where an entry goes when its name's hash
-    slot is taken (none occurred in any fixture). The writer refuses.
+10. **Dirent hash collisions** (#78). SETTLED by observation (S8). SipHash
+    slots are 63 bits wide, so the write study collides names under
+    `--str_hash=crc32c` instead: four 16-byte names whose XOR differences
+    have a CRC of 0 collide under any seed. Created in order through the
+    reference mount, they took four consecutive offsets in creation order.
+    Removing the second left a `hash_whiteout` (u64s 5, no value) in its
+    slot, and the others stayed. The dirents counter kept 7 keys, its bytes
+    fell by 72 - 40, so a whiteout is a counted 40-byte key. Created again,
+    the name took the whiteout's slot. A removal with nothing after it (the
+    write study's unlink) deletes the key outright. So a name is looked up
+    from its hash slot up, past other names and whiteouts, to an empty
+    slot; the reader and the writer both do this. INFERRED for SipHash
+    directories, where no collision can be made: the same rule.
 13. **Node flags for btree ids of 16 and more**: the writer only makes
     roots for ids under 16 (the lru btree, 10).
 12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
@@ -539,8 +550,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     (`Filesystem::find`), the writer refuses to place a name in one
     (`siphash_only`), and the `strhash` fixture (`--str_hash=crc32c`) is
     read whole by scanning (`tests/oracle_strhash.rs`, which prints the
-    number crc32c carries). Still open: the crc-based hashes' exact
-    inputs, so that such a directory could be looked up without a scan.
+    number crc32c carries). crc32c is hash type 0, and its dirent offset is
+    CRC-32C (initial value all ones, no final XOR) over the directory's
+    `hash_seed` as eight little-endian bytes followed by the name
+    (INFERRED by computing candidates against the write study's crc32c
+    images, then checked against all 314 dirents of `strhash`:
+    `inode::name_hash`, tests/oracle_collisions.rs). Still open: crc64's
+    number and inputs, and the xattr hash under crc32c.
 18. **Casefolded directories.** S1 (2.7): a casefolded directory stores
     both the original name and its casefolded form in each dirent, and
     looks up by the folded form. The dirent layout this reader decodes is

@@ -1,7 +1,7 @@
 //! A filesystem whose names are hashed with crc32c rather than SipHash
 //! (`--str_hash=crc32c`, S1 7.7): every inode says so, the reference lister
 //! prints `hash_type=crc32c`, and this reader still resolves every path and
-//! reads every file, by scanning the directory instead of hashing the name.
+//! reads every file, hashing each name with crc32c (`inode::name_hash`).
 //! The inode's hash type number for crc32c is recorded here as it is seen.
 
 mod common;
@@ -14,7 +14,7 @@ use fs_core::FileDevice;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn names_hashed_with_crc32c_are_found_by_scanning() {
+fn names_hashed_with_crc32c_are_found_at_their_hash() {
     let listing = read_text("strhash.inodes.txt");
     assert!(
         listing.contains("hash_type=crc32c"),

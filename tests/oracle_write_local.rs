@@ -394,3 +394,87 @@ fn a_time_precision_other_than_nanoseconds_is_refused_before_writing() {
     // The reader is unaffected: times are reported in the superblock's unit.
     Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
 }
+
+/// Names that collide under crc32c in the write study's `collide` image
+/// (tests/oracle_collisions.rs): the four the reference placed, then two
+/// more.
+const COLLIDING: [&str; 6] = [
+    "CAAAAAAAAAAAAAAA",
+    "CBBF@MBKAAAAAAAA",
+    "COA@GJOCFAAAAAAA",
+    "CLBGFFLIFAAAAAAA",
+    "CABBF@MBKAAAAAAA",
+    "CBAEGLNHKAAAAAAA",
+];
+
+/// `(offset, key type, name)` of every key of directory `dir`.
+fn dir_keys(img: &std::path::Path, dir: u64) -> Vec<(u64, u8, String)> {
+    use fs_bcachefs::btree::{self, btree_id};
+    let dev = FileDevice::open(img).unwrap();
+    let sb = fs_bcachefs::superblock::Superblock::read(&dev).unwrap();
+    btree::walk(&dev, &sb, btree_id::DIRENTS)
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.pos.inode == dir)
+        .map(|k| {
+            let name = fs_bcachefs::inode::Dirent::from_key(&k)
+                .map(|d| String::from_utf8_lossy(&d.name).into_owned())
+                .unwrap_or_default();
+            (k.pos.offset, k.key_type, name)
+        })
+        .collect()
+}
+
+/// Colliding names placed here go where the reference puts them (#78): a
+/// fifth after the four, a removal inside the run leaves a whiteout, a new
+/// colliding name takes it, and a removal at the run's end leaves nothing.
+#[test]
+fn colliding_names_are_placed_as_the_reference_places_them() {
+    let img = scratch("write-study/collide.img", "collide");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let h = dir_keys(&img, dir)
+        .iter()
+        .find(|k| k.2 == COLLIDING[0])
+        .unwrap()
+        .0;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(dir, COLLIDING[4].as_bytes(), b"fifth\n", 0o644)
+        .unwrap();
+    w.unlink(dir, COLLIDING[2].as_bytes()).unwrap();
+    w.create_file(dir, COLLIDING[5].as_bytes(), b"sixth\n", 0o644)
+        .unwrap();
+    w.unlink(dir, COLLIDING[4].as_bytes()).unwrap();
+    drop(w);
+    let run: Vec<(u64, u8, String)> = dir_keys(&img, dir)
+        .into_iter()
+        .filter(|k| k.0 >= h && k.0 < h + 8)
+        .collect();
+    let dirent = 10;
+    assert_eq!(
+        run,
+        [
+            (h, dirent, COLLIDING[0].to_string()),
+            (h + 1, dirent, COLLIDING[1].to_string()),
+            (h + 2, dirent, COLLIDING[5].to_string()),
+            (h + 3, dirent, COLLIDING[3].to_string()),
+        ]
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    for n in [COLLIDING[0], COLLIDING[1], COLLIDING[3]] {
+        assert_eq!(
+            fs.read(fs.lookup(&format!("/d/{n}")).unwrap()).unwrap(),
+            format!("{n}\n").as_bytes()
+        );
+    }
+    assert_eq!(
+        fs.read(fs.lookup(&format!("/d/{}", COLLIDING[5])).unwrap())
+            .unwrap(),
+        b"sixth\n"
+    );
+    for gone in [COLLIDING[2], COLLIDING[4]] {
+        assert!(fs.lookup(&format!("/d/{gone}")).is_err(), "{gone}");
+    }
+}
