@@ -90,6 +90,20 @@ printf 'an existing file\n' >"$ROOT$mnt/d/existing"
 settle "$base" base
 dump "$base" base
 cp --sparse=always "$ROOT$base" "$out/base.img"
+# The same base on 4096-byte blocks, for writes on larger blocks (#87).
+# Its nodes are 256k: at the 32k this size of image gets by default a node
+# is eight such blocks, the settled image's nodes had no block left, and
+# this writer appends to a node but cannot rewrite one (#44).
+base4k="$work/base-bs4k.img"
+# 128M: the formatter refuses 256k nodes on anything smaller.
+truncate -s 128M "$ROOT$base4k"
+bcachefs-ref format -q --block_size=4096 --btree_node_size=256k "$base4k" >/dev/null
+mount_rw "$base4k"
+mkdir "$ROOT$mnt/d"
+printf 'an existing file\n' >"$ROOT$mnt/d/existing"
+settle "$base4k" base-bs4k
+dump "$base4k" base-bs4k
+cp --sparse=always "$ROOT$base4k" "$out/base-bs4k.img"
 
 # name | what is done through the mount, with $M the mount point
 ops=(
@@ -116,9 +130,11 @@ for entry in "${ops[@]}"; do
 done
 
 # THE INLINE LIMIT (#79): where the reference stops storing a file inline.
-# One file of every size from 1 to 2100 bytes is written through the mount,
-# once on a default image and once with 4096-byte blocks (the block4k
-# fixture's option), and the lister shows which became inline_data. /d/grow
+# One file of every size from 1 to 2100 bytes, and from just under to just
+# over one and two 4096-byte blocks (4090..4200, 8190..8300; #87), is
+# written through the mount, once on a default image and once with
+# 4096-byte blocks (the block4k fixture's option), and the lister shows
+# which became inline_data and how the extents are cut. /d/grow
 # is written at 100 bytes, flushed, then grown to 3000, to show what growing
 # past the limit does. sizes.txt is the mount's own `inode size name` for
 # each file, so a test can join the lister's keys to sizes without this
@@ -135,7 +151,7 @@ for variant in 'inline-default|' 'inline-bs4k|--block_size=4096'; do
     M="$ROOT$mnt"
     mkdir "$M/d"
     head -c 100 /dev/zero | tr '\0' g >"$M/d/grow"
-    for n in $(seq 1 2100); do
+    for n in $(seq 1 2100) $(seq 4090 4200) $(seq 8190 8300); do
         head -c "$n" /dev/zero | tr '\0' x >"$M/d/s$n"
     done
     sync
