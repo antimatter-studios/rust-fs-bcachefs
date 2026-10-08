@@ -308,6 +308,94 @@ bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.forma
 for i in 0 1; do
     bcachefs-ref show-super "$out/multi-$i.img" > "$out/multi-$i.super.txt" 2>&1
 done
+
+# CASEFOLDED DIRECTORIES (#54). S1 (2.7, 7.2): casefold is a per-directory
+# option that can also be given at format time, and a casefolded
+# directory's entries store both the name as given and its folded form,
+# looked up by the folded form. The reference mount refuses to set it on a
+# directory (probe.txt), so this set asks the formatter for it
+# filesystem-wide and populates the image from a tree of mixed-case and
+# non-ASCII names. A second image is formatted the same way and populated
+# through the reference mount, which records whether a name is found in
+# another case. casefold.txt holds every step's outcome; nothing here
+# fails the build, and tests/oracle_casefold.rs fails if the set does not
+# hold a casefolded directory.
+echo "== casefold (--casefold)"
+cf_src="$work/casefold-src"
+python3 - "$cf_src" <<'PY'
+import os, sys
+root = sys.argv[1]
+def write(path, data):
+    full = os.path.join(root, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "wb") as f:
+        f.write(data)
+write("Hello.TXT", b"hello\n")
+write("lower.txt", b"lower\n")
+write("MiXeD/Inner.md", b"# inner\n")
+write("MiXeD/UPPER", b"upper\n")
+write("Straße.txt", "straße\n".encode())
+write("ÉCOLE/Fichier", b"fichier\n")
+for i in range(40):
+    write("Many/File-%02d.Txt" % i, b"file %d\n" % i)
+os.symlink("Hello.TXT", os.path.join(root, "Link"))
+PY
+{
+    cf_opt=
+    for opt in --casefold --casefold=1; do
+        echo "## format $opt --source"
+        truncate -s 64M "$out/casefold.img"
+        if bcachefs-ref format -q "$opt" --source="$cf_src" "$out/casefold.img" 2>&1; then
+            cf_opt="$opt"
+            break
+        fi
+        echo "exit $?"
+    done
+    if [ -n "$cf_opt" ]; then
+        manifest "$cf_src" "$out/casefold.json"
+        bcachefs-ref show-super "$out/casefold.img" >"$out/casefold.super.txt" 2>&1
+        for b in inodes dirents extents; do
+            bcachefs-ref list -b "$b" "$out/casefold.img" >"$out/casefold.$b.txt" 2>&1
+        done
+        bcachefs-ref list -b dirents -m nodes-ondisk "$out/casefold.img" \
+            >"$out/casefold.dirents.ondisk.txt" 2>&1 || echo "nodes-ondisk: exit $?"
+        echo "## fsck -n"
+        bcachefs-ref fsck -n "$out/casefold.img" >"$out/casefold.fsck.txt" 2>&1 &&
+            echo "fsck: clean" || echo "fsck: exit $?"
+
+        echo "## through the mount ($cf_opt)"
+        cf_img=/var/tmp/age/casefold-mount.img
+        rm -f "$ROOT$cf_img"
+        truncate -s 64M "$ROOT$cf_img"
+        bcachefs-ref format -q "$cf_opt" "$cf_img"
+        if (fuse_mount "$cf_img" rw,noatime "$work/fuse-casefold.log"); then
+            m="$ROOT$mnt"
+            printf 'mixed\n' >"$m/Hello.TXT"
+            mkdir "$m/MiXeD" && printf 'inner\n' >"$m/MiXeD/Inner.md"
+            for name in Hello.TXT HELLO.txt hello.txt MIXED/inner.MD; do
+                cat "$m/$name" >/dev/null 2>&1 && echo "lookup $name: found" ||
+                    echo "lookup $name: not found"
+            done
+            printf 'second\n' >"$m/HELLO.TXT" 2>&1 || echo "create HELLO.TXT: exit $?"
+            ls -la "$m" "$m/MiXeD"
+            sync
+            sleep 2
+            fuse_kill
+            bcachefs-ref fsck -y "$cf_img" >"$out/casefold-mount.replay.txt" 2>&1 ||
+                echo "replay: exit $?"
+            for b in inodes dirents; do
+                bcachefs-ref list -b "$b" "$cf_img" >"$out/casefold-mount.$b.txt" 2>&1 || true
+            done
+            cp --sparse=always "$ROOT$cf_img" "$out/casefold-mount.img"
+        else
+            echo "the reference implementation did not mount the casefold image"
+        fi
+    else
+        rm -f "$out/casefold.img"
+        echo "the formatter took neither --casefold nor --casefold=1"
+    fi
+} >"$out/casefold.txt" 2>&1 || echo "the casefold steps stopped: exit $?" >>"$out/casefold.txt"
+sed 's/^/casefold: /' "$out/casefold.txt"
 # The write study's before/after pairs (#20): its own script, its own
 # directory under fixtures/.
 bash /repo/scripts/guest-write-study.sh
