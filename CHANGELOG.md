@@ -134,6 +134,13 @@ API, a patch never does.
 - **An extent entry kind this reader cannot decode is refused by name**
   (crc128, stripe_ptr, flags, reconcile; #52), and a `bgcompress` fixture is
   built so a reconcile entry's layout can be observed.
+- **Reflinked data is refused by name** (#7): a `reflink_p` in the extents
+  btree is refused by the reader instead of reported as an unknown key type.
+  The checker reports it as `reflink` instead of passing it unread, and the
+  writer will not free it as if it were data. The fixture build tries every
+  route to a clone through the reference mount (FICLONE, FICLONERANGE,
+  `copy_file_range`, FIDEDUPERANGE). None makes a reflink. The reference
+  tool's `kvdb` key editor is the route left for learning the layout.
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both

@@ -304,6 +304,7 @@ impl<D: BlockRead> Filesystem<D> {
                     | crate::bkey::key_type::INLINE_DATA
                     | crate::bkey::key_type::RESERVATION
                     | crate::bkey::key_type::ERROR
+                    | crate::bkey::key_type::REFLINK_P
             ) {
                 if let Some(prev) = prev_end {
                     if k.start_offset() < prev {
@@ -343,6 +344,17 @@ impl<D: BlockRead> Filesystem<D> {
                     return Err(Error::Io(format!(
                         "inode {ino}, sectors {}..{}: the data was permanently lost (an `error` \
                          extent)",
+                        k.start_offset(),
+                        k.pos.offset
+                    )))
+                }
+                // Reflinked data is in the reflink btree, behind a pointer
+                // whose layout no reference image has shown (S1 9.1.6; open
+                // question 6): refused by name rather than misread (#7).
+                crate::bkey::key_type::REFLINK_P => {
+                    return Err(Error::Unsupported(format!(
+                        "inode {ino}, sectors {}..{}: reflinked data (a `reflink_p` into the \
+                         reflink btree), which this reader does not follow yet (#7)",
                         k.start_offset(),
                         k.pos.offset
                     )))

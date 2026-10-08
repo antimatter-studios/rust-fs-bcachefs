@@ -125,4 +125,49 @@ fn the_probe_image_is_refused_or_read_according_to_what_the_mount_honoured() {
         }
         Err(e) => panic!("{e}"),
     }
+
+    // Every other route to a clone (#7), from the inline file and from one
+    // too big to be inline: the destination reads as its source when the
+    // route worked, is empty when it failed, and is refused by name only
+    // if the route made a reflink, which the lister's view must then show.
+    let reflinked = lines_of("probe.extents.txt", "reflink_p") > 0;
+    let big: Vec<u8> = (0..65536u32).map(|i| (i * 7 + 3) as u8).collect();
+    let mut routes = Vec::new();
+    for (src, want) in [("file", b"probe\n".to_vec()), ("big", big.clone())] {
+        for (how, dst) in [("FICLONE", "ficlone"), ("FICLONERANGE", "range")] {
+            routes.push((
+                format!("clone via {how} ({src})"),
+                format!("{src}-{dst}"),
+                want.clone(),
+            ));
+        }
+        routes.push((
+            format!("clone via copy_file_range ({src})"),
+            format!("{src}-copied"),
+            want,
+        ));
+    }
+    routes.push((
+        "clone via FIDEDUPERANGE (big onto big-twin)".into(),
+        "big-twin".into(),
+        big.clone(),
+    ));
+    let path = |name: &str| format!("/sub/{name}");
+    assert_eq!(fs.read(fs.lookup(&path("big")).unwrap()).unwrap(), big);
+    for (title, dst, want) in routes {
+        let ok = probe_ok(&title).unwrap_or_else(|| panic!("probe.txt has no `## {title}`"));
+        eprintln!("probe: {title}: {}", if ok { "done" } else { "refused" });
+        let file = fs.lookup(&path(&dst)).unwrap();
+        match fs.read(file) {
+            Ok(data) if ok || dst == "big-twin" => {
+                assert!(data == want, "{dst} does not read as its source ({title})")
+            }
+            Ok(data) => assert!(data.is_empty(), "{title} failed but left data in {dst}"),
+            Err(Error::Unsupported(m)) if m.contains("reflink_p") => assert!(
+                reflinked,
+                "{dst} was refused as reflinked, and the lister shows no reflink_p"
+            ),
+            Err(e) => panic!("{dst} ({title}): {e}"),
+        }
+    }
 }

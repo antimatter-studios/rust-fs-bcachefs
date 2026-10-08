@@ -133,6 +133,10 @@ pub mod key_type {
     pub const INODE: u8 = 8;
     pub const DIRENT: u8 = 10;
     pub const XATTR: u8 = 11;
+    /// A pointer from the extents btree into the reflink btree (S1 9.1.6,
+    /// 11.5): the file's data is shared, and lives there. Its value's bit
+    /// layout is not known (docs/clean-room.md, open question 6).
+    pub const REFLINK_P: u8 = 15;
     pub const INLINE_DATA: u8 = 17;
     pub const BTREE_PTR_V2: u8 = 18;
     /// Per-bucket allocation metadata, current form (S1 11.5; layout in

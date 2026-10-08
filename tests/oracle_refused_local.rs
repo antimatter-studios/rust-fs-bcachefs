@@ -288,3 +288,51 @@ fn a_directory_hashed_with_another_string_hash_is_refused_by_the_writer_and_scan
         other => panic!("a name was placed in a directory with another hash: {other:?}"),
     }
 }
+
+#[test]
+fn a_reflink_pointer_is_refused_by_name_by_the_reader_the_checker_and_the_writer() {
+    let img = scratch("write-study/base.img", "reflink-p");
+    let inline = keys(&img, btree_id::EXTENTS)
+        .into_iter()
+        .find(|k| k.key_type == key_type::INLINE_DATA)
+        .expect("an inline extent in the fixture");
+    let ino = inline.pos.inode;
+    // The same range as a reflink copy leaves it (S1 9.1.6.2): a pointer
+    // into the reflink btree, which holds the data. No reference image has
+    // one (the reference mount does not reflink: tests/oracle_probes.rs),
+    // so the value's layout is unknown; two zero words stand in, and the
+    // refusal must not depend on reading them.
+    insert(
+        &img,
+        btree_id::EXTENTS,
+        Bkey {
+            key_type: key_type::REFLINK_P,
+            value: vec![0; 16],
+            ..inline
+        },
+    );
+
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.lookup("/d/existing").unwrap(), ino);
+    match fs.read(ino) {
+        Err(Error::Unsupported(m)) if m.contains("reflink_p") => {}
+        other => panic!(
+            "a reflink_p was not refused by name: {:?}",
+            other.map(|b| b.len())
+        ),
+    }
+    let dir = fs.lookup("/d").unwrap();
+    drop(fs);
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report.problems.iter().any(|p| p.kind == "reflink"),
+        "the checker did not name the reflink: {:?}",
+        report.problems
+    );
+    // Freeing it as data would leave the shared extent's refcount behind.
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    match w.unlink(dir, b"existing") {
+        Err(Error::Unsupported(m)) if m.contains("reflink_p") => {}
+        other => panic!("the writer freed a reflink_p as if it were data: {other:?}"),
+    }
+}

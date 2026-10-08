@@ -8,8 +8,9 @@
 //! link count against the entries that name it; every extent against its
 //! inode (it exists, the extent does not start past the end of the file,
 //! it does not overlap the extent before it); every data extent's checksum;
-//! and that every key is at the root inode's snapshot, since this checker
-//! reads one snapshot and knows nothing of the others. A filesystem not
+//! that every key is at the root inode's snapshot, since this checker
+//! reads one snapshot and knows nothing of the others; and it names every
+//! reflinked extent, whose shared data it does not follow. A filesystem not
 //! shut down cleanly is checked through the replay of its journal, as it
 //! would be read.
 //!
@@ -290,9 +291,23 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 ),
             );
         }
+        if k.key_type == key_type::REFLINK_P {
+            r.add(
+                "reflink",
+                format!(
+                    "extent {}: reflinked data (a `reflink_p`); reflinks are not checked, so \
+                     nothing below speaks for the data it points to (#7)",
+                    k.pos
+                ),
+            );
+        }
         if matches!(
             k.key_type,
-            key_type::EXTENT | key_type::INLINE_DATA | key_type::RESERVATION | key_type::ERROR
+            key_type::EXTENT
+                | key_type::INLINE_DATA
+                | key_type::RESERVATION
+                | key_type::ERROR
+                | key_type::REFLINK_P
         ) {
             if let Some((inode, snap, end)) = prev {
                 if inode == k.pos.inode && snap == k.pos.snapshot && k.start_offset() < end {
