@@ -579,10 +579,23 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    (`inode::FIELD_NAMES`, `InodeV3Raw::field`,
    tests/oracle_inode_fields.rs). What a non-zero option field does, and
    whether a new inode takes its parent's options, stays OPEN and cannot
-   be observed with the pinned reference: its mount refuses every
-   `bcachefs.*` option xattr, and the reference tool's `set-file-option`,
-   with "Operation not supported", so no image has an inode with options.
-   The writer leaves the option fields 0, as every inode seen has them.
+   be observed with the pinned reference, by any route tried (S3, S8):
+   - its mount refuses every `bcachefs.*` option xattr, and the reference
+     tool's `set-file-option`, with "Operation not supported";
+   - an option given to the formatter is not copied into any inode: every
+     inode of the lz4, zstd, gzip, crc64, xxhash and bgcompress sets has
+     its option fields 0, and of the casefold set too (`casefold: 1` in
+     the superblock, `bi_casefold=0` in every inode);
+   - mount options are filesystem-wide (S1 7.1), none per inode;
+   - the reference tool's offline key editor (`kvdb`, S1 6.12) edits an
+     inode only up to its fixed header in the pinned release: `update
+     inodes <pos> bi_compression=2` answers "bch_inode_v3 has no field
+     'bi_compression'" (write-study/kvdb-options.txt).
+   So no image has an inode with options. The writer leaves the option
+   fields 0, as every inode seen has them. One route is untried: this
+   crate's writer could store an option value in an inode, and the
+   reference mount, writing into that file, would show what the value
+   means (write, then judge, as the write path was learned).
 8. **Whiteouts and deleted keys across bsets**: SETTLED for what the aged
    image holds. Nodes of up to 78 bsets merge newest-bset-wins with deleted
    keys dropped, and the result equals the lister's keys exactly. A

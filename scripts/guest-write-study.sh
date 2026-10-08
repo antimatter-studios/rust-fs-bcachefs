@@ -228,6 +228,36 @@ mkdir "$M/o/sub"
 settle "$img" options
 dump "$img" options
 cp --sparse=always "$ROOT$img" "$out/options.img"
+
+# PER-INODE OPTIONS, OFFLINE (#81). The mount refuses the bcachefs.*
+# xattrs above; the reference tool's offline key editor (`kvdb`, S1 6.12)
+# is the other way S1 names to set an inode's fields by name. The pinned
+# one refuses them too: varint-packed values are editable only up to
+# their fixed header, and `update inodes <pos> bi_compression=2` answers
+# "bch_inode_v3 has no field 'bi_compression'" (CI run 37807307021). So
+# one file is made through the mount and settled, kvdb prints its inode
+# (how it names the fixed header's fields and flag bits) and is asked for
+# the option again. kvdb-options.txt records both; nothing here fails the
+# build: tests/oracle_inode_fields.rs reads the answer, and fails the day
+# the editor takes an option.
+echo "== write-study: kvdb-options"
+img="$work/kvdb-options.img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q "$img" >"$out/kvdb-options.format.txt" 2>&1
+mount_rw "$img"
+printf 'a file to give an option\n' >"$ROOT$mnt/own"
+ino="$(stat -c %i "$ROOT$mnt/own")"
+settle "$img" kvdb-options
+{
+    echo "## get inodes 0:$ino:4294967295"
+    echo "get inodes 0:$ino:4294967295" | timeout 120 bcachefs-ref kvdb "$img" 2>&1 ||
+        echo "exit $?"
+    echo "## update inodes 0:$ino:4294967295 bi_compression=2"
+    echo "update inodes 0:$ino:4294967295 bi_compression=2" |
+        timeout 120 bcachefs-ref kvdb --rw "$img" 2>&1 || echo "exit $?"
+} >"$out/kvdb-options.txt" 2>&1 || true
+grep -v '^\(Using\|starting\|  with\|recovering\|Journal\|going\|clean\|.*\.\.\. done\)' \
+    "$out/kvdb-options.txt" | sed 's/^/kvdb-options: /' || true
 # XATTR SLOTS (#77): two of aged's xattrs, the first set on a fresh file
 # and one set on a directory, are not at the SipHash slot the inode's
 # hash_seed gives. The same steps are taken here one mount each, settled

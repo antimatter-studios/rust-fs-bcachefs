@@ -1,9 +1,10 @@
 //! Every field of every inode (#81): the varints after `dev` hold per-inode
 //! options, and bits 32..35 of the flags word are copied by the writer
-//! unread. The write study's `options` image has options set through the
-//! reference mount (scripts/guest-write-study.sh); every inode of it and of
-//! every other dumped image is decoded here and compared, field by field,
-//! with the reference lister's `bi_<name>=value` lines.
+//! unread. The write study tries to set options through the reference
+//! mount (`options`) and its offline key editor (`kvdb-options`), and
+//! records that both refuse (scripts/guest-write-study.sh); every inode of
+//! every dumped image is decoded here and compared, field by field, with
+//! the reference lister's `bi_<name>=value` lines.
 
 mod common;
 
@@ -89,6 +90,25 @@ fn the_reference_mount_refuses_per_inode_options() {
             .iter()
             .all(|l| l.starts_with("error ") && l.contains("Operation not supported")),
         "options.txt:\n{text}"
+    );
+}
+
+/// OBSERVED: the reference tool's offline key editor, the other way S1
+/// names to set an inode's fields, edits an inode only up to its fixed
+/// header in the pinned release: asked for `bi_compression` it answers
+/// that `bch_inode_v3` has no such field. An editor that takes it fails
+/// this test, and the write study's `kvdb-options` step is where options
+/// are first seen.
+#[test]
+fn the_reference_offline_editor_cannot_set_per_inode_options_either() {
+    let text = read_text("write-study/kvdb-options.txt");
+    let update = text
+        .split("## update inodes ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("kvdb-options.txt has no update step:\n{text}"));
+    assert!(
+        update.contains("bch_inode_v3 has no field 'bi_compression'"),
+        "kvdb-options.txt:\n{text}"
     );
 }
 
