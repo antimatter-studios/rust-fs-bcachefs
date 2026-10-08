@@ -13,7 +13,13 @@ use std::collections::BTreeMap;
 use common::read_text;
 use fs_bcachefs::siphash::siphash24;
 
-const STEPS: &[&str] = &["xattr-first", "xattr-dir", "xattr-second", "xattr-together"];
+const STEPS: &[&str] = &[
+    "xattr-first",
+    "xattr-dir",
+    "xattr-second",
+    "xattr-together",
+    "xattr-lengths",
+];
 
 /// `inode -> hash_seed` in a step's inodes dump.
 fn seeds(step: &str) -> BTreeMap<u64, u64> {
