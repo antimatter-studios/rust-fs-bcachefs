@@ -515,8 +515,16 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
    reflink, xattrs, multiple devices and replicas**: not seen in any
    fixture. (inline_data: seen and read, see above.)
-7. **Varint fields beyond `dev`** (data_checksum ... casefold) are skipped,
-   and the meaning of flags bits 32..35 of an inode's flags word is unknown.
+7. **Varint fields beyond `dev`** (#81). Their names and order are
+   SETTLED (S3): every field of every inode of every dumped image decodes
+   to the value the lister prints as `bi_<name>`
+   (`inode::FIELD_NAMES`, `InodeV3Raw::field`,
+   tests/oracle_inode_fields.rs). What a non-zero option field does, and
+   whether a new inode takes its parent's options, stays OPEN and cannot
+   be observed with the pinned reference: its mount refuses every
+   `bcachefs.*` option xattr, and the reference tool's `set-file-option`,
+   with "Operation not supported", so no image has an inode with options.
+   The writer leaves the option fields 0, as every inode seen has them.
 8. **Whiteouts and deleted keys across bsets**: SETTLED for what the aged
    image holds. Nodes of up to 78 bsets merge newest-bset-wins with deleted
    keys dropped, and the result equals the lister's keys exactly. A
@@ -544,9 +552,11 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     The writer builds a new root's flags that way for any id. No write it
     makes yet needs a root for an id of 16 or more, so no such root has
     been judged by the reference checker.
-12. **Flags bits 32..35 of an inode** (3 in every inode seen) and the
-    accounting keys' versions: copied and left unchanged by the writer;
-    the reference checker accepts both.
+12. **Flags bits 32..35 of an inode** are 3 in every inode of every
+    dumped image (S4, tests/oracle_inode_fields.rs; #81); what they mean
+    is open, and the writer copies them from the parent, which keeps them
+    3. The accounting keys' versions are copied unchanged too; the
+    reference checker accepts both.
 15. **Two of the aged fixture's xattrs** (`user.on-a-directory`,
     `user.greeting`, the first set in the session) are not at the computed
     slot, and no candidate tried places them; the writer puts new ones at

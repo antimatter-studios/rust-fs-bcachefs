@@ -192,4 +192,40 @@ for step in 'collide-unlink|rm "$M/d/CBBF@MBKAAAAAAAA"' \
     dump "$img" "$name"
     cp --sparse=always "$ROOT$img" "$out/$name.img"
 done
+
+# PER-INODE OPTIONS (#81): the inode fields after dev hold per-inode
+# options, set through the mount as bcachefs.* xattrs. On a directory and
+# on a file, then a file created in the directory afterwards, to see what
+# a new inode takes from its parent. Each attempt's outcome goes to
+# options.txt (a refusal is a recorded answer); the image is dumped after.
+echo "== write-study: options"
+img="$work/options.img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q "$img" >"$out/options.format.txt" 2>&1
+mount_rw "$img"
+M="$ROOT$mnt"
+mkdir "$M/o"
+printf 'before the option\n' >"$M/o/before"
+printf 'a file with its own options\n' >"$M/own"
+python3 - "$M" >"$out/options.txt" 2>&1 <<'PY'
+import os, sys
+m = sys.argv[1]
+for path, name, value in [
+    ("o", "bcachefs.compression", "lz4"),
+    ("o", "bcachefs.background_compression", "zstd"),
+    ("own", "bcachefs.data_checksum", "crc64"),
+    ("own", "bcachefs.data_replicas", "1"),
+    ("own", "bcachefs.compression", "gzip"),
+]:
+    try:
+        os.setxattr(os.path.join(m, path), name, value.encode())
+        print(f"ok {path} {name}={value}")
+    except OSError as e:
+        print(f"error {path} {name}={value}: {e}")
+PY
+printf 'after the option\n' >"$M/o/after"
+mkdir "$M/o/sub"
+settle "$img" options
+dump "$img" options
+cp --sparse=always "$ROOT$img" "$out/options.img"
 rm -rf "${ROOT:?}$work"

@@ -333,7 +333,51 @@ pub struct InodeV3Raw {
 /// first.
 const TWO_VARINT_FIELDS: usize = 4;
 
+/// The single-varint fields after the four times, in the order they are
+/// stored and the reference lister prints them (`bi_<name>`). Checked by
+/// name against the lister for every inode of every dumped image
+/// (tests/oracle_inode_fields.rs, #81). A file stores 21 fields, through
+/// `dir_offset`; a directory 25, through `depth`; a missing field is 0.
+pub const FIELD_NAMES: &[&str] = &[
+    "uid",
+    "gid",
+    "nlink",
+    "generation",
+    "dev",
+    "data_checksum",
+    "compression",
+    "project",
+    "background_compression",
+    "data_replicas",
+    "promote_target",
+    "foreground_target",
+    "background_target",
+    "erasure_code",
+    "fields_set",
+    "dir",
+    "dir_offset",
+    "subvol",
+    "parent_subvol",
+    "nocow",
+    "depth",
+    "inodes_32bit",
+    "casefold",
+    "unused_ec_max_data_blocks",
+];
+
 impl InodeV3Raw {
+    /// The field named `name` (one of [`FIELD_NAMES`]), 0 when the inode
+    /// stores fewer fields; `None` for a name not in the list.
+    pub fn field(&self, name: &str) -> Option<u64> {
+        let i = FIELD_NAMES.iter().position(|&n| n == name)?;
+        Some(
+            self.varints
+                .get(2 * TWO_VARINT_FIELDS + i)
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+
     pub fn parse(v: &[u8]) -> Result<Self> {
         if v.len() < 48 {
             return Err(Error::Corrupt(
