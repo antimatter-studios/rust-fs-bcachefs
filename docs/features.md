@@ -83,8 +83,8 @@ reads back byte for byte through the reference implementation's mount
 | Colliding names (hash runs, whiteouts) | Experimental | Unreleased (#88) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Names in crc32c directories | Experimental | Unreleased (#88) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | A new btree root, any btree id | Experimental: no write needs an id of 16 and above yet | Unreleased (#92) | #80 | `oracle_node_flags.rs` |
-| A full btree node, rewritten or split | Upcoming: refused today | | #44 (PR #45) | |
-| Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: the nodes fill at once | | #44 | |
+| A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
+| Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: nodes split, but no test writes on such an image yet | | #44 | |
 | Compressed or non-crc32c data | Refused | | | |
 | Per-inode options | Unobservable | | #81 | |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |
