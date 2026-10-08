@@ -1,4 +1,5 @@
-//! `fs.bcachefs`: inspect a bcachefs image read-only.
+//! `fs.bcachefs`: inspect a bcachefs image, and (experimental, src/cli/
+//! fs_write.rs) change it.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -21,6 +22,10 @@ pub const TOOL: Tool = Tool {
 };
 
 fn command() -> Cmd {
+    super::fs_write::subcommands(read_command())
+}
+
+fn read_command() -> Cmd {
     Cmd::new("fs.bcachefs")
         .about("Inspect a bcachefs image or device read-only, without mounting it")
         .arg(
@@ -57,6 +62,11 @@ fn command() -> Cmd {
 
 fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
     let target = m.get_one::<OsString>("target").expect("required");
+    if let Some((verb, sub)) = m.subcommand() {
+        if let Some(r) = super::fs_write::run(target, verb, sub) {
+            return r;
+        }
+    }
     let dev = FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?;
     match m.subcommand() {
         Some(("info", _)) => {

@@ -96,9 +96,17 @@ impl<D: BlockDevice> Writer<D> {
         let sb = Superblock::read(&dev)?;
         if !sb.is_clean() {
             return Err(Error::Unsupported(
-                "the filesystem was not cleanly unmounted: writing needs a clean one".into(),
+                "the filesystem was not cleanly unmounted: writing in place needs a clean one \
+                 (Writer::open_journalled continues its journal)"
+                    .into(),
             ));
         }
+        Self::open_any(dev, sb)
+    }
+
+    /// A writer whatever the clean bit says; the caller decides what an
+    /// unclean filesystem allows.
+    fn open_any(dev: D, sb: Superblock) -> Result<Self> {
         if sb.field(2).is_some() || sb.nr_devices != 1 {
             return Err(Error::Unsupported(
                 "writing needs a single-device, unencrypted filesystem".into(),

@@ -4,6 +4,7 @@
 //! `cli` feature); `fs` is the tool itself.
 
 mod fs;
+mod fs_write;
 mod fsck;
 
 use fs_core::cli;

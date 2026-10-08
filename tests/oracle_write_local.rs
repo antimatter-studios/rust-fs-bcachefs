@@ -522,3 +522,29 @@ fn full_nodes_are_rewritten_and_split() {
     );
     assert!(fs.read(fs.lookup("/d/big9").unwrap()).unwrap() == big);
 }
+
+/// A journal left for replay is continued by the next writer, and one
+/// replay applies both sessions.
+#[test]
+fn a_journal_left_for_replay_is_continued() {
+    let img = scratch("write-study/base.img", "local-continue");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(d, b"first", b"one\n", 0o644).unwrap();
+    drop(w);
+    assert!(
+        Writer::open(FileDevice::open_rw(&img).unwrap()).is_err(),
+        "in place on an unreplayed journal"
+    );
+    let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(d, b"second", b"two\n", 0o644).unwrap();
+    w.unlink(d, b"existing").unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.read(fs.lookup("/d/first").unwrap()).unwrap(), b"one\n");
+    assert_eq!(fs.read(fs.lookup("/d/second").unwrap()).unwrap(), b"two\n");
+    assert!(fs.lookup("/d/existing").is_err());
+}

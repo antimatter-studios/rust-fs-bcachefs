@@ -672,3 +672,30 @@ fn full_nodes_rewritten_and_split_pass_the_reference() {
         assert!(std::fs::read(m.join("d/big9")).unwrap() == big);
     });
 }
+
+/// Two journalled sessions, the second continuing the journal the first
+/// left for replay: the reference replays both and finds nothing to fix.
+#[test]
+fn a_continued_journal_is_replayed_by_the_reference() {
+    let img = scratch("write-study/base.img", "continue");
+    let d = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(d, b"first", b"one\n", 0o644).unwrap();
+    drop(w);
+    let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(d, b"second", &pattern(70_000, 5), 0o644)
+        .unwrap();
+    w.unlink(d, b"existing").unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    let (ok, text) = reference(&["fsck", "-y", img.to_str().unwrap()]);
+    assert!(ok, "the reference's replay failed:\n{text}");
+    with_reference_mount(&img, |m| {
+        assert_eq!(std::fs::read(m.join("d/first")).unwrap(), b"one\n");
+        assert!(std::fs::read(m.join("d/second")).unwrap() == pattern(70_000, 5));
+        assert!(!m.join("d/existing").exists());
+    });
+}

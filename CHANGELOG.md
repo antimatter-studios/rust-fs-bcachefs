@@ -74,7 +74,10 @@ API, a patch never does.
   reference replays, so an interrupted write is recovered whole or not at
   all; `symlink`, `link`, `set_attributes`, `set_xattr` and
   `remove_xattr` round it out. Full btree nodes are rewritten or split into
-  fresh buckets. Every image it writes in the tests passes the
+  fresh buckets. `Writer::open_journalled` continues a journal left for
+  replay, and `fs.bcachefs` carries the write verbs (`put`, `mkdir`, `rm`,
+  `rmdir`, `mv`, `ln`, `chmod`, `chown`, `setfattr`, `rmfattr`), marked
+  experimental, with `--journal`. Every image it writes in the tests passes the
   reference checker and reads back through the reference implementation.
 - **`Filesystem::read_range`** (#57): a window of a file, reading only the
   extents that cover it; `fs_bcachefs_read_file` uses it, so a C consumer
