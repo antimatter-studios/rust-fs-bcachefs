@@ -423,6 +423,28 @@ kvdb_img=/var/tmp/age/probe-kvdb.img
     bcachefs-ref fsck -n "$kvdb_img" 2>&1 || echo "exit $?"
     echo "## the lister's snapshots on the copy"
     bcachefs-ref list -b snapshots "$kvdb_img" 2>&1 || echo "exit $?"
+    # The first attempt's checker named what a snapshot needs: a parent
+    # that names it as a child, tree and depth that agree, a state. So a
+    # whole snapshot, in the shape S1 (9.4.2) describes: the root snapshot
+    # becomes an interior node with two leaves, one per subvolume, and a
+    # second subvolume holds the other leaf. One command per run of the
+    # editor, so the first refusal does not hide the rest.
+    cp --sparse=always "$ROOT$probe_img" "$ROOT$kvdb_img"
+    for c in \
+        "set snapshots 0:4294967294:0 snapshot parent=4294967295 subvol=1 tree=1 depth=1 state=live" \
+        "set snapshots 0:4294967293:0 snapshot parent=4294967295 subvol=2 tree=1 depth=1 state=live" \
+        "update snapshots 0:4294967295:0 children[0]=4294967294 children[1]=4294967293 subvol=0" \
+        "update subvolumes 0:1:0 snapshot=4294967294" \
+        "set subvolumes 0:2:0 subvolume root=4096 snapshot=4294967293 creation_parent=1 fs_parent=1"; do
+        echo "## kvdb --rw: $c"
+        timeout 120 bcachefs-ref kvdb --rw "$kvdb_img" -c "$c" 2>&1 | grep -v -E '^(Using|starting|  with|recovering|Journal keys|[a-z_]+\.\.\. done|going read-write|clean shutdown)' || true
+    done
+    echo "## kvdb read-only, after: the keys, and the root inode as each leaf sees it"
+    timeout 120 bcachefs-ref kvdb "$kvdb_img" -c "list subvolumes" -c "list snapshots" \
+        -c "list snapshot_trees" -c "snapshot 4294967293" -c "get -k inodes 0:4096" \
+        -c "snapshot 4294967294" -c "get -k inodes 0:4096" 2>&1 || echo "exit $?"
+    echo "## the reference checker on the whole snapshot"
+    bcachefs-ref fsck -n "$kvdb_img" 2>&1 | tail -n 40 || true
 } > "$out/probe.kvdb.txt" 2>&1
 rm -f "$ROOT$kvdb_img"
 bcachefs-ref show-super "$probe_img" > "$out/probe.super.txt" 2>&1 || true
