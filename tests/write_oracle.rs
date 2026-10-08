@@ -614,3 +614,45 @@ fn links_attributes_and_xattrs_are_read_by_the_reference() {
         assert!(!text.contains("user.shape"), "{text}");
     });
 }
+
+/// Xattrs with names of 8 bytes and more (#77): the reference does not put
+/// these at the SipHash slot this writer computes. Set here, the reference
+/// checker must pass the image and the reference mount must read them back
+/// by name; if it cannot, the writer must refuse such names.
+#[test]
+fn long_xattr_names_set_here_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "long-xattrs");
+    let existing = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d/existing").unwrap()
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.set_xattr(existing, b"user.greeting", b"hello").unwrap();
+    w.set_xattr(existing, b"user.on-a-directory", b"dir")
+        .unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |_| {
+        for (name, value) in [("user.greeting", "hello"), ("user.on-a-directory", "dir")] {
+            // By name, so the reference looks the xattr up rather than
+            // listing every one.
+            let out = Command::new("chroot")
+                .args([
+                    REF_ROOT,
+                    "getfattr",
+                    "-n",
+                    name,
+                    "--absolute-names",
+                    &format!("{MNT}/d/existing"),
+                ])
+                .output()
+                .expect("chroot into the reference tools' root");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                text.contains(&format!("{name}=\"{value}\"")),
+                "{name}: {text}"
+            );
+        }
+    });
+}

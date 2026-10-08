@@ -15,6 +15,27 @@
 use crate::bkey::{key_type, Bkey};
 use crate::error::{Error, Result};
 
+/// An xattr's offset in its inode's run of the xattrs btree: SipHash-2-4
+/// keyed `(hash_seed, 0)` over the namespace byte then the name, shifted
+/// right by one, except that when that message is longer than 8 bytes and
+/// not a whole number of 8-byte words, its final partial word is a zero
+/// byte followed by all but the last of its bytes, so the message's last
+/// byte is not hashed. INFERRED (#77) from one xattr of every name length
+/// from 1 to 24 set through the reference mount, and checked against every
+/// xattr of the write study's xattr images and all 45 of `aged`
+/// (tests/oracle_xattr_slots.rs, docs/clean-room.md).
+pub fn name_slot(hash_seed: u64, namespace: u8, name: &[u8]) -> u64 {
+    let mut msg = Vec::with_capacity(1 + name.len());
+    msg.push(namespace);
+    msg.extend_from_slice(name);
+    let (whole, tail) = (msg.len() / 8 * 8, msg.len() % 8);
+    if msg.len() > 8 && tail != 0 {
+        msg.insert(whole, 0);
+        msg.pop();
+    }
+    crate::siphash::siphash24(hash_seed, 0, &msg) >> 1
+}
+
 /// One extended attribute: its full name, namespace prefix included
 /// (`user.greeting`), and its value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +89,45 @@ impl Xattr {
 mod tests {
     use super::*;
     use crate::bkey::Bpos;
+
+    #[test]
+    fn name_slots_are_the_offsets_the_lister_showed() {
+        // The write study's xattr images: the seed, then the offset the
+        // lister printed (user namespace, 0).
+        for (seed, name, offset) in [
+            // A 7-byte message: hashed as it is.
+            (
+                0xc4a6_d082_99d7_882e_u64,
+                &b"kkkkkk"[..],
+                6_920_644_051_664_158_609,
+            ),
+            // 9 bytes: the last is not hashed.
+            (
+                0x4048_1ff5_c1b3_7408,
+                b"greeting",
+                5_470_492_547_012_498_347,
+            ),
+            // 15 bytes: a zero, then "rector" without the final "y".
+            (
+                0xa7cf_829b_18ef_4f8a,
+                b"on-a-directory",
+                8_914_961_747_488_599_387,
+            ),
+            // 16 bytes, two whole words: hashed as it is.
+            (
+                0xc4a6_d082_99d7_882e,
+                b"kkkkkkkkkkkkkkk",
+                6_418_509_822_616_553_518,
+            ),
+        ] {
+            assert_eq!(
+                name_slot(seed, 0, name),
+                offset,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
 
     fn key(value: Vec<u8>) -> Bkey {
         Bkey {

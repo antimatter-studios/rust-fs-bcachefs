@@ -1146,17 +1146,12 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// The xattr key of `name` on inode `ino`: at SipHash-2-4 of the
-    /// namespace byte and the name, keyed with the inode's hash seed and 0,
-    /// shifted right by one (S4: 43 of the aged fixture's 45 xattrs sit
-    /// there; open question 15 for the other two).
+    /// The xattr key of `name` on inode `ino`: at
+    /// [`crate::xattr::name_slot`] of its namespace byte and name.
     fn xattr_pos(&self, i: &InodeRef, ns: u8, name: &[u8]) -> Bpos {
-        let mut msg = Vec::with_capacity(1 + name.len());
-        msg.push(ns);
-        msg.extend_from_slice(name);
         pos(
             i.key.pos.offset,
-            crate::siphash::siphash24(i.raw.hash_seed, 0, &msg) >> 1,
+            crate::xattr::name_slot(i.raw.hash_seed, ns, name),
         )
     }
 
