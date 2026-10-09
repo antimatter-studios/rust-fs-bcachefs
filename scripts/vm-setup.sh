@@ -175,7 +175,20 @@ if [ "$(cat /etc/ref-kernel-version 2>/dev/null || true)" != "$KERNEL_BUILD" ]; 
     else
         grub-install --target=i386-pc "$disk" 2>&1 | tail -n 3
     fi
+    # THE HANDOVER, as the boot that works makes it. A throwaway CI probe
+    # (ci/probe-kernel-boot, run 37950834442) booted this same kernel and
+    # its initramfs under KVM with -cpu host, loaded straight by QEMU: it
+    # ran /init and started udev. So the kernel boots here; what resets is
+    # GRUB's handover on this BIOS disk, with a 51 MB initramfs. The
+    # initramfs is cut to what this machine needs, and GRUB loads both with
+    # the 16-bit boot protocol, as QEMU's direct boot does.
+    echo 'MODULES=dep' >/etc/initramfs-tools/conf.d/rust-fs-bcachefs-modules
+    update-initramfs -u -k "$kver" >/dev/null 2>&1
+    ls -l "/boot/vmlinuz-$kver" "/boot/initrd.img-$kver"
     update-grub >/dev/null 2>&1
+    sed -i -E 's/^([[:space:]]*)linux([[:space:]])/\1linux16\2/; s/^([[:space:]]*)initrd([[:space:]])/\1initrd16\2/' \
+        /boot/grub/grub.cfg
+    grep -m 2 -E '^[[:space:]]*(linux16|initrd16)' /boot/grub/grub.cfg | cut -c1-120
     install -d /etc/systemd/network
     printf '[Match]\nName=eth0 en*\n\n[Network]\nDHCP=yes\n' >/etc/systemd/network/10-guest.network
     systemctl enable systemd-networkd >/dev/null 2>&1
