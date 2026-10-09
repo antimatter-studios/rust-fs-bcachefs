@@ -7,6 +7,9 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # The merge queue's run on main plus the queued pull requests: the run
+  # that decides whether they land.
+  merge_group:
   # Callable so release.yml runs THIS gate rather than a copy of it.
   workflow_call:
 
@@ -22,11 +25,14 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
-  # Does this change need the full pipeline? On a pull request, rust-fs-core's
-  # scripts/code-changed.sh reads its paths and says false only when every one
-  # is documentation; on a push or a tag the answer is always true. The jobs
-  # that boot the VM or read its fixtures run only when it is true, and ci-ok
-  # accepts their skip when, and only when, it is false.
+  # Does this change need the full pipeline? rust-fs-core's
+  # scripts/code-changed.sh reads the change's paths and says false only when
+  # every one is documentation. The change is the pull request's diff, the
+  # merge queue group's (its base_sha to its head_sha: what the queue is
+  # about to land), or a push to main's (before to after). A tag, a release
+  # calling this workflow, or a push it cannot diff runs everything. The
+  # jobs that boot the VM or read its fixtures run only when the answer is
+  # true, and ci-ok accepts their skip when, and only when, it is false.
   changes:
     name: changes (does this need the full pipeline?)
     runs-on: ubuntu-24.04
@@ -44,17 +50,35 @@ jobs:
         id: c
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" = pull_request ]; then
-            git diff --name-only "$BASE...$HEAD" | tee changed.txt
+          range=
+          case "$EVENT" in
+            pull_request) range="$PR_BASE...$PR_HEAD" ;;
+            merge_group) range="$MQ_BASE...$MQ_HEAD" ;;
+            push)
+              case "$REF" in
+                refs/heads/*)
+                  if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ] &&
+                    git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+                    range="$PUSH_BEFORE...$PUSH_AFTER"
+                  fi ;;
+              esac ;;
+          esac
+          if [ -n "$range" ]; then
+            git diff --name-only "$range" | tee changed.txt
             code="$(bash ../rust-fs-core/scripts/code-changed.sh < changed.txt)"
           else
             code=true
           fi
-          echo "code=$code"
+          echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
   unit:
