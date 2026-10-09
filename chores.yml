@@ -87,7 +87,11 @@ tasks:
       # pointers, ranged reads, cursor end, strhash, probes, bgcompress,
       # refusals), about eight lines each: 300 lines / 20000 bytes leaves
       # room for a cold runner's Compiling lines on top of that.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 300 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
+      # MEASURED 2026-10-09, CI run 37924323574 (#126, casefold): 317 lines /
+      # 14165 bytes, 21 of them Compiling lines. The open pull requests add
+      # about five more oracle binaries (eight lines each): 400 lines leaves
+      # room for them and a colder runner; bytes stay well inside 20000.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 400 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
   test:scripts:
