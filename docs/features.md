@@ -84,6 +84,7 @@ reads back byte for byte through the reference implementation's mount
 | Buckets freed in a session used again by its later writes | Experimental | Unreleased (#133) | buckets of generation 16 or more wait (#132) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | Unreleased (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | Unreleased (#37) | | `write_oracle.rs` |
+| Journal reclaim: a full journal is written into the nodes in place and the session goes on | Experimental | Unreleased (#125) | refused when a continued journal has no clean field or holds interior node keys (#113) | `oracle_write_local.rs`, `write_oracle.rs` |
 | A journal left for replay is continued by the next writing session (`Writer::open_journalled`) | Experimental | Unreleased (#46) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | A session longer than its journal: the entry that does not fit is refused, so nothing a replay needs is overwritten | Refused | Unreleased (#112) | #113 (journal reclaim) | `oracle_write_local.rs` |
 | Symlinks, hard links, mode and owner | Experimental | Unreleased (#43) | | `write_oracle.rs` |
