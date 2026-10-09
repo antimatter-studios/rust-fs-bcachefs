@@ -1010,3 +1010,73 @@ fn nodes_split_where_nodes_are_smaller_than_buckets() {
         400,
     );
 }
+
+/// A read/write device that counts its reads (#108).
+struct CountingRw {
+    inner: FileDevice,
+    reads: std::sync::atomic::AtomicU64,
+}
+
+impl fs_core::BlockRead for CountingRw {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fs_core::BlockRead::read_at(&self.inner, offset, buf)
+    }
+    fn size_bytes(&self) -> u64 {
+        fs_core::BlockRead::size_bytes(&self.inner)
+    }
+}
+
+impl fs_core::BlockDevice for CountingRw {
+    fn write_at(&self, offset: u64, buf: &[u8]) -> fs_core::Result<()> {
+        fs_core::BlockDevice::write_at(&self.inner, offset, buf)
+    }
+    fn flush(&self) -> fs_core::Result<()> {
+        fs_core::BlockDevice::flush(&self.inner)
+    }
+    fn is_writable(&self) -> bool {
+        true
+    }
+}
+
+/// A create in the `large` image's directory of 30000 names (#108) reads
+/// the nodes on its keys' paths, not whole btrees: fewer reads than one
+/// walk of the dirents and inodes btrees takes.
+#[test]
+fn a_create_reads_paths_not_whole_btrees() {
+    use fs_bcachefs::{btree, superblock::Superblock};
+    let img = scratch("large.img", "cursor-create");
+    let whole = {
+        let dev = CountingRw {
+            inner: FileDevice::open(&img).unwrap(),
+            reads: Default::default(),
+        };
+        let sb = Superblock::read(&dev).unwrap();
+        let before = dev.reads.load(std::sync::atomic::Ordering::Relaxed);
+        for id in [btree::btree_id::DIRENTS, btree::btree_id::INODES] {
+            btree::walk(&dev, &sb, id).unwrap();
+        }
+        dev.reads.load(std::sync::atomic::Ordering::Relaxed) - before
+    };
+    let wide = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/wide")
+        .unwrap();
+    let dev = CountingRw {
+        inner: FileDevice::open_rw(&img).unwrap(),
+        reads: Default::default(),
+    };
+    let mut w = Writer::open(dev).unwrap();
+    let opened = w.device().reads.load(std::sync::atomic::Ordering::Relaxed);
+    let f = w.create_file(wide, b"new-entry", b"new\n", 0o644).unwrap();
+    let create = w.device().reads.load(std::sync::atomic::Ordering::Relaxed) - opened;
+    drop(w);
+    assert!(
+        create < whole,
+        "one create took {create} reads; one walk of the dirents and inodes btrees takes {whole}"
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.lookup("/wide/new-entry").unwrap(), f);
+    assert_eq!(fs.read(f).unwrap(), b"new\n");
+}
