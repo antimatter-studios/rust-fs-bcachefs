@@ -822,3 +822,32 @@ fn colliding_xattrs_set_here_are_read_by_the_reference() {
         }
     });
 }
+
+/// Writes into part of a file, an append and truncations (#102): the
+/// reference checker passes the image and the reference mount reads the
+/// bytes the model says.
+#[test]
+fn ranged_writes_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "ranged");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut model = pattern(70_000, 3);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let f = w.create_file(d, b"ranged", &model, 0o644).unwrap();
+    w.write_at(f, 1000, &[b'a'; 300]).unwrap();
+    model[1000..1300].fill(b'a');
+    w.write_at(f, 80_000, b"past the end").unwrap();
+    model.resize(80_000, 0);
+    model.extend_from_slice(b"past the end");
+    w.append(f, b"appended").unwrap();
+    model.extend_from_slice(b"appended");
+    w.truncate(f, 75_000).unwrap();
+    model.truncate(75_000);
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(std::fs::read(m.join("d/ranged")).unwrap() == model);
+    });
+}
