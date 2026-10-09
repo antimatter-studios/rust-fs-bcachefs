@@ -22,6 +22,41 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  # Does this change need the full pipeline? On a pull request, rust-fs-core's
+  # scripts/code-changed.sh reads its paths and says false only when every one
+  # is documentation; on a push or a tag the answer is always true. The jobs
+  # that boot the VM or read its fixtures run only when it is true, and ci-ok
+  # accepts their skip when, and only when, it is false.
+  changes:
+    name: changes (does this need the full pipeline?)
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Classify the change
+        id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only "$BASE...$HEAD" | tee changed.txt
+            code="$(bash ../rust-fs-core/scripts/code-changed.sh < changed.txt)"
+          else
+            code=true
+          fi
+          echo "code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   unit:
     name: unit (no tools, no fixtures)
     runs-on: ubuntu-24.04
@@ -102,6 +137,8 @@ jobs:
   # half an hour, not ninety minutes (#94's runs hung until 90).
   fixtures:
     name: fixtures (harness VM, x86_64 KVM)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -487,16 +524,20 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
+    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
+          # false only for a pull request that changes documentation alone:
+          # then, and only then, a skipped job is not a failed one.
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           set -euo pipefail
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          echo "code changed: $CODE"
+          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
           if [ -n "$bad" ]; then
             echo "::error::not green: $bad (failed, cancelled or skipped)"
             exit 1
