@@ -131,6 +131,13 @@ API, a patch never does.
   behind #12, #54 and #7 turn a test red the first time the reference
   implementation honours one of them, and `tests/oracle_bgcompress.rs` does
   the same for an extent entry kind this reader cannot decode (#52).
+- **Casefolded directories are read** (#54). The formatter makes them
+  with `--casefold` although the reference mount refuses to set the
+  option on a directory, and a `casefold` fixture shows their entries:
+  the name as given and its folded form, with their lengths. Listings
+  give the names as stored. A lookup finds an ASCII name in any case, as
+  the reference mount does, and any other name as stored (#111). The
+  writer refuses to change a casefolded directory.
 - **An extent entry kind this reader cannot decode is refused by name**
   (crc128, stripe_ptr, flags, reconcile; #52), and a `bgcompress` fixture is
   built so a reconcile entry's layout can be observed.
