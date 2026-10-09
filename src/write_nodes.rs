@@ -67,10 +67,13 @@ impl<D: BlockDevice> Writer<D> {
         }
         let bucket_sectors = self.bucket_sectors()?;
         let node_sectors = u64::from(self.sb.btree_node_size());
-        if node_sectors != bucket_sectors {
-            return Err(Error::Unsupported(
-                "btree nodes that do not fill their bucket exactly".into(),
-            ));
+        // One node per bucket, at its start (#109). A node smaller than its
+        // bucket leaves the rest of it unused, which the bucket's alloc key
+        // and the accounting record (count_btree_bucket: the device's btree
+        // buckets less what their nodes use). The formatter requires the
+        // bucket to be at least the node size.
+        if node_sectors > bucket_sectors {
+            return Err(Error::Corrupt("btree nodes larger than a bucket".into()));
         }
         let block = (self.sb.block_size as usize * 512).max(512);
         // A template: the extents btree's root node, for the header flags
