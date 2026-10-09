@@ -740,3 +740,36 @@ fn a_create_over_a_taken_inode_number_is_read_by_the_reference() {
         }
     });
 }
+
+/// A rename over an existing name and a directory moved into another one
+/// (#104): the reference checker passes the image and the reference mount
+/// reads the result.
+#[test]
+fn rename_over_and_directory_moves_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "rename-move");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(d, b"other", b"other\n", 0o644).unwrap();
+    w.rename(d, b"other", d, b"existing")
+        .unwrap_or_else(|e| panic!("rename over existing: {e}"));
+    let a = w.mkdir(d, b"a", 0o755).unwrap();
+    let b = w.mkdir(d, b"b", 0o755).unwrap();
+    let x = w.mkdir(a, b"x", 0o755).unwrap();
+    w.create_file(x, b"f", b"in x\n", 0o644).unwrap();
+    w.rename(a, b"x", b, b"x")
+        .unwrap_or_else(|e| panic!("move a directory: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert_eq!(std::fs::read(m.join("d/existing")).unwrap(), b"other\n");
+        assert!(!m.join("d/other").exists());
+        assert_eq!(std::fs::read(m.join("d/b/x/f")).unwrap(), b"in x\n");
+        assert!(!m.join("d/a/x").exists());
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(m.join("d/a")).unwrap().nlink(), 2);
+        assert_eq!(std::fs::metadata(m.join("d/b")).unwrap().nlink(), 3);
+    });
+}

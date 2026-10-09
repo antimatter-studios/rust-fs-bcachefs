@@ -994,7 +994,9 @@ impl<D: BlockDevice> Writer<D> {
         self.remove(parent, name, true)
     }
 
-    /// Move `name` in `from` to `to_name` in `to`, which must not exist.
+    /// Move `name` in `from` to `to_name` in `to`. A file already at
+    /// `to_name` is replaced, as rename(2) replaces it; a directory may move
+    /// to another directory.
     pub fn rename(&mut self, from: u64, name: &[u8], to: u64, to_name: &[u8]) -> Result<()> {
         valid_name(name)?;
         valid_name(to_name)?;
@@ -1005,27 +1007,65 @@ impl<D: BlockDevice> Writer<D> {
         let d = crate::inode::Dirent::from_key(&dirent)?;
         let dst = self.dir(to)?;
         let (at, existing, taken) = self.dirent(&dst, to_name)?;
-        if existing.is_some() {
-            return Err(Error::Unsupported(
-                "renaming over an existing name is not implemented".into(),
-            ));
-        }
         let mut i = self.inode(d.inum)?;
         if i.is_dir() && from != to {
-            return Err(Error::Unsupported(
-                "moving a directory to another directory is not implemented".into(),
-            ));
+            // Not into itself or below it, as rename(2) refuses: walk up
+            // from the new parent by each directory's bi_dir.
+            let mut up = to;
+            while up != 0 {
+                if up == d.inum {
+                    return Err(Error::Corrupt(
+                        "a directory cannot move into itself or below it".into(),
+                    ));
+                }
+                up = self.inode(up)?.raw.varints[field::DIR];
+            }
         }
         let now = self.now();
         let mut t = Txn::default();
+        // The name it replaces (S8, the write study's rename-over): the
+        // dirent keeps its slot and names the moved inode, and the inode it
+        // named, with no other link, is deleted with its extents.
+        let replaced = match &existing {
+            Some(k) => {
+                let r = crate::inode::Dirent::from_key(k)?.inum;
+                if r == d.inum {
+                    return Ok(());
+                }
+                let ri = self.inode(r)?;
+                if ri.is_dir() || i.is_dir() {
+                    return Err(Error::Unsupported(
+                        "renaming over a directory, or a directory over a file, is not implemented"
+                            .into(),
+                    ));
+                }
+                Some(ri)
+            }
+            None => None,
+        };
         self.remove_dirent(&mut t, &dirent)?;
         t.put(
             ids::DIRENTS,
-            taken.as_ref(),
+            existing.as_ref().or(taken.as_ref()),
             Self::dirent_key(at, to_name, d.inum, d.d_type),
         );
+        if let Some(mut ri) = replaced {
+            if ri.raw.varints[field::NLINK] > 0 {
+                let old = ri.key.clone();
+                ri.raw.varints[field::NLINK] -= 1;
+                ri.raw.varints[field::CTIME] = now;
+                ri.raw.journal_seq = self.journal_seq;
+                t.put(ids::INODES, Some(&old), ri.rekey());
+            } else {
+                let extents = self.extents_of(ri.key.pos.offset)?;
+                self.free_extents(ri.key.pos.offset, &extents, &mut t)?;
+                t.delete(ids::INODES, &ri.key);
+                t.inodes(-1);
+            }
+        }
         // The inode names its dirent (S8: rename changed bi_dir_offset and
-        // the inode's ctime).
+        // the inode's ctime; move-dir changed bi_dir too).
+        let moves_dir = i.is_dir() && from != to;
         let old = i.key.clone();
         i.raw.varints[field::DIR] = to;
         i.raw.varints[field::DIR_OFFSET] = at.offset;
@@ -1040,6 +1080,13 @@ impl<D: BlockDevice> Writer<D> {
             let mut p = self.dir(dir)?;
             let old = p.key.clone();
             self.touch(&mut p, now);
+            // A directory's bi_nlink counts its subdirectories (S8,
+            // move-dir: the old parent's fell by one, the new one's rose).
+            if moves_dir && dir == from {
+                p.raw.varints[field::NLINK] = p.raw.varints[field::NLINK].saturating_sub(1);
+            } else if moves_dir {
+                p.raw.varints[field::NLINK] += 1;
+            }
             t.put(ids::INODES, Some(&old), p.rekey());
         }
         self.commit(t)

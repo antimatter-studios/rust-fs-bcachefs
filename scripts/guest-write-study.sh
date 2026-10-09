@@ -119,6 +119,10 @@ ops=(
     'rename|mv "$M/d/existing" "$M/d/renamed"'
     'truncate|truncate -s 0 "$M/d/existing"'
     'overwrite|printf "changed\n" > "$M/d/existing"'
+    # #104: a file renamed over an existing one, and a directory (with a
+    # file in it) moved into another directory.
+    'rename-over|printf "other\n" > "$M/d/other" && sync && mv "$M/d/other" "$M/d/existing"'
+    'move-dir|mkdir -p "$M/d/a/x" "$M/d/b" && printf "in x\n" > "$M/d/a/x/f" && sync && mv "$M/d/a/x" "$M/d/b/x"'
 )
 for entry in "${ops[@]}"; do
     name="${entry%%|*}"
