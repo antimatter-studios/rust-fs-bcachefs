@@ -87,3 +87,34 @@ fn every_xattr_sits_at_its_slot() {
     assert!(n >= 60, "only {n} xattrs");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// On a crc32c image (#106), every xattr sits at its crc32c slot, or, when
+/// names collide, in the run after it: the four colliding names share one
+/// slot and take consecutive offsets in the order they were set.
+#[test]
+fn crc32c_xattrs_sit_at_their_slot_or_in_its_run() {
+    let mut wrong = Vec::new();
+    let mut n = 0;
+    for step in ["xcollide", "xcollide-remove", "xcollide-reset"] {
+        let dump = format!("write-study/{step}");
+        let now = seeds(&dump);
+        for (ino, off, ns, name) in xattrs(&dump) {
+            n += 1;
+            let h = fs_bcachefs::xattr::slot(
+                fs_bcachefs::inode::HASH_TYPE_CRC32C,
+                now[&ino],
+                ns,
+                name.as_bytes(),
+            )
+            .unwrap();
+            if off < h || off - h >= 8 {
+                wrong.push(format!(
+                    "{dump}: inode {ino} {name} ({} bytes) at {off}; slot {h}",
+                    name.len()
+                ));
+            }
+        }
+    }
+    assert!(n >= 80, "only {n} xattrs");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

@@ -739,3 +739,46 @@ fn a_directory_cannot_move_below_itself() {
         "refused, but written"
     );
 }
+
+/// The names that collide under crc32c (tests/oracle_collisions.rs), as
+/// xattr names on a crc32c image (#106): all four are set, the second is
+/// removed and set again, and every one reads back by name.
+#[test]
+fn colliding_xattrs_on_a_crc32c_image_read_back() {
+    let img = scratch("write-study/collide.img", "xcollide");
+    let f = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d/plain")
+        .unwrap();
+    let names: Vec<String> = COLLIDING[..4].iter().map(|n| format!("user.{n}")).collect();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for n in &names {
+        w.set_xattr(f, n.as_bytes(), n.as_bytes())
+            .unwrap_or_else(|e| panic!("set {n}: {e}"));
+    }
+    w.remove_xattr(f, names[1].as_bytes()).unwrap();
+    w.set_xattr(f, names[1].as_bytes(), b"again").unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let mut got: Vec<(Vec<u8>, Vec<u8>)> = fs
+        .xattrs(f)
+        .unwrap()
+        .into_iter()
+        .map(|x| (x.name, x.value))
+        .collect();
+    got.sort();
+    let mut want: Vec<(Vec<u8>, Vec<u8>)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let v = if i == 1 {
+                b"again".to_vec()
+            } else {
+                n.as_bytes().to_vec()
+            };
+            (n.as_bytes().to_vec(), v)
+        })
+        .collect();
+    want.sort();
+    assert_eq!(got, want);
+}

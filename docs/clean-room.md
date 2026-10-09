@@ -744,8 +744,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     `hash_seed` as eight little-endian bytes followed by the name
     (INFERRED by computing candidates against the write study's crc32c
     images, then checked against all 314 dirents of `strhash`:
-    `inode::name_hash`, tests/oracle_collisions.rs). Still open: crc64's
-    number and inputs, and the xattr hash under crc32c.
+    `inode::name_hash`, tests/oracle_collisions.rs). The xattr hash under
+    crc32c is SETTLED (S8, #106): the same CRC over the seed, then the
+    namespace byte and the name, with none of SipHash's rearranged final
+    word; every xattr of the write study's xcollide images sits there, and
+    four colliding names take that slot and the three after it, in the
+    order set (`xattr::slot`, tests/oracle_xattr_slots.rs). Still open:
+    crc64's number and inputs.
 18. **Casefolded directories.** SETTLED for what the reader needs (see
     Inodes and dirents above). The reference mount refuses `chattr +F` and
     `set-file-option --casefold` on a directory (`probe.txt`), but the

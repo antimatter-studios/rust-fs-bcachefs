@@ -773,3 +773,52 @@ fn rename_over_and_directory_moves_are_read_by_the_reference() {
         assert_eq!(std::fs::metadata(m.join("d/b")).unwrap().nlink(), 3);
     });
 }
+
+/// Colliding xattr names on a crc32c image (#106), set, one removed and set
+/// again: the reference checker passes the image and the reference mount
+/// reads each one by name.
+#[test]
+fn colliding_xattrs_set_here_are_read_by_the_reference() {
+    let img = scratch("write-study/collide.img", "xcollide");
+    let f = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d/plain")
+        .unwrap();
+    let names = [
+        "user.CAAAAAAAAAAAAAAA",
+        "user.CBBF@MBKAAAAAAAA",
+        "user.COA@GJOCFAAAAAAA",
+        "user.CLBGFFLIFAAAAAAA",
+    ];
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for n in names {
+        w.set_xattr(f, n.as_bytes(), n.as_bytes())
+            .unwrap_or_else(|e| panic!("set {n}: {e}"));
+    }
+    w.remove_xattr(f, names[1].as_bytes()).unwrap();
+    w.set_xattr(f, names[1].as_bytes(), b"again").unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |_| {
+        for (i, name) in names.iter().enumerate() {
+            let value = if i == 1 { "again" } else { name };
+            let out = Command::new("chroot")
+                .args([
+                    REF_ROOT,
+                    "getfattr",
+                    "-n",
+                    name,
+                    "--absolute-names",
+                    &format!("{MNT}/d/plain"),
+                ])
+                .output()
+                .expect("chroot into the reference tools' root");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                text.contains(&format!("{name}=\"{value}\"")),
+                "{name}: {text}"
+            );
+        }
+    });
+}
