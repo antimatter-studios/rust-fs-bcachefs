@@ -96,6 +96,11 @@ API, a patch never does.
 
 ### Fixed
 
+- **Xattrs are written on crc32c-hashed inodes and when their slot is
+  taken** (#106): the writer probes along the hash run and reuses
+  whiteouts, as for dirents, and a removal inside a run leaves a
+  `hash_whiteout`. The crc32c xattr slot is inferred from the dirents'
+  hash and checked against the write study's `xcollide` images.
 - **rename replaces an existing file and moves a directory to another
   directory** (#104), as the write study shows the reference does: the
   replaced inode and its extents are deleted unless another name links it,

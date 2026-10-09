@@ -1267,34 +1267,65 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// The xattr key of `name` on inode `ino`: at
-    /// [`crate::xattr::name_slot`] of its namespace byte and name.
-    fn xattr_pos(&self, i: &InodeRef, ns: u8, name: &[u8]) -> Bpos {
-        pos(
-            i.key.pos.offset,
-            crate::xattr::name_slot(i.raw.hash_seed, ns, name),
-        )
+    /// Where xattr `name` of inode `i` is, or would go (#106): from its
+    /// slot ([`crate::xattr::slot`]) along the run of taken slots, as a
+    /// dirent's is found (S8, the write study's collide and xcollide):
+    /// `(position, the xattr there, a whiteout to reuse)`.
+    fn xattr_find(
+        &self,
+        i: &InodeRef,
+        ns: u8,
+        short: &[u8],
+        name: &[u8],
+    ) -> Result<(Bpos, Option<Bkey>, Option<Bkey>)> {
+        let ino = i.key.pos.offset;
+        let start =
+            crate::xattr::slot(i.raw.hash_type(), i.raw.hash_seed, ns, short).ok_or_else(|| {
+                Error::Unsupported(format!(
+                    "inode {ino} uses string hash type {}: no xattr slot is known for it",
+                    i.raw.hash_type()
+                ))
+            })?;
+        let slots: std::collections::BTreeMap<u64, Bkey> = match self.keys(XATTRS) {
+            Err(Error::NotFound(_)) if self.root(XATTRS).is_err() => Default::default(),
+            r => r?
+                .into_iter()
+                .filter(|k| k.pos.inode == ino && k.pos.offset >= start)
+                .map(|k| (k.pos.offset, k))
+                .collect(),
+        };
+        let mut whiteout = None;
+        let mut at = start;
+        loop {
+            match slots.get(&at) {
+                Some(k) if k.key_type == key_type::XATTR => {
+                    if crate::xattr::Xattr::from_key(k)?.name == name {
+                        return Ok((pos(ino, at), Some(k.clone()), None));
+                    }
+                }
+                Some(k) if k.key_type == key_type::HASH_WHITEOUT => {
+                    whiteout.get_or_insert_with(|| k.clone());
+                }
+                _ => break,
+            }
+            at = at
+                .checked_add(1)
+                .ok_or_else(|| Error::Unsupported("a hash run reaches the last offset".into()))?;
+        }
+        Ok(match whiteout {
+            Some(w) => (w.pos, None, Some(w)),
+            None => (pos(ino, at), None, None),
+        })
     }
 
     /// Set the extended attribute `name` (with its namespace, `user.x`).
     pub fn set_xattr(&mut self, ino: u64, name: &[u8], value: &[u8]) -> Result<()> {
-        siphash_only(&self.inode(ino)?)?;
         let (ns, short) = xattr_namespace(name)?;
         if value.len() > 0xffff {
             return Err(Error::Unsupported("xattr values over 65535 bytes".into()));
         }
         let mut i = self.inode(ino)?;
-        let at = self.xattr_pos(&i, ns, short);
-        let old_x = self
-            .key_at(XATTRS, at)?
-            .filter(|k| k.key_type == key_type::XATTR);
-        if let Some(k) = &old_x {
-            if crate::xattr::Xattr::from_key(k)?.name != name {
-                return Err(Error::Unsupported(
-                    "another xattr holds this name's hash slot: collisions are not handled".into(),
-                ));
-            }
-        }
+        let (at, old_x, whiteout) = self.xattr_find(&i, ns, short, name)?;
         let mut v = vec![ns, short.len() as u8];
         v.extend_from_slice(&(value.len() as u16).to_le_bytes());
         v.extend_from_slice(short);
@@ -1311,7 +1342,7 @@ impl<D: BlockDevice> Writer<D> {
         }
         t.put(
             XATTRS,
-            old_x.as_ref(),
+            old_x.as_ref().or(whiteout.as_ref()),
             Bkey {
                 key_type: key_type::XATTR,
                 size: 0,
@@ -1328,45 +1359,37 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// Remove the extended attribute `name`.
+    /// Remove the extended attribute `name`: a `hash_whiteout` keeps its
+    /// slot when the next one is taken, so xattrs further along the run are
+    /// still found, as for dirents.
     pub fn remove_xattr(&mut self, ino: u64, name: &[u8]) -> Result<()> {
-        siphash_only(&self.inode(ino)?)?;
         let (ns, short) = xattr_namespace(name)?;
         let mut i = self.inode(ino)?;
-        let at = self.xattr_pos(&i, ns, short);
-        let old_x = self
-            .key_at(XATTRS, at)?
-            .filter(|k| k.key_type == key_type::XATTR)
-            .filter(|k| {
-                crate::xattr::Xattr::from_key(k)
-                    .map(|x| x.name == name)
-                    .unwrap_or(false)
-            })
+        let (_, old_x, _) = self.xattr_find(&i, ns, short, name)?;
+        let old_x = old_x
             .ok_or_else(|| Error::NotFound(format!("xattr {:?}", String::from_utf8_lossy(name))))?;
         let mut t = Txn::default();
-        t.delete(XATTRS, &old_x);
+        let next = pos(old_x.pos.inode, old_x.pos.offset.wrapping_add(1));
+        let in_use = self.key_at(XATTRS, next)?.is_some_and(|k| {
+            k.key_type == key_type::XATTR || k.key_type == key_type::HASH_WHITEOUT
+        });
+        if in_use {
+            let whiteout = Bkey {
+                key_type: key_type::HASH_WHITEOUT,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: old_x.pos,
+                value: Vec::new(),
+            };
+            t.put(XATTRS, Some(&old_x), whiteout);
+        } else {
+            t.delete(XATTRS, &old_x);
+        }
         let old = i.key.clone();
         i.raw.varints[field::CTIME] = self.now();
         i.raw.journal_seq = self.journal_seq;
         t.put(ids::INODES, Some(&old), i.rekey());
         self.commit(t)
-    }
-}
-
-/// Xattrs are placed at their SipHash slot, the only xattr hash observed
-/// (`inode::HASH_TYPE_SIPHASH`); an inode hashed with crc32c or crc64
-/// (S1 7.7) would get its xattrs at positions the reference never looks
-/// at, so it is refused (open question 17). Dirents use
-/// `inode::name_hash`, which knows crc32c too.
-fn siphash_only(i: &InodeRef) -> Result<()> {
-    let t = i.raw.hash_type();
-    if t == crate::inode::HASH_TYPE_SIPHASH {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(format!(
-            "inode {} uses string hash type {t}, not SipHash ({}): xattrs cannot be placed",
-            i.key.pos.offset,
-            crate::inode::HASH_TYPE_SIPHASH
-        )))
     }
 }
