@@ -55,7 +55,7 @@ States:
 | A second snapshot, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
 | Snapshots and subvolumes (a second snapshot is refused, #65) | Not supported | | #12; Unobservable through the reference mount (no subvolume command works through it); the reference key editor fabricates snapshot keys, but no whole snapshot yet passes the reference checker (#114) | `oracle_probes.rs` |
 | Reflinked extents (`reflink_p`): refused by the reader and the writer, named by the checker | Refused | Unreleased (#100) | #7; Unobservable through the reference mount: no route makes a reflink (FICLONE, FICLONERANGE, `copy_file_range`, FIDEDUPERANGE); the reference's `kvdb` editor is the next route | `oracle_refused_local.rs`, `oracle_probes.rs` |
-| Casefolded directories (`--casefold`): names listed as given, found in any case when ASCII | Partial: a non-ASCII name is found only as stored | Unreleased (#98) | #111 | `oracle_casefold.rs` |
+| Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | Unreleased (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
 | Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: neither the reference mount nor its offline editor sets one (#99) | `oracle_inode_fields.rs` |
 
 ## Checking

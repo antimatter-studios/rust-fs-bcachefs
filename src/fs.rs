@@ -205,16 +205,18 @@ impl<D: BlockRead> Filesystem<D> {
     /// (S1 2.7; S4: the slot of every entry of the `casefold` set is the
     /// SipHash of its folded name), as the reference mount finds
     /// `HELLO.txt` as `Hello.TXT`. An ASCII name folds to its lowercase
-    /// (S3: every ASCII name of the set). Folding any other name takes
-    /// Unicode's tables, which this reader does not carry, so such a name
-    /// is matched as stored, by a scan.
+    /// (S3: every ASCII name of the set), any other by Unicode's folding
+    /// ([`crate::inode::casefold`], #111). A name that is not UTF-8 has no
+    /// folded form and is matched as stored, by a scan.
     fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
         let casefolded = dir.is_casefolded();
-        if casefolded && !name.is_ascii() {
-            return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
-        }
         let key = if casefolded {
-            name.to_ascii_lowercase()
+            match crate::inode::casefold(name) {
+                Some(k) => k,
+                None => {
+                    return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
+                }
+            }
         } else {
             name.to_vec()
         };

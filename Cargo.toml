@@ -44,6 +44,11 @@ twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 ruzstd = "0.9.0"
 # gzip-compressed extents (raw deflate). MIT OR Zlib OR Apache-2.0.
 miniz_oxide = "0.9.1"
+# Names in casefolded directories (#111): Unicode full case folding, and
+# canonical decomposition (NFD), from the Unicode Character Database's
+# tables. MIT (caseless), MIT OR Apache-2.0 (unicode-normalization).
+caseless = "0.2"
+unicode-normalization = "0.1"
 # The command-line tools' argument parser, behind `cli`. MIT OR Apache-2.0.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 

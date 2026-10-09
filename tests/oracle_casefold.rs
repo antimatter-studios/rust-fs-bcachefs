@@ -126,6 +126,61 @@ fn a_name_in_a_casefolded_directory_is_found_in_any_case() {
     assert!(matches!(missing, Err(Error::NotFound(_))), "{missing:?}");
 }
 
+/// Every casefolded entry's folded name, as the reference stored it, is
+/// what `inode::casefold` makes of its name (#111): ASCII and non-ASCII
+/// alike, full folding and canonical decomposition included.
+#[test]
+fn every_folded_name_is_the_names_casefold() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::inode::{casefold, dirent_folded_name, Dirent};
+    use fs_bcachefs::superblock::Superblock;
+    let dev = FileDevice::open(fixture("casefold.img")).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut wrong = Vec::new();
+    let (mut n, mut non_ascii) = (0, 0);
+    for k in btree::walk(&dev, &sb, btree_id::DIRENTS).unwrap() {
+        if k.key_type != fs_bcachefs::bkey::key_type::DIRENT {
+            continue;
+        }
+        let Some(stored) = dirent_folded_name(&k).unwrap() else {
+            continue;
+        };
+        let name = Dirent::from_key(&k).unwrap().name;
+        n += 1;
+        non_ascii += usize::from(!name.is_ascii());
+        if casefold(&name).as_deref() != Some(&stored[..]) {
+            wrong.push(format!(
+                "{:?}: stored {:?}, folded here {:?}",
+                String::from_utf8_lossy(&name),
+                String::from_utf8_lossy(&stored),
+                casefold(&name).map(|f| String::from_utf8_lossy(&f).into_owned())
+            ));
+        }
+    }
+    assert!(
+        n > 40 && non_ascii >= 2,
+        "{n} folded names, {non_ascii} not ASCII"
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every entry of the set is found by its name in upper and in lower case,
+/// non-ASCII names included (#111), as the reference mount finds them.
+#[test]
+fn every_name_is_found_in_upper_and_lower_case() {
+    let fs = Filesystem::open(FileDevice::open(fixture("casefold.img")).unwrap()).unwrap();
+    let mut wrong = Vec::new();
+    for e in casefold_manifest() {
+        let want = fs.lookup(&e.path).unwrap();
+        for asked in [e.path.to_uppercase(), e.path.to_lowercase()] {
+            if fs.lookup(&asked).ok() != Some(want) {
+                wrong.push(format!("{asked} as {}", e.path));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// The reference checker passes the set (casefold.txt: `fsck: clean`), and
 /// so does this crate's.
 #[test]
