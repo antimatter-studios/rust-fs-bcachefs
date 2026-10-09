@@ -858,6 +858,15 @@ fn ranged_writes_are_read_by_the_reference() {
 #[test]
 fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
     let data = pattern(70_000, 11);
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let random: Vec<u8> = (0..70_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
     for set in ["crc64", "xxhash", "nocsum", "lz4", "zstd", "gzip"] {
         let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
         let root = Filesystem::open(FileDevice::open(&img).unwrap())
@@ -867,12 +876,18 @@ fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         w.create_file(root, b"written-here", &data, 0o644)
             .unwrap_or_else(|e| panic!("{set}: {e}"));
+        w.create_file(root, b"random", &random, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
         drop(w);
         assert_fsck_clean(&img);
         with_reference_mount(&img, |m| {
             assert!(
                 std::fs::read(m.join("written-here")).unwrap() == data,
                 "{set}: the reference read other bytes"
+            );
+            assert!(
+                std::fs::read(m.join("random")).unwrap() == random,
+                "{set}: the reference read other bytes of the random file"
             );
         });
     }
