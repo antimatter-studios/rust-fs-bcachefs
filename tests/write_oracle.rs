@@ -699,3 +699,44 @@ fn a_continued_journal_is_replayed_by_the_reference() {
         assert!(!m.join("d/existing").exists());
     });
 }
+
+/// A create while the inode allocation cursor (type 35 in the logged_ops
+/// btree, 17) names a number in use (#107): the reference checker passes the
+/// image, and the reference mount reads every file.
+#[test]
+fn a_create_over_a_taken_inode_number_is_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "ino-search");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let a = w.create_file(d, b"a", b"first\n", 0o644).unwrap();
+    w.create_file(d, b"b", b"second\n", 0o644).unwrap();
+    drop(w);
+    let mut cursor = {
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, 17)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == 35)
+            .expect("an inode allocation cursor")
+    };
+    cursor.value[8..16].copy_from_slice(&a.to_le_bytes());
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(17, vec![cursor]).unwrap();
+    w.create_file(d, b"c", b"third\n", 0o644)
+        .unwrap_or_else(|e| panic!("a create over a taken number: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        for (name, data) in [("a", "first\n"), ("b", "second\n"), ("c", "third\n")] {
+            assert_eq!(
+                std::fs::read(m.join(format!("d/{name}"))).unwrap(),
+                data.as_bytes(),
+                "{name}"
+            );
+        }
+    });
+}
