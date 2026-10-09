@@ -33,6 +33,28 @@ pub fn decompress(t: u8, data: &[u8], out_len: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Compress `data` as compression type `t` stores it, the framing the
+/// decompressor above reads (#105): lz4 a bare LZ4 block (`lz4_flex`, MIT),
+/// zstd a little-endian u32 length then one zstd frame (`ruzstd`, MIT),
+/// gzip a raw deflate stream (`miniz_oxide`). The caller pads to the block
+/// and keeps the result only when it saves at least one block.
+pub fn compress(t: u8, data: &[u8]) -> Result<Vec<u8>> {
+    Ok(match t {
+        compression::LZ4 => lz4_flex::block::compress(data),
+        compression::ZSTD => {
+            let frame = ruzstd::encoding::compress_to_vec(
+                data,
+                ruzstd::encoding::CompressionLevel::Fastest,
+            );
+            let mut out = (frame.len() as u32).to_le_bytes().to_vec();
+            out.extend_from_slice(&frame);
+            out
+        }
+        compression::GZIP => miniz_oxide::deflate::compress_to_vec(data, 6),
+        t => return Err(Error::Unsupported(format!("compressing as type {t}"))),
+    })
+}
+
 fn zstd(data: &[u8], out_len: usize) -> Result<Vec<u8>> {
     if data.len() < 4 {
         return Err(Error::Corrupt(
