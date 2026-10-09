@@ -361,6 +361,15 @@ impl<D: BlockDevice> Writer<D> {
         }
         let newest = s.next_seq.saturating_sub(1);
         self.journal_seq = newest;
+        // The in-place path reads the btrees from their nodes, which it does
+        // only on a clean filesystem (CI run 37925455364: "its journal must
+        // be replayed first"). The clean bit is set in memory for it; on
+        // disk it is set by mark_clean once every key is in its node, or by
+        // a root the commit moves, which writes the superblock with the
+        // nodes already written.
+        let f = le64(&self.sb_raw, 0x90) | 0b10;
+        self.sb_raw[0x90..0x98].copy_from_slice(&f.to_le_bytes());
+        self.sb = crate::superblock::Superblock::parse_unchecked(&self.sb_raw)?;
         self.commit_in_place(pending)?;
         self.mark_clean(newest)?;
         self.journal_commits()
