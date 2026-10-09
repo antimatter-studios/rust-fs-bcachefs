@@ -353,6 +353,18 @@ impl<D: BlockRead> Filesystem<D> {
             }
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {
+                    // "Reads of poisoned extents return an error rather than
+                    // silently serving corrupt data" (S1 9.1.2.1); the
+                    // reference's mount fails such a read (S8, the `poison`
+                    // image).
+                    if crate::extent::poisoned(&k.value)? {
+                        return Err(Error::Io(format!(
+                            "inode {ino}, sectors {}..{}: the extent is poisoned (its data failed \
+                             its checksum and no good copy was left)",
+                            k.start_offset(),
+                            k.pos.offset
+                        )));
+                    }
                     let e = DataExtent::from_key(&k)?;
                     let data = self.extent_data(&e)?;
                     copy_window(&mut out, offset, end, e.file_start * 512, &data);

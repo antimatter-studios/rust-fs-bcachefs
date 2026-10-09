@@ -47,7 +47,9 @@ States:
 | Extended attributes, user and trusted namespaces | Supported | Unreleased (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | Unreleased (#17) | | `oracle_journal.rs` |
 | Journal sequence blacklist | Supported | Unreleased (#67) | | `oracle_blacklist.rs` |
-| Extent entries crc128, stripe pointers, flags | Refused by name | Unreleased (#74) | #52 | `src/extent.rs` unit tests |
+| crc128 extent entries (extents over 512 sectors), partly overwritten ones too | Supported | Unreleased (#97) | | `oracle_extent_entries.rs` |
+| Poisoned extents (flags entry): reads fail with an I/O error, as the reference's do | Supported | Unreleased (#97) | | `oracle_extent_entries.rs` |
+| Stripe pointers (erasure coding, several devices) | Refused by name | Unreleased (#97) | | `src/extent.rs` unit tests |
 | Encrypted filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | A second snapshot, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
