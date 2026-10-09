@@ -318,6 +318,13 @@ impl<D: BlockDevice> Writer<D> {
                 value,
             };
             t.put(ids::EXTENTS, None, extent.clone());
+            if compression != crate::extent::compression::NONE {
+                // Stored uncompressed: as many sectors before as after.
+                let at = acct_compression(compression);
+                t.count(at, 3, 0, 1);
+                t.count(at, 3, 1, p.sectors as i64);
+                t.count(at, 3, 2, p.sectors as i64);
+            }
             t.count(
                 super::btree_counter_pos(ids::EXTENTS),
                 3,
@@ -613,6 +620,15 @@ impl<D: BlockDevice> Writer<D> {
                 },
             );
             *freed.entry(e.ptr.offset / bucket).or_default() += sectors;
+            if let Some(c) = e
+                .crc
+                .filter(|c| c.compression_type != crate::extent::compression::NONE)
+            {
+                let at = acct_compression(c.compression_type);
+                t.count(at, 3, 0, -1);
+                t.count(at, 3, 1, -i64::from(c.uncompressed_size));
+                t.count(at, 3, 2, -i64::from(c.compressed_size));
+            }
             t.count(
                 super::btree_counter_pos(ids::EXTENTS),
                 3,
@@ -819,6 +835,20 @@ impl<D: BlockDevice> Writer<D> {
         k.value[(b & 0xff) as usize] = gen;
         t.put_uncounted(aids::BUCKET_GENS, k);
         Ok(())
+    }
+}
+
+/// The compression accounting key for compression type `ty` (S4, #105:
+/// the lz4 fixture holds `0x0405 << 48` = [404, 6585, 6585] for its 404
+/// incompressible extents and `0x0403 << 48` for its lz4 ones, as the
+/// checker's "compression incompressible" names it): kind 4 in the top
+/// byte, the type in the next. Its value is extents, uncompressed sectors,
+/// compressed sectors.
+pub(super) fn acct_compression(ty: u8) -> Bpos {
+    Bpos {
+        inode: 4 << 56 | u64::from(ty) << 48,
+        offset: 0,
+        snapshot: 0,
     }
 }
 

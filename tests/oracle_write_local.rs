@@ -843,11 +843,39 @@ fn files_on_every_data_checksum_and_compression_read_back() {
             .unwrap()
             .lookup("/")
             .unwrap();
+        // The "compression incompressible" counter (kind 4, type 5): it
+        // must grow by the extents and sectors written, as the reference
+        // checker requires (#105, CI run 37926032380).
+        let incompressible = |img: &std::path::Path| -> Vec<u64> {
+            use fs_bcachefs::{btree, superblock::Superblock};
+            let dev = FileDevice::open(img).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            btree::walk(&dev, &sb, 20)
+                .unwrap()
+                .into_iter()
+                .find(|k| k.pos.inode == 0x0405 << 48)
+                .map(|k| {
+                    k.value
+                        .chunks_exact(8)
+                        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![0, 0, 0])
+        };
+        let before = incompressible(&img);
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         let f = w
             .create_file(root, b"written-here", &data, 0o644)
             .unwrap_or_else(|e| panic!("{set}: {e}"));
         drop(w);
+        let after = incompressible(&img);
+        let grew: Vec<u64> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
+        let want = if ["lz4", "zstd", "gzip"].contains(&set) {
+            vec![3, 137, 137]
+        } else {
+            vec![0, 0, 0]
+        };
+        assert_eq!(grew, want, "{set}: the incompressible counter");
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         assert!(fs.read(f).unwrap() == data, "{set}: contents");
         assert_eq!(
