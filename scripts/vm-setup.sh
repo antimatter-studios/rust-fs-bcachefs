@@ -169,3 +169,11 @@ if [ "$(cat /etc/ref-kernel-version 2>/dev/null || true)" != "$KERNEL_BUILD" ]; 
     echo "vm-setup: the reference module is installed for $kver"
     echo "$KERNEL_BUILD" >/etc/ref-kernel-version
 fi
+
+# EVERYTHING ON DISK BEFORE THE PROVISIONING BOOT IS STOPPED. The harness
+# pinned here (v0.4.0) stops that boot without syncing it first if the
+# graceful halt does not finish (its #58 fixed that after the tag), and a
+# whole distribution upgrade sits in the page cache when this script ends:
+# CI runs 37896786204 and 37901329719 installed the kernel and module, then
+# the next boot never answered SSH.
+sync
