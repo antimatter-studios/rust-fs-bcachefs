@@ -96,6 +96,12 @@ API, a patch never does.
 
 ### Fixed
 
+- **A non-ASCII name in a casefolded directory is found in any case**
+  (#111): names fold by Unicode full case folding after canonical
+  decomposition, then NFD (`inode::casefold`), checked against every
+  folded name the reference stored in the `casefold` set. The tables come
+  from the `caseless` and `unicode-normalization` crates (MIT, MIT OR
+  Apache-2.0).
 - **Xattrs are written on crc32c-hashed inodes and when their slot is
   taken** (#106): the writer probes along the hash run and reuses
   whiteouts, as for dirents, and a removal inside a run leaves a

@@ -290,6 +290,26 @@ fn casefolded_names(v: &[u8]) -> Result<(&[u8], &[u8])> {
     Ok((&v[15..15 + n], &v[15 + n..end]))
 }
 
+/// A name's folded form in a casefolded directory (#111): Unicode full case
+/// folding after canonical decomposition, then decomposed again (NFD), as
+/// the `casefold` set's folded names show it: `Straße` folds to `strasse`
+/// and `ÉCOLE` to `e`, U+0301, `cole` (S4). An ASCII name folds to its
+/// lowercase. `None` for a name that is not UTF-8, which has no folded
+/// form; such a name is matched as stored. The tables are the crates'
+/// (`caseless`, `unicode-normalization`), of a newer Unicode than the
+/// encoding the superblock names (utf8-12.1.0): a character whose folding
+/// changed since then would fold differently (open question 18).
+pub fn casefold(name: &[u8]) -> Option<Vec<u8>> {
+    use unicode_normalization::UnicodeNormalization;
+    if name.is_ascii() {
+        return Some(name.to_ascii_lowercase());
+    }
+    let s = std::str::from_utf8(name).ok()?;
+    let decomposed: String = s.nfd().collect();
+    let folded = caseless::default_case_fold_str(&decomposed);
+    Some(folded.nfd().collect::<String>().into_bytes())
+}
+
 /// The folded name a dirent is found by, when it is in the casefolded
 /// layout; `None` for any other dirent.
 pub fn dirent_folded_name(k: &Bkey) -> Result<Option<Vec<u8>>> {
