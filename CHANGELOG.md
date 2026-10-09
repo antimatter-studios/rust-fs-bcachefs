@@ -21,6 +21,11 @@ API, a patch never does.
 
 ### Added
 
+- **Data is written on every data checksum and on compressed
+  filesystems** (#105): crc64 and xxhash in a crc64 entry, none as a bare
+  pointer, as the formatter's fixtures store them; on a filesystem
+  formatted with compression the data is stored uncompressed, its entry
+  marked incompressible, as the reference stores data it cannot compress.
 - **`Writer::write_at`, `append` and `truncate`** (#102): a write into
   part of a file, an append, and a truncation to any size. The file's
   contents are read (compressed and checksummed extents included, through

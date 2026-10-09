@@ -92,7 +92,7 @@ reads back byte for byte through the reference implementation's mount
 | A new btree root, any btree id | Experimental: no write needs an id of 16 and above yet | Unreleased (#92) | #80 | `oracle_node_flags.rs` |
 | A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: nodes split, but no test writes on such an image yet | | #44 | |
-| Compressed or non-crc32c data | Refused | | | |
+| Data on crc64, xxhash and no-checksum filesystems; on compressed ones, stored uncompressed and marked incompressible | Experimental | Unreleased (#122) | writing compressed data (#105) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Per-inode options | Unobservable | | #81 | |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |

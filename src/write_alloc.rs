@@ -196,19 +196,39 @@ impl<D: BlockDevice> Writer<D> {
         if bucket == 0 {
             return Err(Error::Corrupt("bucket size 0".into()));
         }
+        // The entry before each pointer, by the data checksum option, as the
+        // formatter's fixtures show it (S3, #105): crc32c, a crc32 entry of
+        // checksum type 5 (from zero, not inverted, S4); crc64 and xxhash, a
+        // crc64 entry of type 6 and 7, the whole 64-bit checksum in its
+        // second word; none, no entry, only the pointer. Type 6 for crc64
+        // data is INFERRED (5 is crc32c's data-side type; csum.rs).
         let csum_type = match self.sb.data_checksum_opt() {
-            1 => 5u8, // crc32c, from zero, not inverted (data checksums, S4)
+            0 => 0u8,
+            1 => 5,
+            2 => 6,
+            3 => 7,
             o => {
                 return Err(Error::Unsupported(format!(
-                    "data checksum option {o}: only crc32c is written"
+                    "data checksum option {o} is not known"
                 )))
             }
         };
-        if self.sb.compression_opt() != 0 {
-            return Err(Error::Unsupported(
-                "writing compressed data is not implemented".into(),
-            ));
-        }
+        // On a filesystem formatted with compression, data the reference
+        // could not compress is stored as it is, its entry marked
+        // incompressible (S3: the lz4 fixture's random file). This writer
+        // compresses nothing, so all its data is stored that way.
+        let compression = if self.sb.compression_opt() != 0 {
+            if csum_type == 0 {
+                return Err(Error::Unsupported(
+                    "compression without a data checksum: no entry has been observed to \
+                     carry it"
+                        .into(),
+                ));
+            }
+            crate::extent::compression::INCOMPRESSIBLE
+        } else {
+            crate::extent::compression::NONE
+        };
         // Data is written in whole blocks: the last one is zero-padded,
         // and the extent and its checksum cover it (S8: 1500 bytes are 3
         // sectors on 512-byte blocks and 8 on 4096-byte ones). Buckets
@@ -261,14 +281,33 @@ impl<D: BlockDevice> Writer<D> {
             buf.resize((p.sectors * 512) as usize, 0);
             self.dev.write_at(p.dev_sector * 512, &buf)?;
             let csum = crate::csum::compute(csum_type, &buf)?;
-            // crc32 entry (type bit 1), then the pointer (type bit 0).
-            let crc: u64 = 0b10
-                | (p.sectors - 1) << 2
-                | (p.sectors - 1) << 9
-                | u64::from(csum_type) << 24
-                | (csum & 0xffff_ffff) << 32;
             let ptr: u64 = 1 | p.dev_sector << 4 | u64::from(p.gen) << 56;
-            let mut value = crc.to_le_bytes().to_vec();
+            let mut value = Vec::with_capacity(24);
+            match csum_type {
+                0 => {}
+                5 => {
+                    // crc32 entry (type bit 1).
+                    let crc: u64 = 0b10
+                        | (p.sectors - 1) << 2
+                        | (p.sectors - 1) << 9
+                        | u64::from(csum_type) << 24
+                        | u64::from(compression) << 28
+                        | (csum & 0xffff_ffff) << 32;
+                    value.extend_from_slice(&crc.to_le_bytes());
+                }
+                _ => {
+                    // crc64 entry (type bit 2): the checksum's high 16 bits
+                    // in the first word, its low 64 in the second.
+                    let crc: u64 = 0b100
+                        | (p.sectors - 1) << 3
+                        | (p.sectors - 1) << 12
+                        | u64::from(csum_type) << 40
+                        | u64::from(compression) << 44;
+                    value.extend_from_slice(&crc.to_le_bytes());
+                    value.extend_from_slice(&csum.to_le_bytes());
+                }
+            }
+            // Then the pointer (type bit 0).
             value.extend_from_slice(&ptr.to_le_bytes());
             let extent = Bkey {
                 key_type: key_type::EXTENT,
