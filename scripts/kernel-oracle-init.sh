@@ -56,6 +56,26 @@ if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
 else
     say "mount: failed ($(head -c 200 /tmp/mount.err))"
 fi
+# A REUSED BUCKET (#94), on the second disk: a 16M file written, synced,
+# removed, synced and given a few seconds for the module's background work
+# to free its buckets, eight times over, so 128M pass through a 64M image
+# and the later files can only land in buckets freed by the earlier ones.
+# The last file stays.
+mkdir -p /reuse
+if [ -b /dev/vdb ] && mount -t bcachefs -o noatime /dev/vdb /reuse 2>/tmp/reuse.err; then
+    for i in 1 2 3 4 5 6 7 8; do
+        if head -c 16777216 /dev/zero | tr '\000' r >"/reuse/f$i" 2>/tmp/reuse.err; then
+            sync
+            [ "$i" -eq 8 ] || { rm "/reuse/f$i"; sync; sleep 3; }
+        else
+            say "reuse: write $i failed ($(head -c 200 /tmp/reuse.err))"
+            break
+        fi
+    done
+    if umount /reuse; then say "reuse: ok"; else say "reuse: unmount failed"; fi
+else
+    say "reuse: mount failed ($(head -c 200 /tmp/reuse.err))"
+fi
 say "done: yes"
 sync
 poweroff -f

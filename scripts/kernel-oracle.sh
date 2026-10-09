@@ -18,8 +18,9 @@
 # into an initramfs; QEMU boots it under KVM with the image as a virtio disk.
 # The init loads the module, mounts the image, writes the tree and a hard
 # link, prints the manifest as the mount reports it, unmounts and powers
-# off. Its console becomes kernel.txt and kernel.json; the reference checker
-# judges the image. A stage that fails is recorded, not fatal here:
+# off; on a second image it writes and removes 16M files until buckets are
+# reused (#94). Its console becomes kernel.txt and kernel.json; the reference
+# checker judges both images. A stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing.
 set -euo pipefail
 
@@ -89,6 +90,8 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs
     truncate -s 64M /work/kernel.img
     bcachefs format -q /work/kernel.img
+    truncate -s 64M /work/kernel-reuse.img
+    bcachefs format -q /work/kernel-reuse.img
     chmod -R a+rwX /work
 '
 docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools >/dev/null
@@ -103,6 +106,7 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
     -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
     -append "console=ttyS0,115200 panic=-1 rdinit=/init" \
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
+    -drive "file=$work/kernel-reuse.img,if=virtio,format=raw" \
     -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
     -no-reboot ||
     echo "kernel-oracle: qemu exited $?" >&2
@@ -138,5 +142,13 @@ else
     record fsck "errors (kernel.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel.img" "$OUT/kernel.img"
+# The reused bucket (#94): judged by the reference checker like the first.
+if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+    bcachefs fsck -n /work/kernel-reuse.img >"$OUT/kernel-reuse.fsck.txt" 2>&1; then
+    record reuse-fsck clean
+else
+    record reuse-fsck "errors (kernel-reuse.fsck.txt)"
+fi
+cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
 docker rmi rust-fs-bcachefs-ko:tools >/dev/null 2>&1 || true
 echo "kernel-oracle: $(tr '\n' ';' <"$OUT/kernel.txt")"

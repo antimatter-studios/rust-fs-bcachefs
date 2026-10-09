@@ -42,7 +42,7 @@ States:
 | Data checksums: crc32c, crc64, xxhash | Supported | Unreleased (#1) | | `oracle_fs.rs` |
 | Compression: lz4, zstd, gzip | Supported | Unreleased (#1) | | `oracle_fs.rs` |
 | Background compression (`reconcile` extent entry) | Supported | Unreleased (#75) | | `oracle_bgcompress.rs` |
-| Extent pointers checked against the allocator's generations | Supported | Unreleased (#69) | #94 | `oracle_pointers.rs` |
+| Extent pointers checked against the allocator's generations, a bucket reused by the reference kernel module among them | Supported | Unreleased (#69, #95) | | `oracle_pointers.rs` |
 | Error extents, extent whiteouts, older inode encodings | Supported | Unreleased (#68) | | `oracle_refused_local.rs` |
 | Extended attributes, user and trusted namespaces | Supported | Unreleased (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | Unreleased (#17) | | `oracle_journal.rs` |
