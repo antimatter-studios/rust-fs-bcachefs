@@ -627,7 +627,7 @@ sed 's/^/casefold: /' "$out/casefold.txt"
 # through that mount, and the image is unmounted cleanly. kernel.txt records
 # each stage as `key: value`; a stage that fails is recorded, not fatal
 # here, and tests/oracle_kernel.rs fails on it.
-echo "== kernel (the reference module, #110)"
+step "kernel (the reference module, #110)"
 kimg=/var/tmp/age/kernel.img
 kmnt="$ROOT/mnt/kernel"
 rm -f "$ROOT$kimg"

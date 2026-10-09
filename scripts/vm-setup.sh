@@ -140,6 +140,32 @@ if [ "$(cat /etc/ref-kernel-version 2>/dev/null || true)" != "$KERNEL_BUILD" ]; 
     # No rebuild could find its source, and none should be attempted.
     apt-mark hold bcachefs-kernel-dkms "linux-image-$arch" "linux-headers-$arch" >/dev/null
     rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs/*/build /var/lib/dkms/bcachefs/*/source
+    # THE NETWORK ACROSS THE REBOOT. The first run of this (CI run
+    # 37896786204) built the module, and then the guest never answered SSH
+    # on the new kernel: three ten-minute boot timeouts. The likeliest cause
+    # is the network interface's name changing with the kernel and systemd,
+    # so the old configuration names a device that is gone. The kernel's
+    # own name, eth0, is fixed here and configured by DHCP whatever the box
+    # used; what the box had is printed first, for the record.
+    echo "vm-setup: the network before the reboot:"
+    ip -br link || true
+    cat /etc/network/interfaces 2>/dev/null || true
+    ls /etc/network/interfaces.d /etc/systemd/network /etc/netplan 2>/dev/null || true
+    for u in networking systemd-networkd NetworkManager; do
+        echo "$u: $(systemctl is-enabled "$u" 2>&1 || true)"
+    done
+    sed -i -E 's/^(GRUB_CMDLINE_LINUX=")/\1net.ifnames=0 biosdevname=0 /' /etc/default/grub
+    update-grub >/dev/null 2>&1
+    install -d /etc/systemd/network
+    printf '[Match]\nName=eth0 en*\n\n[Network]\nDHCP=yes\n' >/etc/systemd/network/10-guest.network
+    systemctl enable systemd-networkd >/dev/null 2>&1
+    # And what the new kernel boots with: its initramfs's virtio drivers (no
+    # disk or network driver means no boot at all) and the boot menu's
+    # default entry.
+    echo "vm-setup: virtio modules in the initramfs of $kver:"
+    lsinitramfs "/boot/initrd.img-$kver" 2>&1 | grep -oE 'virtio[a-z_]*\.ko' | sort -u | tr '\n' ' ' || true
+    echo
+    grep -m 3 -E "menuentry |linux\s" /boot/grub/grub.cfg 2>&1 | cut -c1-160 || true
     echo "vm-setup: the reference module is installed for $kver"
     echo "$KERNEL_BUILD" >/etc/ref-kernel-version
 fi
