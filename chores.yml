@@ -91,6 +91,14 @@ tasks:
       # 14165 bytes, 21 of them Compiling lines. The open pull requests add
       # about five more oracle binaries (eight lines each): 400 lines leaves
       # room for them and a colder runner; bytes stay well inside 20000.
+      #
+      # BUILT FIRST, OUTSIDE THE BUDGET, as rust-fs-erofs#189 does: the same
+      # command with `--no-run --quiet`, so a cold cache's download and
+      # Compiling lines are not the tier's output at all. Before it, a change
+      # to Cargo.lock printed 322 lines against the old 300 with every test
+      # passing (#131), and a merge queue group that moves the lockfile would
+      # be refused the same way.
+      - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 400 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
