@@ -18,17 +18,15 @@
 # chroot made with debootstrap has every build dependency at a version
 # that works, and the Rust compiler it ships meets the tool's minimum.
 #
-# WHY FUSE, AND NOW A KERNEL MODULE TOO. The formatter populates an image
-# from a directory tree itself (`format --source`), and every reading of an
-# image is done by the tool's userspace copy of the filesystem. The AGED
-# fixtures need a running filesystem to write them, and that is the same
-# userspace copy mounted through FUSE (the tool's documented, experimental
-# `fusemount`, built with BCACHEFS_FUSE=1). Every aged image must then pass
-# the reference checker, so a fault of the FUSE path cannot reach a fixture
-# unnoticed. The FUSE mount cannot make reflinks, snapshots, casefolded
-# directories or per-inode options, and stalls on a removal followed by a
-# sync (#94), so the reference kernel module runs here too (#110): see THE
-# KERNEL ORACLE below.
+# WHY NO KERNEL MODULE. The formatter populates an image from a directory
+# tree itself (`format --source`), and every reading of an image is done by
+# the tool's userspace copy of the filesystem. The AGED fixtures need a
+# running filesystem to write them, and that is the same userspace copy
+# mounted through FUSE (the tool's documented, experimental `fusemount`,
+# built with BCACHEFS_FUSE=1): no guest kernel this harness boots carries
+# bcachefs, which is maintained out of mainline. Every aged image must
+# then pass the reference checker, so a fault of the FUSE path cannot
+# reach a fixture unnoticed.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -43,7 +41,7 @@ apt-get update -qq
 # build-essential: the in-guest suite (`chore test:vm`, scripts/guest-suite.sh)
 # compiles this crate in the guest itself, and its build scripts need a C
 # linker; the reference tools are built in the chroot and need none of this.
-apt-get install -y -qq debootstrap jq xxd coreutils fuse3 build-essential curl ca-certificates >/dev/null
+apt-get install -y -qq debootstrap jq xxd coreutils fuse3 build-essential >/dev/null
 
 if [ ! -f "$ROOT/.bootstrapped" ]; then
     rm -rf "$ROOT"
@@ -99,114 +97,3 @@ exec chroot "\$ROOT" /usr/local/sbin/bcachefs "\$@"
 WRAP
 chmod 0755 /usr/local/bin/bcachefs-ref
 bcachefs-ref version
-
-# THE KERNEL ORACLE (#110). The reference kernel module is packaged for
-# DKMS (apt.bcachefs.org, S10 in docs/clean-room.md) and needs kernel
-# headers 6.16 or newer. The harness's box is Debian 12, whose newest kernel
-# is 6.12, so the guest is upgraded to Debian 13, whose backports carry a
-# newer kernel, and the module is built for that kernel by DKMS, pinned to
-# the tools' version. Setup runs on a provisioning boot that the harness
-# stops before any run, so every run boots the newest kernel installed,
-# this one. The module is built from GPL source inside the guest, and that
-# source is deleted as soon as the module is installed, as the tools'
-# source tree is above: nobody working in this guest can open it.
-KERNEL_BUILD="$REF_VERSION trixie-backports"
-if [ "$(cat /etc/ref-kernel-version 2>/dev/null || true)" != "$KERNEL_BUILD" ]; then
-    apt_opts=(-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
-    if ! grep -q '^13' /etc/debian_version; then
-        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-            if [ -f "$f" ]; then sed -i 's/\bbookworm\b/trixie/g' "$f"; fi
-        done
-        apt-get update -qq
-        apt-get "${apt_opts[@]}" full-upgrade >/dev/null
-    fi
-    arch="$(dpkg --print-architecture)"
-    echo "deb http://deb.debian.org/debian trixie-backports main" \
-        >/etc/apt/sources.list.d/trixie-backports.list
-    install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL -o /etc/apt/keyrings/apt.bcachefs.org.asc https://apt.bcachefs.org/apt.bcachefs.org.asc
-    echo "deb [signed-by=/etc/apt/keyrings/apt.bcachefs.org.asc] https://apt.bcachefs.org/trixie bcachefs-tools-release main" \
-        >/etc/apt/sources.list.d/apt.bcachefs.org.list
-    apt-get update -qq
-    apt-get "${apt_opts[@]}" install -t trixie-backports \
-        "linux-image-$arch" "linux-headers-$arch" >/dev/null
-    apt-get "${apt_opts[@]}" install "bcachefs-kernel-dkms=1:$REF_VERSION" >/dev/null
-    kver="$(find /lib/modules -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -V | tail -n 1)"
-    if ! find "/lib/modules/$kver" -name 'bcachefs.ko*' | grep -q .; then
-        echo "vm-setup: DKMS built no bcachefs module for $kver" >&2
-        dkms status >&2 || true
-        exit 1
-    fi
-    # No rebuild could find its source, and none should be attempted.
-    apt-mark hold bcachefs-kernel-dkms "linux-image-$arch" "linux-headers-$arch" >/dev/null
-    rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs/*/build /var/lib/dkms/bcachefs/*/source
-    # THE NETWORK ACROSS THE REBOOT. The first run of this (CI run
-    # 37896786204) built the module, and then the guest never answered SSH
-    # on the new kernel: three ten-minute boot timeouts. The likeliest cause
-    # is the network interface's name changing with the kernel and systemd,
-    # so the old configuration names a device that is gone. The kernel's
-    # own name, eth0, is fixed here and configured by DHCP whatever the box
-    # used; what the box had is printed first, for the record.
-    echo "vm-setup: the network before the reboot:"
-    ip -br link || true
-    cat /etc/network/interfaces 2>/dev/null || true
-    ls /etc/network/interfaces.d /etc/systemd/network /etc/netplan 2>/dev/null || true
-    for u in networking systemd-networkd NetworkManager; do
-        echo "$u: $(systemctl is-enabled "$u" 2>&1 || true)"
-    done
-    sed -i -E 's/^(GRUB_CMDLINE_LINUX=")/\1net.ifnames=0 biosdevname=0 /' /etc/default/grub
-    # THE BOOT LOADER MATCHES ITS MODULES, AND THE KERNEL SPEAKS EARLY. CI
-    # run 37924564635's console showed the next boot reset the machine at
-    # once after GRUB's "Booting `Debian GNU/Linux'", over and over, with no
-    # kernel line: the upgrade replaced GRUB's modules under /boot, but the
-    # core image on the disk is the box's, and a mismatched pair can fail
-    # exactly there. GRUB is installed again for however this box boots,
-    # and the kernel logs to the serial port from its first instruction, so
-    # if it is the kernel that resets, the console says why.
-    sed -i -E 's/^(GRUB_CMDLINE_LINUX=")/\1earlyprintk=serial,ttyS0,115200 ignore_loglevel /' \
-        /etc/default/grub
-    root_dev="$(findmnt -no SOURCE /)"
-    disk="/dev/$(lsblk -no PKNAME "$root_dev" | head -n 1)"
-    echo "vm-setup: root $root_dev on $disk; firmware: $([ -d /sys/firmware/efi ] && echo EFI || echo BIOS)"
-    lsblk -o NAME,SIZE,TYPE,PARTTYPENAME,MOUNTPOINT "$disk" || true
-    dpkg -l 'grub-*' 2>/dev/null | awk '/^ii/ {print "vm-setup: " $2 " " $3}'
-    if [ -d /sys/firmware/efi ]; then
-        grub-install --target=x86_64-efi --efi-directory=/boot/efi --no-nvram 2>&1 | tail -n 3
-    else
-        grub-install --target=i386-pc "$disk" 2>&1 | tail -n 3
-    fi
-    # THE HANDOVER, as the boot that works makes it. A throwaway CI probe
-    # (ci/probe-kernel-boot, run 37950834442) booted this same kernel and
-    # its initramfs under KVM with -cpu host, loaded straight by QEMU: it
-    # ran /init and started udev. So the kernel boots here; what resets is
-    # GRUB's handover on this BIOS disk, with a 51 MB initramfs. The
-    # initramfs is cut to what this machine needs, and GRUB loads both with
-    # the 16-bit boot protocol, as QEMU's direct boot does.
-    echo 'MODULES=dep' >/etc/initramfs-tools/conf.d/rust-fs-bcachefs-modules
-    update-initramfs -u -k "$kver" >/dev/null 2>&1
-    ls -l "/boot/vmlinuz-$kver" "/boot/initrd.img-$kver"
-    update-grub >/dev/null 2>&1
-    sed -i -E 's/^([[:space:]]*)linux([[:space:]])/\1linux16\2/; s/^([[:space:]]*)initrd([[:space:]])/\1initrd16\2/' \
-        /boot/grub/grub.cfg
-    grep -m 2 -E '^[[:space:]]*(linux16|initrd16)' /boot/grub/grub.cfg | cut -c1-120
-    install -d /etc/systemd/network
-    printf '[Match]\nName=eth0 en*\n\n[Network]\nDHCP=yes\n' >/etc/systemd/network/10-guest.network
-    systemctl enable systemd-networkd >/dev/null 2>&1
-    # And what the new kernel boots with: its initramfs's virtio drivers (no
-    # disk or network driver means no boot at all) and the boot menu's
-    # default entry.
-    echo "vm-setup: virtio modules in the initramfs of $kver:"
-    lsinitramfs "/boot/initrd.img-$kver" 2>&1 | grep -oE 'virtio[a-z_]*\.ko' | sort -u | tr '\n' ' ' || true
-    echo
-    grep -m 3 -E "menuentry |linux\s" /boot/grub/grub.cfg 2>&1 | cut -c1-160 || true
-    echo "vm-setup: the reference module is installed for $kver"
-    echo "$KERNEL_BUILD" >/etc/ref-kernel-version
-fi
-
-# EVERYTHING ON DISK BEFORE THE PROVISIONING BOOT IS STOPPED. Harness
-# v0.4.0 stopped that boot without syncing it first if the graceful halt did
-# not finish (its #58 fixed that, in v0.4.1), and a whole distribution
-# upgrade sits in the page cache when this script ends:
-# CI runs 37896786204 and 37901329719 installed the kernel and module, then
-# the next boot never answered SSH.
-sync

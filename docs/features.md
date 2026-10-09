@@ -101,7 +101,7 @@ reads back byte for byte through the reference implementation's mount
 
 | Feature | State | Since | Tracking | Checked by |
 |---|---|---|---|---|
-| The reference kernel module in the harness guest: an image it writes reads back here as its mount reported | Supported | Unreleased (#115) | | `oracle_kernel.rs` |
+| The reference kernel module, in a VM of its own on the CI runner: an image it writes reads back here as its mount reported | Supported | Unreleased (#115) | | `oracle_kernel.rs` |
 
 ## Interfaces
 

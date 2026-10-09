@@ -28,32 +28,7 @@ mkdir -p "$out" "$work"
 # A deterministic source tree: the same bytes on every run, so a fixture
 # that changes means the formatter changed, not the input.
 make_tree() {
-    local root="$1"
-    python3 - "$root" <<'PY'
-import os, random, sys
-root = sys.argv[1]
-rng = random.Random(20261006)
-def write(path, data):
-    full = os.path.join(root, path)
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "wb") as f:
-        f.write(data)
-write("hello.txt", b"hello world\n")
-write("empty", b"")
-write("dir/sub/b.txt", b"abc")
-write("dir/notes.md", b"# notes\n" + b"line of text\n" * 300)
-# Compressible: repeated text, several hundred KiB, crossing extent limits.
-write("big/text.log", b"".join(b"%08d the quick brown fox jumps over the lazy dog\n" % i for i in range(20000)))
-# Incompressible: 3 MiB of seeded pseudo-random bytes.
-write("big/random.bin", bytes(rng.getrandbits(8) for _ in range(3 * 1024 * 1024)))
-# An odd size that ends mid-sector.
-write("big/odd.bin", bytes(rng.getrandbits(8) for _ in range(70001)))
-# Many entries in one directory, so the dirents and inodes btrees grow.
-for i in range(300):
-    write("many/file-%04d.txt" % i, b"entry %d\n" % i)
-os.symlink("hello.txt", os.path.join(root, "link"))
-os.symlink("dir/sub/b.txt", os.path.join(root, "dir/link-to-b"))
-PY
+    python3 /repo/scripts/fixture-tree.py "$1"
 }
 
 # manifest ROOT DEST [live]: every path under ROOT with its type, mode, size,
@@ -179,7 +154,7 @@ rm -rf "$large_src"
 # used looks different -- narrower key formats, nodes split and rewritten,
 # several bsets per node, deletions beside live keys. So one filesystem is
 # mounted by the reference implementation (its userspace copy, through
-# FUSE; the kernel module is newer here, #110) and aged by
+# FUSE: scripts/vm-setup.sh says why not a kernel module) and aged by
 # scripts/guest-age.py.
 #
 # The FUSE daemon of the pinned release aborts on unmount (an assertion in
@@ -621,51 +596,6 @@ PY
     fi
 } >"$out/casefold.txt" 2>&1 || echo "the casefold steps stopped: exit $?" >>"$out/casefold.txt"
 sed 's/^/casefold: /' "$out/casefold.txt"
-# THE KERNEL ORACLE (#110). The guest boots a kernel that carries the
-# reference module (scripts/vm-setup.sh). An image is mounted through it,
-# the deterministic tree and a hard link are written, the manifest is taken
-# through that mount, and the image is unmounted cleanly. kernel.txt records
-# each stage as `key: value`; a stage that fails is recorded, not fatal
-# here, and tests/oracle_kernel.rs fails on it.
-step "kernel (the reference module, #110)"
-kimg=/var/tmp/age/kernel.img
-kmnt="$ROOT/mnt/kernel"
-rm -f "$ROOT$kimg"
-truncate -s 64M "$ROOT$kimg"
-mkdir -p "$kmnt"
-bcachefs-ref format -q "$kimg" >"$out/kernel.format.txt" 2>&1
-{
-    echo "kernel: $(uname -r)"
-    if modprobe bcachefs 2>&1; then
-        echo "module: loaded"
-        dev="$(losetup -f --show "$ROOT$kimg" 2>&1)" || dev=""
-        if [ -b "$dev" ] && mount -t bcachefs -o noatime "$dev" "$kmnt" 2>&1; then
-            echo "mount: ok"
-            make_tree "$kmnt"
-            ln "$kmnt/hello.txt" "$kmnt/dir/hello-again.txt"
-            sync
-            manifest "$kmnt" "$out/kernel.json" live
-            if umount "$kmnt" 2>&1; then
-                echo "unmount: ok"
-            else
-                echo "unmount: failed"
-            fi
-        else
-            echo "mount: failed"
-        fi
-        [ ! -b "$dev" ] || losetup -d "$dev" || true
-    else
-        echo "module: not loaded"
-    fi
-    if bcachefs-ref fsck -n "$kimg" >"$out/kernel.fsck.txt" 2>&1; then
-        echo "fsck: clean"
-    else
-        echo "fsck: errors (kernel.fsck.txt)"
-    fi
-} >"$out/kernel.txt" 2>&1
-cat "$out/kernel.txt"
-cp --sparse=always "$ROOT$kimg" "$out/kernel.img"
-
 # The write study's before/after pairs (#20): its own script, its own
 # directory under fixtures/.
 bash /repo/scripts/guest-write-study.sh
