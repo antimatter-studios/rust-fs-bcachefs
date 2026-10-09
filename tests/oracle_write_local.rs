@@ -992,10 +992,11 @@ fn many_operations(set: &str, dir: &str, test: &str, n: usize) {
 /// appended bset takes a whole 4096-byte block, so a node fills after about
 /// eight appends and is rewritten into a fresh bucket; the buckets freed
 /// wait for discard and are not reused in one session (#132), so this small
-/// image takes 150 creates, not 400 (at 400 it ran out at create 259).
+/// image takes 80 creates, not 400: at 400 it ran out at create 259, and
+/// at 150 the reference checker found no room left for its own journal.
 #[test]
 fn nodes_split_on_4096_byte_blocks_with_32k_nodes() {
-    many_operations("block4k.img", "/", "many-block4k", 150);
+    many_operations("block4k.img", "/", "many-block4k", 80);
 }
 
 /// 32 KiB nodes in 128 KiB buckets (#109): a new node takes a bucket of

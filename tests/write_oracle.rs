@@ -985,10 +985,11 @@ fn a_session_longer_than_its_journal_is_read_by_the_reference() {
 /// checker passes each image and the reference mount reads every file.
 #[test]
 fn nodes_split_on_other_geometries_pass_the_reference() {
-    // 150 creates on block4k: freed buckets are not reused in one session
-    // (#132), and this small image runs out at about 259.
+    // 80 creates on block4k: freed buckets are not reused in one session
+    // (#132); at 150 the image held so few free buckets that the reference
+    // checker's own journal stuck ("journal full", CI run 37994531102).
     for (set, dir, n) in [
-        ("block4k.img", "/", 150),
+        ("block4k.img", "/", 80),
         ("write-study/base-small-nodes.img", "/d", 400),
     ] {
         let img = scratch(set, &format!("many-{}", set.replace('/', "-")));
