@@ -15,6 +15,10 @@
 # scripts/vm-setup.sh installs. Nothing here mounts: the formatter populates
 # the image from a directory itself.
 set -euo pipefail
+# One deadline per step, five minutes unless the step says otherwise
+# (scripts/guest-watchdog.sh).
+# shellcheck source=scripts/guest-watchdog.sh
+source /repo/scripts/guest-watchdog.sh
 
 out=/share/fixtures
 work=/share/fixtures-work
@@ -127,7 +131,7 @@ for entry in "${sets[@]}"; do
     name="${entry%%|*}"
     opts="${entry#*|}"
     img="$out/$name.img"
-    echo "== $name ($opts)"
+    step "$name ($opts)"
     truncate -s 64M "$img"
     # shellcheck disable=SC2086
     bcachefs-ref format -q $opts --source="$src" "$img" > "$out/$name.format.txt" 2>&1
@@ -146,7 +150,8 @@ done
 # THE LARGE SET: one directory of 30000 entries, so the inodes and dirents
 # btrees are many leaves wide and a lookup that reads only its path can be
 # told from one that reads the whole tree (tests/oracle_cursor.rs).
-echo "== large (30000 files in one directory)"
+# The formatter populates 30000 files: 401 seconds in a green build.
+step "large (30000 files in one directory)" 900
 large_src="$work/large-src"
 python3 - "$large_src" <<'PY'
 import os, sys
@@ -223,7 +228,7 @@ fuse_unmount() {
     exit 1
 }
 
-echo "== aged (mounted and aged by the reference implementation)"
+step "aged (mounted and aged by the reference implementation)"
 img=/var/tmp/age/aged.img
 rm -f "$ROOT$img"
 truncate -s 256M "$ROOT$img"
@@ -292,12 +297,12 @@ fi
 # error rather than misread. An encrypted filesystem (its master key stored
 # unencrypted, so no passphrase is involved), and both members of a
 # two-device filesystem. Only the superblock printer's view is recorded.
-echo "== encrypted (--encrypted --no_passphrase)"
+step "encrypted (--encrypted --no_passphrase)"
 truncate -s 64M "$out/encrypted.img"
 bcachefs-ref format -q --encrypted --no_passphrase --source="$src" "$out/encrypted.img" \
     > "$out/encrypted.format.txt" 2>&1
 bcachefs-ref show-super "$out/encrypted.img" > "$out/encrypted.super.txt" 2>&1
-echo "== multi (two devices)"
+step "multi (two devices)"
 truncate -s 64M "$out/multi-0.img" "$out/multi-1.img"
 bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.format.txt" 2>&1
 for i in 0 1; do
@@ -318,7 +323,7 @@ bash /repo/scripts/guest-write-study.sh
 # beside it is where the layout is first observed. Nothing here fails the
 # build: a probe that finds nothing is a recorded answer, not a skipped
 # step, and the image is not read by any test until a reader for it exists.
-echo "== probes (subvolume, snapshot, casefold, reflink through the reference mount)"
+step "probes (subvolume, snapshot, casefold, reflink through the reference mount)"
 probe_img=/var/tmp/age/probe.img
 rm -f "$ROOT$probe_img"
 truncate -s 64M "$ROOT$probe_img"

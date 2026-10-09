@@ -97,10 +97,13 @@ jobs:
 
   # The reference tools build the fixtures, inside the harness VM, on an
   # x86_64 runner with KVM. Nothing of theirs ever runs on the runner.
+  # A green build takes 13 to 19 minutes (the ten before 2026-10-09); the
+  # limit is about twice that, so a hung reference mount fails the run in
+  # half an hour, not ninety minutes (#94's runs hung until 90).
   fixtures:
     name: fixtures (harness VM, x86_64 KVM)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Install chore

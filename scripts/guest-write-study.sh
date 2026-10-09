@@ -22,6 +22,10 @@
 #   base.img, base.<btree>.txt, base.super.txt
 #   <op>.img, <op>.<btree>.txt, <op>.super.txt, <op>.fsck.txt
 set -euo pipefail
+# One deadline per step, five minutes unless the step says otherwise
+# (scripts/guest-watchdog.sh).
+# shellcheck source=scripts/guest-watchdog.sh
+source /repo/scripts/guest-watchdog.sh
 
 ROOT=/srv/ref-trixie
 out=/share/fixtures/write-study
@@ -119,7 +123,7 @@ ops=(
 for entry in "${ops[@]}"; do
     name="${entry%%|*}"
     action="${entry#*|}"
-    echo "== write-study: $name"
+    step "write-study: $name"
     img="$work/$name.img"
     cp --sparse=always "$ROOT$base" "$ROOT$img"
     mount_rw "$img"
@@ -142,7 +146,7 @@ done
 for variant in 'inline-default|' 'inline-bs4k|--block_size=4096'; do
     name="${variant%%|*}"
     opts="${variant#*|}"
-    echo "== write-study: $name"
+    step "write-study: $name"
     img="$work/$name.img"
     truncate -s 128M "$ROOT$img"
     # shellcheck disable=SC2086 # $opts is empty or one option
@@ -172,7 +176,7 @@ done
 # order through the mount; then the second is removed, then created again,
 # each step settled and dumped, so the lister shows where each went.
 COLLIDE="CAAAAAAAAAAAAAAA CBBF@MBKAAAAAAAA COA@GJOCFAAAAAAA CLBGFFLIFAAAAAAA"
-echo "== write-study: collide"
+step "write-study: collide"
 img="$work/collide.img"
 truncate -s 64M "$ROOT$img"
 bcachefs-ref format -q --str_hash=crc32c "$img" >"$out/collide.format.txt" 2>&1
@@ -185,7 +189,7 @@ cp --sparse=always "$ROOT$img" "$out/collide.img"
 for step in 'collide-unlink|rm "$M/d/CBBF@MBKAAAAAAAA"' \
     'collide-recreate|printf "%s\n" CBBF@MBKAAAAAAAA >"$M/d/CBBF@MBKAAAAAAAA"'; do
     name="${step%%|*}"
-    echo "== write-study: $name"
+    step "write-study: $name"
     mount_rw "$img"
     M="$ROOT$mnt" bash -euc "${step#*|}"
     settle "$img" "$name"
@@ -198,7 +202,7 @@ done
 # on a file, then a file created in the directory afterwards, to see what
 # a new inode takes from its parent. Each attempt's outcome goes to
 # options.txt (a refusal is a recorded answer); the image is dumped after.
-echo "== write-study: options"
+step "write-study: options"
 img="$work/options.img"
 truncate -s 64M "$ROOT$img"
 bcachefs-ref format -q "$img" >"$out/options.format.txt" 2>&1
@@ -240,7 +244,7 @@ cp --sparse=always "$ROOT$img" "$out/options.img"
 # the option again. kvdb-options.txt records both; nothing here fails the
 # build: tests/oracle_inode_fields.rs reads the answer, and fails the day
 # the editor takes an option.
-echo "== write-study: kvdb-options"
+step "write-study: kvdb-options"
 img="$work/kvdb-options.img"
 truncate -s 64M "$ROOT$img"
 bcachefs-ref format -q "$img" >"$out/kvdb-options.format.txt" 2>&1
@@ -277,7 +281,7 @@ for step in \
     'xattr-together|mkdir "$M/y"; printf "one attribute" >"$M/y/one.txt"; python3 -c "$SETX" "$M/y/one.txt" user.greeting hello; printf "many" >"$M/y/many.txt"; for i in 00 01 02; do python3 -c "$SETX" "$M/y/many.txt" user.attr$i v; done; python3 -c "$SETX" "$M/y" user.on-a-directory dir' \
     'xattr-lengths|printf "lengths" >"$M/x/lengths.txt"; for n in $(seq 1 24); do python3 -c "$SETX" "$M/x/lengths.txt" "user.$(head -c "$n" /dev/zero | tr "\\0" k)" v; done'; do
     name="${step%%|*}"
-    echo "== write-study: $name"
+    step "write-study: $name"
     mount_rw "$img"
     M="$ROOT$mnt" SETX="$SETX" bash -euc "${step#*|}"
     settle "$img" "$name"
