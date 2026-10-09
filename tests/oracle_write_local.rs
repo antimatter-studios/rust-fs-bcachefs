@@ -659,3 +659,55 @@ fn a_create_skips_inode_numbers_already_in_use() {
         assert_eq!(fs.read(ino).unwrap(), data.as_bytes(), "{name}");
     }
 }
+
+/// A rename over an existing name (#104): the name now holds the renamed
+/// file, the old name is gone, and the file it replaced is no longer found.
+#[test]
+fn a_rename_over_an_existing_name_replaces_it() {
+    let img = scratch("write-study/base.img", "rename-over");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let other = w.create_file(d, b"other", b"other\n", 0o644).unwrap();
+    w.rename(d, b"other", d, b"existing")
+        .unwrap_or_else(|e| panic!("rename over existing: {e}"));
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.lookup("/d/existing").unwrap(), other);
+    assert_eq!(fs.read(other).unwrap(), b"other\n");
+    assert!(fs.lookup("/d/other").is_err(), "the old name is gone");
+    assert_eq!(fs.readdir(d).unwrap().len(), 1, "one entry in /d");
+}
+
+/// A directory moved into another directory (#104): it and what it holds
+/// are found at the new path, and each parent's link count follows its
+/// subdirectories.
+#[test]
+fn a_directory_moves_to_another_directory() {
+    let img = scratch("write-study/base.img", "move-dir");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let a = w.mkdir(d, b"a", 0o755).unwrap();
+    let b = w.mkdir(d, b"b", 0o755).unwrap();
+    let x = w.mkdir(a, b"x", 0o755).unwrap();
+    let f = w.create_file(x, b"f", b"in x\n", 0o644).unwrap();
+    w.rename(a, b"x", b, b"x")
+        .unwrap_or_else(|e| panic!("move a directory: {e}"));
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.lookup("/d/b/x").unwrap(), x);
+    assert_eq!(fs.lookup("/d/b/x/f").unwrap(), f);
+    assert_eq!(fs.read(f).unwrap(), b"in x\n");
+    assert!(fs.lookup("/d/a/x").is_err(), "gone from its old parent");
+    assert_eq!(
+        fs.inode(a).unwrap().link_count(),
+        2,
+        "a lost a subdirectory"
+    );
+    assert_eq!(fs.inode(b).unwrap().link_count(), 3, "b gained one");
+}
