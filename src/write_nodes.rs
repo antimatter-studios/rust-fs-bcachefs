@@ -175,20 +175,25 @@ impl<D: BlockDevice> Writer<D> {
         let out = if bytes <= room || keys.len() < 2 {
             vec![self.new_node(id, level, min, max, &keys, t)?]
         } else {
-            // Split by bytes: the left half ends at its last key.
-            let mut acc = 0;
-            let mut cut = keys.len() / 2;
+            // Split by bytes into as many nodes as the keys need, each
+            // filled about evenly (#113: a reclaim inserts hundreds of keys
+            // into one node at once, more than two halves can hold). Each
+            // node ends at its last key; the last one ends at the old max.
+            let parts = bytes.div_ceil(room).max(2);
+            let target = bytes.div_ceil(parts);
+            let mut nodes = Vec::with_capacity(parts);
+            let (mut from, mut acc, mut lo) = (0, 0, min);
             for (i, k) in keys.iter().enumerate() {
                 acc += 40 + k.value.len();
-                if acc >= bytes / 2 {
-                    cut = (i + 1).min(keys.len() - 1);
-                    break;
+                let last = i + 1 == keys.len();
+                if !last && acc >= target && nodes.len() + 1 < parts {
+                    let hi = k.pos;
+                    nodes.push(self.new_node(id, level, lo, hi, &keys[from..=i], t)?);
+                    (from, acc, lo) = (i + 1, 0, successor(hi));
                 }
             }
-            let left_max = keys[cut - 1].pos;
-            let left = self.new_node(id, level, min, left_max, &keys[..cut], t)?;
-            let right = self.new_node(id, level, successor(left_max), max, &keys[cut..], t)?;
-            vec![left, right]
+            nodes.push(self.new_node(id, level, lo, max, &keys[from..], t)?);
+            nodes
         };
         self.free_node(id, level, &ptr, ptr_key.pos, t)?;
         // The pointer standing for the node keeps its position (the node's
