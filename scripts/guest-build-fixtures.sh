@@ -179,7 +179,7 @@ rm -rf "$large_src"
 # used looks different -- narrower key formats, nodes split and rewritten,
 # several bsets per node, deletions beside live keys. So one filesystem is
 # mounted by the reference implementation (its userspace copy, through
-# FUSE: scripts/vm-setup.sh says why not a kernel module) and aged by
+# FUSE; the kernel module is newer here, #110) and aged by
 # scripts/guest-age.py.
 #
 # The FUSE daemon of the pinned release aborts on unmount (an assertion in
@@ -621,6 +621,51 @@ PY
     fi
 } >"$out/casefold.txt" 2>&1 || echo "the casefold steps stopped: exit $?" >>"$out/casefold.txt"
 sed 's/^/casefold: /' "$out/casefold.txt"
+# THE KERNEL ORACLE (#110). The guest boots a kernel that carries the
+# reference module (scripts/vm-setup.sh). An image is mounted through it,
+# the deterministic tree and a hard link are written, the manifest is taken
+# through that mount, and the image is unmounted cleanly. kernel.txt records
+# each stage as `key: value`; a stage that fails is recorded, not fatal
+# here, and tests/oracle_kernel.rs fails on it.
+echo "== kernel (the reference module, #110)"
+kimg=/var/tmp/age/kernel.img
+kmnt="$ROOT/mnt/kernel"
+rm -f "$ROOT$kimg"
+truncate -s 64M "$ROOT$kimg"
+mkdir -p "$kmnt"
+bcachefs-ref format -q "$kimg" >"$out/kernel.format.txt" 2>&1
+{
+    echo "kernel: $(uname -r)"
+    if modprobe bcachefs 2>&1; then
+        echo "module: loaded"
+        dev="$(losetup -f --show "$ROOT$kimg" 2>&1)" || dev=""
+        if [ -b "$dev" ] && mount -t bcachefs -o noatime "$dev" "$kmnt" 2>&1; then
+            echo "mount: ok"
+            make_tree "$kmnt"
+            ln "$kmnt/hello.txt" "$kmnt/dir/hello-again.txt"
+            sync
+            manifest "$kmnt" "$out/kernel.json" live
+            if umount "$kmnt" 2>&1; then
+                echo "unmount: ok"
+            else
+                echo "unmount: failed"
+            fi
+        else
+            echo "mount: failed"
+        fi
+        [ ! -b "$dev" ] || losetup -d "$dev" || true
+    else
+        echo "module: not loaded"
+    fi
+    if bcachefs-ref fsck -n "$kimg" >"$out/kernel.fsck.txt" 2>&1; then
+        echo "fsck: clean"
+    else
+        echo "fsck: errors (kernel.fsck.txt)"
+    fi
+} >"$out/kernel.txt" 2>&1
+cat "$out/kernel.txt"
+cp --sparse=always "$ROOT$kimg" "$out/kernel.img"
+
 # The write study's before/after pairs (#20): its own script, its own
 # directory under fixtures/.
 bash /repo/scripts/guest-write-study.sh

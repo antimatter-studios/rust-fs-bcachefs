@@ -34,7 +34,7 @@ be learned this way is an **open question**, not a guess.
 | S6 | Published check values: CRC-32C of "123456789" (0xe3069283), CRC-64/WE of "123456789" (0x62ec59e3f1a4f00a), XXH64 of the empty input with seed 0 (0xef46db3751d8e999) | public reference values | Unit-test anchors for the checksum implementations. |
 | S8 | The reference implementation mounted through FUSE in the test VM (tools v1.39.7 built with `BCACHEFS_FUSE=1`, per S2), driven by ordinary file operations (`scripts/guest-age.py`) | black-box oracle | The `aged` and `aged-unclean` fixtures: what a running filesystem writes (inline data, narrow key formats, nodes of many bsets, link counts, an unclean shutdown), with the inode numbers and link counts the mount reported. |
 | S9 | J.-P. Aumasson and D. J. Bernstein, "SipHash: a fast short-input PRF" (2012), https://www.aumasson.jp/siphash/siphash.pdf, and its published test vector | prose documentation | The SipHash-2-4 algorithm `src/siphash.rs` is written from. |
-| S10 | The package repository index at https://apt.bcachefs.org/ and its `Packages` metadata (package names, versions, dependencies), fetched 2026-10-07 | metadata | That the reference kernel module is packaged for DKMS and needs kernel headers 6.16 or newer: why no guest kernel here mounts bcachefs yet. No package was installed or opened. |
+| S10 | The package repository index at https://apt.bcachefs.org/ and its `Packages` metadata (package names, versions, dependencies), fetched 2026-10-07 | metadata | That the reference kernel module is packaged for DKMS and needs kernel headers 6.16 or newer, and (fetched again 2026-10-09) that the `trixie` suite carries `bcachefs-kernel-dkms` 1:1.39.7, the tools' pinned version. Since #110 the guest installs that package, as an oracle at arm's length: DKMS builds the module inside the guest and `scripts/vm-setup.sh` deletes its source at once. No package was opened on a workstation. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
 
 ## The specification's own licence
@@ -798,4 +798,6 @@ No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
 snippet derived from them) was read while writing this crate. The only file
 from the tools' repository that was opened is `INSTALL.md` (build
 instructions, S2); the only other access was GitHub API metadata (S7) and
-the package repository's index and dependency metadata (S10).
+the package repository's index and dependency metadata (S10). The
+reference kernel module is built by DKMS inside the harness guest and its
+source deleted there, unread (#110).

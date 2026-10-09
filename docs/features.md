@@ -97,6 +97,12 @@ reads back byte for byte through the reference implementation's mount
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |
 
+## Oracles
+
+| Feature | State | Since | Tracking | Checked by |
+|---|---|---|---|---|
+| The reference kernel module in the harness guest: an image it writes reads back here as its mount reported | Supported | Unreleased (#115) | | `oracle_kernel.rs` |
+
 ## Interfaces
 
 | Feature | State | Since | Tracking | Checked by |
