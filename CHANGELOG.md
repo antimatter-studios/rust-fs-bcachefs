@@ -96,6 +96,12 @@ API, a patch never does.
 
 ### Fixed
 
+- **rename replaces an existing file and moves a directory to another
+  directory** (#104), as the write study shows the reference does: the
+  replaced inode and its extents are deleted unless another name links it,
+  the dirent keeps its slot, and the parents' `bi_nlink` follows the moved
+  directory. A directory cannot move below itself; renaming over a
+  directory is still refused.
 - **A create no longer fails when the inode allocation cursor names a
   number in use** (#107): the writer takes the next free number above it
   and moves the cursor past it. How the reference picks a number then is

@@ -711,3 +711,31 @@ fn a_directory_moves_to_another_directory() {
     );
     assert_eq!(fs.inode(b).unwrap().link_count(), 3, "b gained one");
 }
+
+/// A directory cannot move into itself or below it, as rename(2) refuses,
+/// and the refusal writes nothing.
+#[test]
+fn a_directory_cannot_move_below_itself() {
+    let img = scratch("write-study/base.img", "move-below");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let a = w.mkdir(d, b"a", 0o755).unwrap();
+    let x = w.mkdir(a, b"x", 0o755).unwrap();
+    drop(w);
+    let before = std::fs::read(&img).unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for into in [a, x] {
+        assert!(
+            w.rename(d, b"a", into, b"a").is_err(),
+            "moved /d/a into inode {into}"
+        );
+    }
+    drop(w);
+    assert!(
+        std::fs::read(&img).unwrap() == before,
+        "refused, but written"
+    );
+}
