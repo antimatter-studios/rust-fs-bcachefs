@@ -47,13 +47,15 @@ States:
 | Extended attributes, user and trusted namespaces | Supported | Unreleased (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | Unreleased (#17) | | `oracle_journal.rs` |
 | Journal sequence blacklist | Supported | Unreleased (#67) | | `oracle_blacklist.rs` |
-| Extent entries crc128, stripe pointers, flags | Refused by name | Unreleased (#74) | #52 | `src/extent.rs` unit tests |
+| crc128 extent entries (extents over 512 sectors), partly overwritten ones too | Supported | Unreleased (#97) | | `oracle_extent_entries.rs` |
+| Poisoned extents (flags entry): reads fail with an I/O error, as the reference's do | Supported | Unreleased (#97) | | `oracle_extent_entries.rs` |
+| Stripe pointers (erasure coding, several devices) | Refused by name | Unreleased (#97) | | `src/extent.rs` unit tests |
 | Encrypted filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | A second snapshot, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
 | Snapshots and subvolumes (a second snapshot is refused, #65) | Not supported | | #12; Unobservable through the reference mount (no subvolume command works through it); the reference key editor fabricates snapshot keys, but no whole snapshot yet passes the reference checker (#114) | `oracle_probes.rs` |
 | Reflinked extents (`reflink_p`): refused by the reader and the writer, named by the checker | Refused | Unreleased (#100) | #7; Unobservable through the reference mount: no route makes a reflink (FICLONE, FICLONERANGE, `copy_file_range`, FIDEDUPERANGE); the reference's `kvdb` editor is the next route | `oracle_refused_local.rs`, `oracle_probes.rs` |
-| Casefolded directories | Not supported | | #54; Unobservable: the reference mount refuses casefold | `oracle_probes.rs` |
+| Casefolded directories (`--casefold`): names listed as given, found in any case when ASCII | Partial: a non-ASCII name is found only as stored | Unreleased (#98) | #111 | `oracle_casefold.rs` |
 | Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: neither the reference mount nor its offline editor sets one (#99) | `oracle_inode_fields.rs` |
 
 ## Checking
@@ -90,6 +92,7 @@ reads back byte for byte through the reference implementation's mount
 | Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: nodes split, but no test writes on such an image yet | | #44 | |
 | Compressed or non-crc32c data | Refused | | | |
 | Per-inode options | Unobservable | | #81 | |
+| Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |
 
 ## Interfaces

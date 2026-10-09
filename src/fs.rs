@@ -200,9 +200,43 @@ impl<D: BlockRead> Filesystem<D> {
     /// name or an empty slot (S8: names that collide take the next free
     /// offset, and a removal inside a run leaves a whiteout). A directory
     /// whose hash is not known (crc64, never seen in a fixture) is scanned.
+    ///
+    /// A casefolded directory places and finds an entry by its folded name
+    /// (S1 2.7; S4: the slot of every entry of the `casefold` set is the
+    /// SipHash of its folded name), as the reference mount finds
+    /// `HELLO.txt` as `Hello.TXT`. An ASCII name folds to its lowercase
+    /// (S3: every ASCII name of the set). Folding any other name takes
+    /// Unicode's tables, which this reader does not carry, so such a name
+    /// is matched as stored, by a scan.
     fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
-        let Some(mut at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, name) else {
+        let casefolded = dir.is_casefolded();
+        if casefolded && !name.is_ascii() {
             return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
+        }
+        let key = if casefolded {
+            name.to_ascii_lowercase()
+        } else {
+            name.to_vec()
+        };
+        let found = |k: &Bkey| -> Result<Option<Dirent>> {
+            let d = Dirent::from_key(k)?;
+            let hit = match crate::inode::dirent_folded_name(k)? {
+                Some(f) if casefolded => f == key,
+                _ => d.name == name,
+            };
+            Ok(hit.then_some(d))
+        };
+        let Some(mut at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, &key) else {
+            let keys = self.keys_of(btree_id::DIRENTS, dir.ino)?;
+            for k in keys
+                .iter()
+                .filter(|k| k.key_type == crate::bkey::key_type::DIRENT)
+            {
+                if let Some(d) = found(k)? {
+                    return Ok(Some(d));
+                }
+            }
+            return Ok(None);
         };
         let mut c = self.cursor(btree_id::DIRENTS)?;
         c.seek(Bpos {
@@ -217,8 +251,7 @@ impl<D: BlockRead> Filesystem<D> {
             self.same_snapshot(&k)?;
             match k.key_type {
                 crate::bkey::key_type::DIRENT => {
-                    let d = Dirent::from_key(&k)?;
-                    if d.name == name {
+                    if let Some(d) = found(&k)? {
                         return Ok(Some(d));
                     }
                 }
@@ -320,6 +353,18 @@ impl<D: BlockRead> Filesystem<D> {
             }
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {
+                    // "Reads of poisoned extents return an error rather than
+                    // silently serving corrupt data" (S1 9.1.2.1); the
+                    // reference's mount fails such a read (S8, the `poison`
+                    // image).
+                    if crate::extent::poisoned(&k.value)? {
+                        return Err(Error::Io(format!(
+                            "inode {ino}, sectors {}..{}: the extent is poisoned (its data failed \
+                             its checksum and no good copy was left)",
+                            k.start_offset(),
+                            k.pos.offset
+                        )));
+                    }
                     let e = DataExtent::from_key(&k)?;
                     let data = self.extent_data(&e)?;
                     copy_window(&mut out, offset, end, e.file_start * 512, &data);

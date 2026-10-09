@@ -170,12 +170,49 @@ all eight fixture sets.
 - Varint: length = trailing one bits of the first byte + 1; 9 bytes = next 8
   verbatim; else little-endian bytes >> length (S4, checked).
 - Dirent value: inode u64, DT_* type u8, NUL-padded name (S4, checked).
+- Casefolded directories (#54; the `casefold` set, formatted with
+  `--casefold`, S3 + S4). The superblock printer shows `casefold: 1`; every
+  inode carries flag bit 10, which the lister prints as
+  `has_case_insensitive` (no inode of any other image has it); `bi_casefold`
+  stays 0. Each dirent's type byte has bit 7 set (0x88 for a file), then
+  come two zero bytes, the name's length and the folded name's length
+  (u16 each), the name as given, the folded name, and zero padding; the
+  lister prints both, `Hello.TXT (casefold hello.txt)`. The folded form
+  is full case folding after canonical decomposition, as far as the set
+  shows: `Straße.txt` folds to `strasse.txt`, `ÉCOLE` to `e`, U+0301,
+  `cole`. A dirent's slot is SipHash-2-4 of the folded name, keyed and
+  shifted as for any name (all 51 entries), and the reference mount
+  finds `HELLO.txt` as `Hello.TXT` (S8). The reader finds an ASCII name
+  by its lowercase, which is its folded form in every case seen, and
+  matches any other name as stored, by a scan; the writer refuses a
+  casefolded directory (checked: tests/oracle_casefold.rs).
 
 ### Extents and data (`src/extent.rs`, `src/fs.rs`, `src/compress.rs`)
 
 - Entry types by lowest set bit (S1); bit layouts in `src/extent.rs` found by
   hexdump against the lister's printed fields (S3, S4), checked by reading
   every file of every fixture byte for byte.
+- crc128 is kind 3, three words (S3, S4: the `crc128` fixture, formatted
+  with `--encoded_extent_max=1M` on 512k buckets, gave six incompressible
+  extents of 832 and 1024 sectors and one lz4 extent of 2048, each a 9-u64
+  key). Bits 4..16 and 17..29 are the compressed and uncompressed sizes
+  less one (13 bits, S1's 8192 sectors); bits 56..59 the checksum type and
+  60..63 the compression type; the second word holds the checksum the
+  lister prints after the colon (the low half), the third the high half,
+  0 for every checksum seen. Bits 30..42 are the offset (S8, S4: the
+  `crc128-overwrite` image, a 1 MiB file written through the reference
+  mount with the same options, then 4K of it overwritten: the extent's
+  part after the overwrite, `offset 16`, differs from the part before
+  only in 16 << 30, and the file reads back to the mount's SHA-256). Bits
+  43..55 are then the 13-bit nonce S1 gives encryption alone; 0 in every
+  entry seen, and a non-zero value is refused.
+- The flags entry is kind 6, one word, and bit 7 is `poisoned` (S8, S4: the
+  `poison` image). A data sector of a settled image was corrupted and the
+  file read through the reference mount: the read failed, and the
+  extent's value became `0xc0`, then its crc32 and pointer, which the
+  lister prints as `flags: poisoned` (its reconcile entry was dropped). A
+  later mount with reconcile on moved the file's other extents and left
+  that one. The reference checker passes the image.
 - Data checksums: type 5 = crc32c from zero, not inverted; 6 = CRC-64/WE
   from zero, not inverted; 7 = XXH64 seed 0 (S4, checked).
 - Compression numbering in crc entries: gzip 2, lz4 3, zstd 4,
@@ -591,9 +628,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    passes the image clean. The editor edits an inode only up to its fixed
    header, so that inode would come from this crate's writer. That image is
    the fixture a snapshot-aware reader is written against.
-6. **crc128 entries, encryption (nonces, ChaCha20/Poly1305), erasure coding,
-   reflink, multiple devices and replicas**: not seen in any fixture.
-   (inline_data and xattrs: seen and read, see above.)
+6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
+   multiple devices and replicas**: not seen in any fixture read by this
+   crate. (inline_data, xattrs and crc128: seen and read, see above.)
    **Reflink** (#7): no reflink COPY can be made with the pinned reference
    through its mount. S1 (9.1.6)
    gives the shape: a `reflink_p` in the extents btree holds a 56-bit index
@@ -645,8 +682,8 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    image holds. Nodes of up to 78 bsets merge newest-bset-wins with deleted
    keys dropped, and the result equals the lister's keys exactly. A
    `whiteout` key type has not been seen yet.
-9. **Dirent names longer than one key, casefolded dirents, and the
-   31-bit dirent offset change** (1.30) -- not exercised.
+9. **Dirent names longer than one key, and the 31-bit dirent offset
+   change** (1.30) -- not exercised. (Casefolded dirents: question 18.)
 10. **Dirent hash collisions** (#78). SETTLED by observation (S8). SipHash
     slots are 63 bits wide, so the write study collides names under
     `--str_hash=crc32c` instead: four 16-byte names whose XOR differences
@@ -709,13 +746,18 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     images, then checked against all 314 dirents of `strhash`:
     `inode::name_hash`, tests/oracle_collisions.rs). Still open: crc64's
     number and inputs, and the xattr hash under crc32c.
-18. **Casefolded directories.** S1 (2.7): a casefolded directory stores
-    both the original name and its casefolded form in each dirent, and
-    looks up by the folded form. The dirent layout this reader decodes is
-    the non-casefolded one (issue #54); which inode flag marks a casefolded directory,
-    and the two-name layout, need a fixture. The fixture build probes for
-    one (`set-file-option --casefold=1` and `chattr +F` through the
-    reference mount) and records the answer in `probe.*`.
+18. **Casefolded directories.** SETTLED for what the reader needs (see
+    Inodes and dirents above). The reference mount refuses `chattr +F` and
+    `set-file-option --casefold` on a directory (`probe.txt`), but the
+    formatter takes `--casefold` for the whole filesystem, and its mount
+    then folds lookups. Still open: the folding of names beyond ASCII
+    (Unicode's tables, "utf8-12.1.0" by the superblock printer's own
+    words), which a lookup of such a name would need to hash, so the
+    reader scans for it as stored (issue #111); whether
+    `has_case_insensitive` alone marks a directory, or only with the
+    superblock option, since no image has one without the other; and what
+    bytes 9..10 of a casefolded dirent hold, 0 in every one seen and
+    refused otherwise.
 19. **Extent entries beyond ptr, crc32 and crc64.** S1 (9.1.3, 9.1.12)
     names crc128 (24 bytes, required under encryption), stripe pointers
     (erasure coding), a flags entry (poisoned) and a `reconcile` entry
@@ -730,10 +772,20 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     over that one word and reads the data; the files read back to the
     mount's SHA-256 (`tests/oracle_bgcompress.rs`). Still open: the
     word's fields, and whether it can be longer with other options set.
-    Bit 7 rather than the 6 S1's order suggested shows the order does not
-    give bit positions, so 3 to 6 (crc128, stripe_ptr and flags in some
-    arrangement) are refused as unknown kinds until a fixture shows them
-    (issue #52).
+    **crc128 (kind 3) and flags (kind 6, poisoned at bit 7) are answered**
+    by the `crc128` fixture and the `crc128-overwrite` and `poison` images
+    (see Extents above); a crc128 nonce, only ever 0, is refused unless 0.
+    **The stripe pointer is kind 4**, one word (S8, S3, S4: the fixture
+    build's erasure-coding probe, three devices, `--erasure_code
+    --replicas=2`, `probe-ec.txt`). The reference first writes each extent
+    with two pointers, then rewrites it as `[crc32, stripe_ptr, ptr]` keys
+    of 8 u64s once the stripe is made; in that copy `stripe_ptr: idx 1
+    block 0` is the word 0x22010, `idx 1 block 1` 0x22030 and `idx 2 block
+    0` 0x42010, through `idx 4`. So bits 5..12 are the block and bits
+    17..63 the stripe index; bits 13..16, which the lister does not
+    print, hold 1 in every one (S1 names a 4-bit redundancy). This reader
+    reads one device, so a stripe pointer is refused by name. Kind 5 is
+    the one kind no image has shown.
 
 ## Confirmation
 

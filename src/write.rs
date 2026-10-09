@@ -609,6 +609,14 @@ impl<D: BlockDevice> Writer<D> {
     /// left).
     fn dirent(&self, dir: &InodeRef, name: &[u8]) -> Result<(Bpos, Option<Bkey>, Option<Bkey>)> {
         let ino = dir.key.pos.offset;
+        // A casefolded directory's entries carry a folded name too, placed
+        // by it (inode::INODE_HAS_CASE_INSENSITIVE): not made here.
+        if dir.raw.flags & u64::from(crate::inode::INODE_HAS_CASE_INSENSITIVE) != 0 {
+            return Err(Error::Unsupported(format!(
+                "directory {ino} is casefolded: its entries hold a folded name, which this writer \
+                 does not make"
+            )));
+        }
         let start = crate::inode::name_hash(dir.raw.hash_type(), dir.raw.hash_seed, name)
             .ok_or_else(|| Error::Unsupported(format!("directory {ino}: unknown string hash")))?;
         let slots: std::collections::BTreeMap<u64, Bkey> = match self.keys(ids::DIRENTS) {

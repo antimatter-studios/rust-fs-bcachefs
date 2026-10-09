@@ -353,6 +353,12 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     continue;
                 }
             }
+            // A poisoned extent's data is known to be bad, and the
+            // filesystem says so: the reference checker passes an image
+            // holding one (S8, the `poison` image), and so does this one.
+            if matches!(crate::extent::poisoned(&k.value), Ok(true)) {
+                continue;
+            }
             if let Err(e) = verify_data(dev, &e) {
                 r.add("extent_data", format!("extent {}: {e}", k.pos));
             }

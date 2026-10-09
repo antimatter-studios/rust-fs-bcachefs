@@ -135,6 +135,13 @@ API, a patch never does.
   behind #12, #54 and #7 turn a test red the first time the reference
   implementation honours one of them, and `tests/oracle_bgcompress.rs` does
   the same for an extent entry kind this reader cannot decode (#52).
+- **Casefolded directories are read** (#54). The formatter makes them
+  with `--casefold` although the reference mount refuses to set the
+  option on a directory, and a `casefold` fixture shows their entries:
+  the name as given and its folded form, with their lengths. Listings
+  give the names as stored. A lookup finds an ASCII name in any case, as
+  the reference mount does, and any other name as stored (#111). The
+  writer refuses to change a casefolded directory.
 - **An extent entry kind this reader cannot decode is refused by name**
   (crc128, stripe_ptr, flags, reconcile; #52), and a `bgcompress` fixture is
   built so a reconcile entry's layout can be observed.
@@ -145,6 +152,14 @@ API, a patch never does.
   route to a clone through the reference mount (FICLONE, FICLONERANGE,
   `copy_file_range`, FIDEDUPERANGE). None makes a reflink. The reference
   tool's `kvdb` key editor is the route left for learning the layout.
+- **crc128 and flags extent entries are read** (#52). A `crc128` fixture
+  (`--encoded_extent_max=1M`) shows the entry the reference writes for
+  extents over 512 sectors, and a `poison` image shows the flags entry its
+  mount writes when a read finds bad data: a poisoned extent now fails to
+  read with an I/O error, as the reference's does, and `fsck.bcachefs`
+  passes the image as the reference checker does (`extent::poisoned`).
+  The stripe pointer of an erasure-coded extent, seen on a three-device
+  probe, is refused by name.
 - **The writer refuses a filesystem whose time precision is not
   nanoseconds** (#58), since the times it stamps would be in the wrong unit;
   the guest test that could pass by refusing a full node is named for both
