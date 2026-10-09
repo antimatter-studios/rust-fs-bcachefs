@@ -293,6 +293,231 @@ if ! bcachefs-ref fsck -n "$img" > "$out/aged.fsck.txt" 2>&1; then
     exit 1
 fi
 
+# EXTENT ENTRIES (#52): the entry kinds beyond ptr, crc32, crc64 and
+# reconcile, made where one device can make them, so each one's layout can
+# be read off the image against the lister's printed fields.
+#
+# crc128. S1 (9.1.3.2): the write path takes the smallest crc entry that
+# holds the extent, crc64 holds 512 sectors at most and crc128 8192, and
+# encoded extents are at most encoded_extent_max (256k, 512 sectors, by
+# default). So this set raises encoded_extent_max to 1M, and is made on an
+# image large enough that the formatter picks buckets above 256k (it gave
+# 32k on 64M and 128k on 256M), so an extent can outgrow crc64.
+echo "== crc128 (--encoded_extent_max=1M --compression=lz4, 1G)"
+truncate -s 1G "$out/crc128.img"
+bcachefs-ref format -q --encoded_extent_max=1M --compression=lz4 --source="$src" \
+    "$out/crc128.img" >"$out/crc128.format.txt" 2>&1
+manifest "$src" "$out/crc128.json"
+bcachefs-ref show-super "$out/crc128.img" >"$out/crc128.super.txt" 2>&1
+for b in inodes dirents extents; do
+    bcachefs-ref list -b "$b" "$out/crc128.img" >"$out/crc128.$b.txt" 2>&1
+done
+# The lister's raw view of each node, beside the image's own bytes.
+bcachefs-ref list -b extents -m nodes-ondisk "$out/crc128.img" \
+    >"$out/crc128.extents.ondisk.txt" 2>&1 || true
+if ! bcachefs-ref fsck -n "$out/crc128.img" >"$out/crc128.fsck.txt" 2>&1; then
+    echo "the reference checker did not pass crc128:" >&2
+    tail -n 30 "$out/crc128.fsck.txt" >&2
+    exit 1
+fi
+# A crc128 whose offset is not 0: every extent the formatter wrote starts at
+# its data's start, so which of the crc128's two 13-bit fields after the
+# sizes is the offset is not seen there. An extent partly overwritten keeps
+# its entry and starts its live part further in (S1 9.1.3.2), so a file is
+# written through the mount with the crc128 set's options, settled, and 4K
+# of it overwritten. crc128-overwrite.txt records the steps; nothing here
+# fails the build.
+echo "== crc128-overwrite (a crc128 extent partly overwritten, through the mount)"
+img=/var/tmp/age/crc128-overwrite.img
+rm -f "$ROOT$img"
+truncate -s 1G "$ROOT$img"
+bcachefs-ref format -q --encoded_extent_max=1M "$img" >"$out/crc128-overwrite.format.txt" 2>&1
+{
+    if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, random, sys
+with open(os.path.join(sys.argv[1], "f"), "wb") as f:
+    f.write(random.Random(128).randbytes(1 << 20))
+PY
+        sync
+        sleep 2
+        fuse_kill
+        bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.written.settle.txt" 2>&1 ||
+            echo "settle written: exit $?"
+        bcachefs-ref list -b extents "$img" >"$out/crc128-overwrite.written.extents.txt" 2>&1 || true
+        if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+            python3 - "$ROOT$mnt" <<'PY' || echo "overwrite: exit $?"
+import os, sys
+with open(os.path.join(sys.argv[1], "f"), "r+b") as f:
+    f.seek(4096)
+    f.write(b"overwritten\n" * 341 + b"end\n")
+PY
+            sync
+            sleep 2
+            manifest "$ROOT$mnt" "$out/crc128-overwrite.json" live
+            fuse_kill
+            bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.replay.txt" 2>&1 ||
+                echo "settle overwritten: exit $?"
+            for b in inodes dirents extents; do
+                bcachefs-ref list -b "$b" "$img" >"$out/crc128-overwrite.$b.txt" 2>&1 || true
+            done
+            bcachefs-ref fsck -n "$img" >"$out/crc128-overwrite.fsck.txt" 2>&1 &&
+                echo "fsck -n: clean" || echo "fsck -n: exit $?"
+            grep -c 'crc128:' "$out/crc128-overwrite.extents.txt" | sed 's/$/ crc128 entries/'
+            grep 'crc128:.* offset [1-9]' "$out/crc128-overwrite.extents.txt" || echo "no crc128 offset above 0"
+            cp --sparse=always "$ROOT$img" "$out/crc128-overwrite.img"
+        fi
+    fi
+} >"$out/crc128-overwrite.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/crc128-overwrite.txt"
+sed 's/^/crc128-overwrite: /' "$out/crc128-overwrite.txt"
+
+# POISONED EXTENTS. S1 (5.5.5, 9.1.2.1): an extent whose data fails its
+# checksum, with no good copy, is marked poisoned -- when it is read, or
+# when it is moved (the move writes a fresh checksum over the bad data, and
+# the flag is all that remembers it). Both are tried on one image: a file
+# is written with reconcile off and the image settled, one sector of its
+# first extent is corrupted, then it is read through the mount with
+# reconcile still off, and then the image is mounted with reconcile on,
+# which background compression gives work to. poison.txt records each
+# step's outcome, poison.<step>.extents.txt the lister's view after it,
+# and poison.img is the image after the last.
+echo "== poison (a corrupted data sector, read and then moved by the reference)"
+img=/var/tmp/age/poison.img
+rm -f "$ROOT$img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q --background_compression=lz4 "$img" >"$out/poison.format.txt" 2>&1
+poison_settle() { # STEP
+    sync
+    sleep 2
+    fuse_kill
+    bcachefs-ref fsck -y "$img" >"$out/poison.$1.settle.txt" 2>&1 || echo "settle $1: exit $?"
+    bcachefs-ref list -b extents "$img" >"$out/poison.$1.extents.txt" 2>&1 || true
+    echo "after $1: $(grep -c 'flags: poisoned' "$out/poison.$1.extents.txt") extents poisoned"
+}
+{
+    echo "## write (reconcile_enabled=0)"
+    if (fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"); then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, sys
+m = sys.argv[1]
+with open(os.path.join(m, "victim"), "wb") as f:
+    f.write(b"".join(b"%08d this line is read back or refused\n" % i for i in range(4000)))
+with open(os.path.join(m, "intact"), "wb") as f:
+    f.write(b"an intact file\n" * 100)
+PY
+        echo "victim inode $(stat -c %i "$ROOT$mnt/victim")" | tee "$work/poison.ino"
+        poison_settle written
+        echo "## corrupt the first sector of the victim's first extent"
+        bcachefs-ref show-super "$img" >"$out/poison.super.txt" 2>&1
+        python3 - "$ROOT$img" "$out/poison.written.extents.txt" "$out/poison.super.txt" \
+            "$(awk '{print $3}' "$work/poison.ino")" <<'PY' || echo "corrupt: exit $?"
+import re, sys
+img, listing, sup, ino = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+size = re.search(r"Bucket size:\s*([0-9.]+)([kM]?)", open(sup).read())
+bucket = float(size.group(1)) * {"": 1, "k": 1024, "M": 1 << 20}[size.group(2)] / 512
+key = None
+for line in open(listing):
+    if line.startswith("u64s"):
+        key = line if re.search(r" extent %s:" % ino, line) else None
+    elif key and line.strip().startswith("ptr:"):
+        dev, b, off = (int(x) for x in re.search(r" (\d+):(\d+):(\d+) gen", line).groups())
+        sector = int(b * bucket + off)
+        with open(img, "r+b") as f:
+            f.seek(sector * 512 + 100)
+            bad = bytes(x ^ 0xFF for x in f.read(64))
+            f.seek(sector * 512 + 100)
+            f.write(bad)
+        print(f"corrupted 64 bytes of sector {sector} (bucket {b} + {off}), under {key.split(':')[0]}...")
+        break
+else:
+    print("no pointer found for inode", ino)
+PY
+        echo "## read through the mount (reconcile_enabled=0)"
+        if (fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"); then
+            cat "$ROOT$mnt/victim" >/dev/null 2>&1 && echo "victim: read" || echo "victim: read failed ($?)"
+            cmp -s "$ROOT$mnt/intact" <(yes 'an intact file' | head -n 100) && echo "intact: read" ||
+                echo "intact: differs"
+            poison_settle read
+        fi
+        echo "## mount with reconcile on, for 30 seconds"
+        if (fuse_mount "$img" rw,noatime "$work/fuse-poison.log"); then
+            sleep 30
+            cat "$ROOT$mnt/victim" >/dev/null 2>&1 && echo "victim: read" || echo "victim: read failed ($?)"
+            poison_settle moved
+        fi
+    fi
+} >"$out/poison.txt" 2>&1 || echo "the experiment stopped: exit $?" >>"$out/poison.txt"
+sed 's/^/poison: /' "$out/poison.txt"
+cp "$out/poison.moved.extents.txt" "$out/poison.extents.txt" 2>/dev/null || true
+bcachefs-ref list -b extents -m nodes-ondisk "$img" >"$out/poison.extents.ondisk.txt" 2>&1 || true
+bcachefs-ref fsck -n "$img" >"$out/poison.fsck.txt" 2>&1 || true
+cp --sparse=always "$ROOT$img" "$out/poison.img"
+
+# Stripe pointers link an extent to an erasure-coding stripe (S1 9.1.3.3),
+# which takes several devices; a reader of one device never meets one.
+# Tried once on three devices so the lister shows whether, and how, the
+# reference writes one. No test reads these images.
+echo "== probe: erasure coding on three devices"
+ec=/var/tmp/age/ec
+{
+    for i in 0 1 2; do
+        rm -f "$ROOT$ec-$i.img"
+        truncate -s 128M "$ROOT$ec-$i.img"
+    done
+    bcachefs-ref format -q --erasure_code --replicas=2 "$ec-0.img" "$ec-1.img" "$ec-2.img" ||
+        echo "format: exit $?"
+    if (fuse_mount "$ec-0.img:$ec-1.img:$ec-2.img" rw,noatime "$work/fuse-ec.log"); then
+        python3 -c 'import random,sys; sys.stdout.buffer.write(random.Random(9).randbytes(8 << 20))' \
+            >"$ROOT$mnt/data" || echo "write: exit $?"
+        sync
+        sleep 5
+        fuse_kill
+    else
+        echo "the reference implementation did not mount the three devices"
+    fi
+    timeout 300 bcachefs-ref fsck -y "$ec-0.img" "$ec-1.img" "$ec-2.img" || echo "fsck: exit $?"
+    for b in extents stripes; do
+        echo "## list -b $b"
+        timeout 300 bcachefs-ref list -b "$b" "$ec-0.img" "$ec-1.img" "$ec-2.img" \
+            >"$work/ec.$b.txt" 2>&1 || echo "list $b: exit $?"
+        head -n 400 "$work/ec.$b.txt"
+    done
+    # The stripe pointer's own bytes: each crc32 entry the lister prints
+    # before a stripe_ptr line is built from its printed fields (the crc32
+    # layout in src/extent.rs) and found in the images, at every place it
+    # is (an older copy of the key, from before the stripe was made, holds
+    # two pointers instead: CI run 37812305157); the words after the copy
+    # that holds it are the stripe pointer and the pointer.
+    echo "## the words after each copy of each crc32 entry that precedes a stripe_ptr"
+    python3 - "$work/ec.extents.txt" "$ROOT$ec-0.img" "$ROOT$ec-1.img" "$ROOT$ec-2.img" <<'PY'
+import mmap, re, struct, sys
+lines = open(sys.argv[1]).read().splitlines()
+files = [open(p, "rb") for p in sys.argv[2:]]
+maps = [mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) for f in files]
+shown = 0
+for i, l in enumerate(lines[:-2]):
+    m = re.match(r"\s+crc32: c_size (\d+) size (\d+) offset (\d+) .*csum crc32c \w+:(\w+)\s+compress none", l)
+    if not m or "stripe_ptr:" not in lines[i + 1]:
+        continue
+    cs, size, off, csum = int(m[1]), int(m[2]), int(m[3]), int(m[4], 16)
+    w = csum << 32 | 5 << 24 | off << 16 | (size - 1) << 9 | (cs - 1) << 2 | 2
+    copies = set()
+    for mm in maps:
+        at = mm.find(struct.pack("<Q", w))
+        while at >= 0:
+            if at + 24 <= len(mm):
+                copies.add(struct.unpack_from("<3Q", mm, at))
+            at = mm.find(struct.pack("<Q", w), at + 1)
+    print(f"{lines[i + 1].strip()} | {lines[i + 2].strip()} | {len(copies)} distinct copies:")
+    for c in sorted(copies):
+        print("   ", " ".join(f"{x:#018x}" for x in c))
+    shown += 1
+    if shown == 8:
+        break
+PY
+} >"$out/probe-ec.txt" 2>&1 || echo "the probe stopped: exit $?" >>"$out/probe-ec.txt"
+rm -f "$ROOT$ec"-*.img
+
 # THE REFUSED SETS: what this reader must recognise and refuse with a clear
 # error rather than misread. An encrypted filesystem (its master key stored
 # unencrypted, so no passphrase is involved), and both members of a
@@ -473,5 +698,15 @@ for c in "" format fusemount mount subvolume "subvolume create" "subvolume snaps
 done > "$out/probe.help.txt" 2>&1
 
 bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
+# The reference tool's own account of its commands and options, for what
+# can be asked of it (format options, offline editing): printed output, the
+# same standing as a listing.
+{
+    for cmd in "" format set-file-option kvdb; do
+        echo "## $cmd --help"
+        # shellcheck disable=SC2086 # $cmd is empty or one word
+        bcachefs-ref $cmd --help
+    done
+} >"$out/reference-help.txt" 2>&1 || true
 rm -rf "$work"
 ls -l "$out"
