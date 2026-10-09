@@ -155,6 +155,26 @@ if [ "$(cat /etc/ref-kernel-version 2>/dev/null || true)" != "$KERNEL_BUILD" ]; 
         echo "$u: $(systemctl is-enabled "$u" 2>&1 || true)"
     done
     sed -i -E 's/^(GRUB_CMDLINE_LINUX=")/\1net.ifnames=0 biosdevname=0 /' /etc/default/grub
+    # THE BOOT LOADER MATCHES ITS MODULES, AND THE KERNEL SPEAKS EARLY. CI
+    # run 37924564635's console showed the next boot reset the machine at
+    # once after GRUB's "Booting `Debian GNU/Linux'", over and over, with no
+    # kernel line: the upgrade replaced GRUB's modules under /boot, but the
+    # core image on the disk is the box's, and a mismatched pair can fail
+    # exactly there. GRUB is installed again for however this box boots,
+    # and the kernel logs to the serial port from its first instruction, so
+    # if it is the kernel that resets, the console says why.
+    sed -i -E 's/^(GRUB_CMDLINE_LINUX=")/\1earlyprintk=serial,ttyS0,115200 ignore_loglevel /' \
+        /etc/default/grub
+    root_dev="$(findmnt -no SOURCE /)"
+    disk="/dev/$(lsblk -no PKNAME "$root_dev" | head -n 1)"
+    echo "vm-setup: root $root_dev on $disk; firmware: $([ -d /sys/firmware/efi ] && echo EFI || echo BIOS)"
+    lsblk -o NAME,SIZE,TYPE,PARTTYPENAME,MOUNTPOINT "$disk" || true
+    dpkg -l 'grub-*' 2>/dev/null | awk '/^ii/ {print "vm-setup: " $2 " " $3}'
+    if [ -d /sys/firmware/efi ]; then
+        grub-install --target=x86_64-efi --efi-directory=/boot/efi --no-nvram 2>&1 | tail -n 3
+    else
+        grub-install --target=i386-pc "$disk" 2>&1 | tail -n 3
+    fi
     update-grub >/dev/null 2>&1
     install -d /etc/systemd/network
     printf '[Match]\nName=eth0 en*\n\n[Network]\nDHCP=yes\n' >/etc/systemd/network/10-guest.network
