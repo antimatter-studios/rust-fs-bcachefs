@@ -89,6 +89,9 @@ pub struct Writer<D: BlockDevice> {
     /// Buckets taken during this writer's life, which the freespace btree
     /// may not show as taken yet.
     reserved: std::collections::BTreeSet<u64>,
+    /// The nodes the cursor has read: roots and interior nodes are read
+    /// once per writer rather than once per lookup (#108).
+    cache: btree::NodeCache,
 }
 
 impl<D: BlockDevice> Writer<D> {
@@ -138,6 +141,7 @@ impl<D: BlockDevice> Writer<D> {
             journal_seq,
             session: None,
             reserved: Default::default(),
+            cache: Default::default(),
         })
     }
 
@@ -584,12 +588,16 @@ impl<D: BlockDevice> Writer<D> {
     /// path, and in a journalled session sees the replay's keys over the
     /// nodes', as `walk_replayed` does.
     fn cursor(&self, id: u8) -> Result<btree::Cursor<'_>> {
-        btree::Cursor::new(
+        Ok(btree::Cursor::new(
             &self.dev,
             &self.sb,
             id,
             self.session.as_ref().map(|s| &s.replay),
-        )
+        )?
+        // Nodes are cached by where they are and how much of them is written
+        // (btree::NodeCache), so a node this writer appends to or rewrites is
+        // a new entry: what is cached is never stale.
+        .with_cache(&self.cache))
     }
 
     /// Every key of btree `id` from `from` on while its position's inode
@@ -760,18 +768,29 @@ impl<D: BlockDevice> Writer<D> {
         // cursors are per-CPU (S1 11.5), so one can lag numbers another
         // handed out. How the reference itself skips them has not been
         // observed; a number with a live key at it is taken.
+        // Through the cursor from the cursor's next on (#108): only the
+        // run of taken numbers is read, not the whole btree.
         let mut ino = le64(&cursor.value, 8);
-        let taken: std::collections::BTreeSet<u64> = self
-            .keys(ids::INODES)?
-            .into_iter()
-            .filter(|k| k.pos.inode == 0 && k.pos.offset >= ino)
-            .filter(|k| k.key_type != key_type::DELETED && k.key_type != key_type::WHITEOUT)
-            .map(|k| k.pos.offset)
-            .collect();
-        while taken.contains(&ino) {
-            ino = ino
-                .checked_add(1)
-                .ok_or_else(|| Error::Unsupported("no free inode number".into()))?;
+        if self.root(ids::INODES).is_ok() {
+            let mut c = self.cursor(ids::INODES)?;
+            c.seek(Bpos {
+                inode: 0,
+                offset: ino,
+                snapshot: 0,
+            })?;
+            while let Some(k) = c.next_key()? {
+                if k.pos.inode != 0 || k.pos.offset > ino {
+                    break;
+                }
+                if k.pos.offset == ino
+                    && k.key_type != key_type::DELETED
+                    && k.key_type != key_type::WHITEOUT
+                {
+                    ino = ino
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Unsupported("no free inode number".into()))?;
+                }
+            }
         }
         let mut next = cursor;
         next.value[8..16].copy_from_slice(&(ino + 1).to_le_bytes());
@@ -1418,14 +1437,18 @@ impl<D: BlockDevice> Writer<D> {
                     i.raw.hash_type()
                 ))
             })?;
-        let slots: std::collections::BTreeMap<u64, Bkey> = match self.keys(XATTRS) {
-            Err(Error::NotFound(_)) if self.root(XATTRS).is_err() => Default::default(),
-            r => r?
-                .into_iter()
-                .filter(|k| k.pos.inode == ino && k.pos.offset >= start)
-                .map(|k| (k.pos.offset, k))
-                .collect(),
-        };
+        let slots: std::collections::BTreeMap<u64, Bkey> = self
+            .keys_from(
+                XATTRS,
+                Bpos {
+                    inode: ino,
+                    offset: start,
+                    snapshot: 0,
+                },
+            )?
+            .into_iter()
+            .map(|k| (k.pos.offset, k))
+            .collect();
         let mut whiteout = None;
         let mut at = start;
         loop {

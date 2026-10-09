@@ -1011,16 +1011,27 @@ fn nodes_split_where_nodes_are_smaller_than_buckets() {
     );
 }
 
-/// A read/write device that counts its reads (#108).
+/// A read/write device that records the offset of every read (#108).
 struct CountingRw {
     inner: FileDevice,
-    reads: std::sync::atomic::AtomicU64,
+    reads: std::sync::Mutex<Vec<u64>>,
+}
+
+impl CountingRw {
+    fn new(inner: FileDevice) -> Self {
+        CountingRw {
+            inner,
+            reads: Default::default(),
+        }
+    }
+    fn offsets(&self) -> Vec<u64> {
+        self.reads.lock().unwrap().clone()
+    }
 }
 
 impl fs_core::BlockRead for CountingRw {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
-        self.reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.reads.lock().unwrap().push(offset);
         fs_core::BlockRead::read_at(&self.inner, offset, buf)
     }
     fn size_bytes(&self) -> u64 {
@@ -1041,40 +1052,46 @@ impl fs_core::BlockDevice for CountingRw {
 }
 
 /// A create in the `large` image's directory of 30000 names (#108) reads
-/// the nodes on its keys' paths, not whole btrees: fewer reads than one
-/// walk of the dirents and inodes btrees takes.
+/// the dirents and inodes nodes on its keys' paths, not every node of those
+/// btrees: of the node offsets one walk of them reads, a create reads a few.
 #[test]
 fn a_create_reads_paths_not_whole_btrees() {
     use fs_bcachefs::{btree, superblock::Superblock};
+    use std::collections::BTreeSet;
     let img = scratch("large.img", "cursor-create");
-    let whole = {
-        let dev = CountingRw {
-            inner: FileDevice::open(&img).unwrap(),
-            reads: Default::default(),
-        };
+    // Where the dirents and inodes nodes are: every offset a walk reads.
+    let nodes: BTreeSet<u64> = {
+        let dev = CountingRw::new(FileDevice::open(&img).unwrap());
         let sb = Superblock::read(&dev).unwrap();
-        let before = dev.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let before = dev.offsets().len();
         for id in [btree::btree_id::DIRENTS, btree::btree_id::INODES] {
             btree::walk(&dev, &sb, id).unwrap();
         }
-        dev.reads.load(std::sync::atomic::Ordering::Relaxed) - before
+        dev.offsets()[before..].iter().copied().collect()
     };
+    assert!(
+        nodes.len() > 20,
+        "only {} nodes: the bound proves nothing",
+        nodes.len()
+    );
     let wide = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()
         .lookup("/wide")
         .unwrap();
-    let dev = CountingRw {
-        inner: FileDevice::open_rw(&img).unwrap(),
-        reads: Default::default(),
-    };
-    let mut w = Writer::open(dev).unwrap();
-    let opened = w.device().reads.load(std::sync::atomic::Ordering::Relaxed);
+    let mut w = Writer::open(CountingRw::new(FileDevice::open_rw(&img).unwrap())).unwrap();
+    let opened = w.device().offsets().len();
     let f = w.create_file(wide, b"new-entry", b"new\n", 0o644).unwrap();
-    let create = w.device().reads.load(std::sync::atomic::Ordering::Relaxed) - opened;
+    let read: BTreeSet<u64> = w.device().offsets()[opened..]
+        .iter()
+        .copied()
+        .filter(|o| nodes.contains(o))
+        .collect();
     drop(w);
     assert!(
-        create < whole,
-        "one create took {create} reads; one walk of the dirents and inodes btrees takes {whole}"
+        read.len() * 4 < nodes.len(),
+        "one create read {} of the {} dirents and inodes nodes",
+        read.len(),
+        nodes.len()
     );
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
     assert_eq!(fs.lookup("/wide/new-entry").unwrap(), f);
