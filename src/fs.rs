@@ -436,45 +436,54 @@ impl<D: BlockRead> Filesystem<D> {
     /// The `len` live sectors of one extent, decompressed and checked.
     fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
         e.ptr.check(self.dev_idx, self.bucket_gen(e.ptr.offset)?)?;
-        let (stored_sectors, crc) = match e.crc {
-            Some(c) => (c.compressed_size as u64, c),
-            None => {
-                let mut b = vec![0u8; e.len as usize * 512];
-                self.dev.read_at(e.ptr.offset * 512, &mut b)?;
-                return Ok(b);
-            }
-        };
-        let mut raw = vec![0u8; stored_sectors as usize * 512];
-        self.dev.read_at(e.ptr.offset * 512, &mut raw)?;
-        if !crate::csum::is_known(crc.csum_type) {
-            return Err(Error::Unsupported(format!(
-                "data checksum type {}",
-                crc.csum_type
-            )));
-        }
-        // 32- and 64-bit checksums live entirely in the low word; the
-        // high bits are only used by 128-bit MACs, which are not read here.
-        let stored = crc.csum_lo;
-        crate::csum::verify(crc.csum_type, &raw, stored).map_err(|computed| {
-            Error::BadChecksum {
-                what: "extent data",
-                stored,
-                computed,
-            }
-        })?;
-        let plain = match crc.compression_type {
-            compression::NONE | compression::INCOMPRESSIBLE => raw,
-            t => crate::compress::decompress(t, &raw, crc.uncompressed_size as usize * 512)?,
-        };
-        let from = e.skip as usize * 512;
-        let to = from + e.len as usize * 512;
-        if to > plain.len() {
-            return Err(Error::Corrupt(
-                "extent's live range exceeds its data".into(),
-            ));
-        }
-        Ok(plain[from..to].to_vec())
+        extent_bytes(e, |at, buf| Ok(self.dev.read_at(at, buf)?))
     }
+}
+
+/// The live bytes of a data extent, read with `read(byte offset, buffer)`:
+/// the stored sectors, their checksum verified, decompressed, and the
+/// extent's live range cut out. The writer reads a file's contents through
+/// this too, for a write into part of it (#102).
+pub(crate) fn extent_bytes(
+    e: &DataExtent,
+    read: impl Fn(u64, &mut [u8]) -> Result<()>,
+) -> Result<Vec<u8>> {
+    let (stored_sectors, crc) = match e.crc {
+        Some(c) => (c.compressed_size as u64, c),
+        None => {
+            let mut b = vec![0u8; e.len as usize * 512];
+            read(e.ptr.offset * 512, &mut b)?;
+            return Ok(b);
+        }
+    };
+    let mut raw = vec![0u8; stored_sectors as usize * 512];
+    read(e.ptr.offset * 512, &mut raw)?;
+    if !crate::csum::is_known(crc.csum_type) {
+        return Err(Error::Unsupported(format!(
+            "data checksum type {}",
+            crc.csum_type
+        )));
+    }
+    // 32- and 64-bit checksums live entirely in the low word; the
+    // high bits are only used by 128-bit MACs, which are not read here.
+    let stored = crc.csum_lo;
+    crate::csum::verify(crc.csum_type, &raw, stored).map_err(|computed| Error::BadChecksum {
+        what: "extent data",
+        stored,
+        computed,
+    })?;
+    let plain = match crc.compression_type {
+        compression::NONE | compression::INCOMPRESSIBLE => raw,
+        t => crate::compress::decompress(t, &raw, crc.uncompressed_size as usize * 512)?,
+    };
+    let from = e.skip as usize * 512;
+    let to = from + e.len as usize * 512;
+    if to > plain.len() {
+        return Err(Error::Corrupt(
+            "extent's live range exceeds its data".into(),
+        ));
+    }
+    Ok(plain[from..to].to_vec())
 }
 
 /// The refusal for a key at a snapshot other than the root's.
@@ -489,7 +498,13 @@ fn snapshots_not_read(k: &Bkey, root_snapshot: u32) -> Error {
 /// Copy the part of `data` (which starts at file byte `data_start`) that
 /// falls inside the window `[win_start, win_end)` into `out`, which holds
 /// that window.
-fn copy_window(out: &mut [u8], win_start: u64, win_end: u64, data_start: u64, data: &[u8]) {
+pub(crate) fn copy_window(
+    out: &mut [u8],
+    win_start: u64,
+    win_end: u64,
+    data_start: u64,
+    data: &[u8],
+) {
     let data_end = data_start.saturating_add(data.len() as u64);
     let from = data_start.max(win_start);
     let to = data_end.min(win_end);
