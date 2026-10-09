@@ -829,3 +829,31 @@ fn ranged_writes_appends_and_truncations_read_back() {
     );
     assert_eq!(fs.inode(f).unwrap().size, 6000);
 }
+
+/// Files written on every data checksum the formatter offers, and on
+/// compressed filesystems (#105), read back here: crc64 and xxhash in a
+/// crc64 entry, none with only a pointer, and on lz4 and zstd stored
+/// uncompressed, marked incompressible.
+#[test]
+fn files_on_every_data_checksum_and_compression_read_back() {
+    let data: Vec<u8> = (0..70_000u32).map(|i| (i * 7 % 253) as u8).collect();
+    for set in ["crc64", "xxhash", "nocsum", "lz4", "zstd", "gzip"] {
+        let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
+        let root = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup("/")
+            .unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        let f = w
+            .create_file(root, b"written-here", &data, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        drop(w);
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        assert!(fs.read(f).unwrap() == data, "{set}: contents");
+        assert_eq!(
+            fs.read(fs.lookup("/hello.txt").unwrap()).unwrap(),
+            b"hello world\n",
+            "{set}: an old file"
+        );
+    }
+}

@@ -851,3 +851,29 @@ fn ranged_writes_are_read_by_the_reference() {
         assert!(std::fs::read(m.join("d/ranged")).unwrap() == model);
     });
 }
+
+/// Files written on every data checksum and on compressed filesystems
+/// (#105): the reference checker passes each image and the reference mount
+/// reads the file back.
+#[test]
+fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
+    let data = pattern(70_000, 11);
+    for set in ["crc64", "xxhash", "nocsum", "lz4", "zstd", "gzip"] {
+        let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
+        let root = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup("/")
+            .unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.create_file(root, b"written-here", &data, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        drop(w);
+        assert_fsck_clean(&img);
+        with_reference_mount(&img, |m| {
+            assert!(
+                std::fs::read(m.join("written-here")).unwrap() == data,
+                "{set}: the reference read other bytes"
+            );
+        });
+    }
+}
