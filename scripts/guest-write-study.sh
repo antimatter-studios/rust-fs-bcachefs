@@ -292,4 +292,26 @@ for step in \
     dump "$img" "$name"
     cp --sparse=always "$ROOT$img" "$out/$name.img"
 done
+# XATTR COLLISIONS AND CRC32C XATTR SLOTS (#106). On a --str_hash=crc32c
+# image, the four names that collide as dirents (DIRENT COLLISIONS above)
+# are set as user xattrs on one file, in order, with one name of every
+# length from 1 to 24 beside them and a trusted xattr on the directory,
+# so the dump shows the crc32c xattr hash and the run colliding names make.
+# Then the second is removed, and set again, each step settled and dumped.
+img="$work/xcollide.img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q --str_hash=crc32c "$img" >"$out/xcollide.format.txt" 2>&1
+RMX='import os,sys; os.removexattr(sys.argv[1], sys.argv[2])'
+for step in \
+    'xcollide|mkdir "$M/x"; printf "c" >"$M/x/f"; for n in $COLLIDE; do python3 -c "$SETX" "$M/x/f" "user.$n" "$n"; done; for n in $(seq 1 24); do python3 -c "$SETX" "$M/x/f" "user.$(head -c "$n" /dev/zero | tr "\\0" k)" v; done; python3 -c "$SETX" "$M/x" trusted.t d' \
+    'xcollide-remove|python3 -c "$RMX" "$M/x/f" user.CBBF@MBKAAAAAAAA' \
+    'xcollide-reset|python3 -c "$SETX" "$M/x/f" user.CBBF@MBKAAAAAAAA again'; do
+    name="${step%%|*}"
+    step "write-study: $name"
+    mount_rw "$img"
+    M="$ROOT$mnt" SETX="$SETX" RMX="$RMX" COLLIDE="$COLLIDE" bash -euc "${step#*|}"
+    settle "$img" "$name"
+    dump "$img" "$name"
+    cp --sparse=always "$ROOT$img" "$out/$name.img"
+done
 rm -rf "${ROOT:?}$work"

@@ -87,3 +87,47 @@ fn every_xattr_sits_at_its_slot() {
     assert!(n >= 60, "only {n} xattrs");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// The crc32c xattr slot, as hypothesised before any was observed (#106):
+/// the dirents' crc32c hash (`inode::name_hash`) over the message
+/// `name_slot` hashes, the namespace byte, then the name, with the same
+/// final partial word.
+fn crc32c_slot(seed: u64, ns: u8, name: &[u8]) -> (u64, u64) {
+    use fs_bcachefs::inode::{name_hash, HASH_TYPE_CRC32C};
+    let mut plain = vec![ns];
+    plain.extend_from_slice(name);
+    let mut msg = plain.clone();
+    if msg.len() > 8 && msg.len() % 8 != 0 {
+        msg.insert(msg.len() / 8 * 8, 0);
+        msg.pop();
+    }
+    (
+        name_hash(HASH_TYPE_CRC32C, seed, &msg).unwrap(),
+        name_hash(HASH_TYPE_CRC32C, seed, &plain).unwrap(),
+    )
+}
+
+/// On a crc32c image (#106), every xattr sits at its crc32c slot, or, when
+/// names collide, in the run after it: the four colliding names share one
+/// slot and take consecutive offsets in the order they were set.
+#[test]
+fn crc32c_xattrs_sit_at_their_slot_or_in_its_run() {
+    let mut wrong = Vec::new();
+    let mut n = 0;
+    for step in ["xcollide", "xcollide-remove", "xcollide-reset"] {
+        let dump = format!("write-study/{step}");
+        let now = seeds(&dump);
+        for (ino, off, ns, name) in xattrs(&dump) {
+            n += 1;
+            let (h, plain) = crc32c_slot(now[&ino], ns, name.as_bytes());
+            if off < h || off - h >= 8 {
+                wrong.push(format!(
+                    "{dump}: inode {ino} {name} ({} bytes) at {off}; slot {h}, plain {plain}",
+                    name.len()
+                ));
+            }
+        }
+    }
+    assert!(n >= 80, "only {n} xattrs");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
