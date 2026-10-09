@@ -38,10 +38,12 @@ pub fn name_slot(hash_seed: u64, namespace: u8, name: &[u8]) -> u64 {
 
 /// The slot of an xattr on an inode hashed with `hash_type` (#106):
 /// SipHash as [`name_slot`]; crc32c as the dirents' crc32c hash
-/// (`inode::name_hash`) over the same message `name_slot` hashes, the
-/// namespace byte then the name with its final partial word. INFERRED for
-/// crc32c, checked against the write study's xcollide images
-/// (tests/oracle_xattr_slots.rs). Any other hash type has no known slot.
+/// (`inode::name_hash`) over the namespace byte then the name, with no
+/// rearranged final word. OBSERVED (S8): every xattr of the write study's
+/// xcollide images, 1 to 24 bytes, sits at that hash, and the four names
+/// that collide under it take its slot and the three after it, in the
+/// order they were set (tests/oracle_xattr_slots.rs). Any other hash type
+/// has no known slot.
 pub fn slot(hash_type: u8, hash_seed: u64, namespace: u8, name: &[u8]) -> Option<u64> {
     match hash_type {
         crate::inode::HASH_TYPE_SIPHASH => Some(name_slot(hash_seed, namespace, name)),
@@ -49,10 +51,6 @@ pub fn slot(hash_type: u8, hash_seed: u64, namespace: u8, name: &[u8]) -> Option
             let mut msg = Vec::with_capacity(1 + name.len());
             msg.push(namespace);
             msg.extend_from_slice(name);
-            if msg.len() > 8 && msg.len() % 8 != 0 {
-                msg.insert(msg.len() / 8 * 8, 0);
-                msg.pop();
-            }
             crate::inode::name_hash(hash_type, hash_seed, &msg)
         }
         _ => None,
