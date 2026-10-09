@@ -96,6 +96,10 @@ API, a patch never does.
 
 ### Fixed
 
+- **A create no longer fails when the inode allocation cursor names a
+  number in use** (#107): the writer takes the next free number above it
+  and moves the cursor past it. How the reference picks a number then is
+  unobserved: every fixture holds a single cursor.
 - **A journalled session that fills its journal is refused instead of
   overwriting its own entries** (#101): nothing is reclaimed, so every entry
   since the session began is one a replay needs. The ring used to wrap onto

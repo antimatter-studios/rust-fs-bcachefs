@@ -707,11 +707,22 @@ impl<D: BlockDevice> Writer<D> {
         if cursor.value.len() < 16 {
             return Err(Error::Corrupt("inode allocation cursor too short".into()));
         }
-        let ino = le64(&cursor.value, 8);
-        if self.key_at(ids::INODES, pos(0, ino))?.is_some() {
-            return Err(Error::Unsupported(format!(
-                "inode {ino}, the cursor's next, is in use: searching for a free one is not implemented"
-            )));
+        // The cursor's next, or the first free number above it (#107): the
+        // cursors are per-CPU (S1 11.5), so one can lag numbers another
+        // handed out. How the reference itself skips them has not been
+        // observed; a number with a live key at it is taken.
+        let mut ino = le64(&cursor.value, 8);
+        let taken: std::collections::BTreeSet<u64> = self
+            .keys(ids::INODES)?
+            .into_iter()
+            .filter(|k| k.pos.inode == 0 && k.pos.offset >= ino)
+            .filter(|k| k.key_type != key_type::DELETED && k.key_type != key_type::WHITEOUT)
+            .map(|k| k.pos.offset)
+            .collect();
+        while taken.contains(&ino) {
+            ino = ino
+                .checked_add(1)
+                .ok_or_else(|| Error::Unsupported("no free inode number".into()))?;
         }
         let mut next = cursor;
         next.value[8..16].copy_from_slice(&(ino + 1).to_le_bytes());

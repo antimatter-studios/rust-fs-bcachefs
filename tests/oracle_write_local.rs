@@ -609,3 +609,53 @@ fn a_full_journal_is_refused_rather_than_overwritten() {
         assert_eq!(fs.read(f).unwrap(), name.as_bytes());
     }
 }
+
+/// The inode allocation cursor's key: type 35 in the logged_ops btree (17).
+fn inode_cursor(img: &std::path::Path) -> fs_bcachefs::bkey::Bkey {
+    use fs_bcachefs::{btree, superblock::Superblock};
+    let dev = FileDevice::open(img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    btree::walk(&dev, &sb, 17)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 35)
+        .expect("an inode allocation cursor")
+}
+
+/// A cursor whose next number is already an inode's (#107), as a cursor
+/// lagging another one would leave it (S1 11.5: the cursors are per-CPU):
+/// a create takes the next free number above it, and the cursor moves past
+/// what it took.
+#[test]
+fn a_create_skips_inode_numbers_already_in_use() {
+    let img = scratch("write-study/base.img", "ino-search");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let a = w.create_file(d, b"a", b"first\n", 0o644).unwrap();
+    let b = w.create_file(d, b"b", b"second\n", 0o644).unwrap();
+    drop(w);
+    // Back to `a`: its number and the one after it are both taken.
+    let mut cursor = inode_cursor(&img);
+    cursor.value[8..16].copy_from_slice(&a.to_le_bytes());
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(17, vec![cursor]).unwrap();
+    let c = w
+        .create_file(d, b"c", b"third\n", 0o644)
+        .unwrap_or_else(|e| panic!("a create over a taken number: {e}"));
+    drop(w);
+    assert_eq!(c, b + 1, "the next free number above the cursor");
+    let next = u64::from_le_bytes(inode_cursor(&img).value[8..16].try_into().unwrap());
+    assert_eq!(next, c + 1, "the cursor moves past what the create took");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    for (name, ino, data) in [
+        ("a", a, "first\n"),
+        ("b", b, "second\n"),
+        ("c", c, "third\n"),
+    ] {
+        assert_eq!(fs.lookup(&format!("/d/{name}")).unwrap(), ino, "{name}");
+        assert_eq!(fs.read(ino).unwrap(), data.as_bytes(), "{name}");
+    }
+}
