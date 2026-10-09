@@ -98,6 +98,37 @@ int64_t fs_bcachefs_listxattr(fs_bcachefs_fs *fs, const char *path, void *buf, u
 int64_t fs_bcachefs_getxattr(fs_bcachefs_fs *fs, const char *path, const char *name,
                              void *buf, uint64_t len);
 
+/* WRITING (#103): only in a library built with the `write` feature.
+ * Experimental. An image opened with fs_bcachefs_mount_rw is changed in
+ * place, one transaction per call: when a call returns 0 the image holds
+ * its result, and fs_bcachefs_rw_close has nothing left to write. A
+ * filesystem that was not cleanly unmounted is refused at open. Paths are
+ * absolute. Every call returns 0 or a negative errno: -ENOENT (no such
+ * path), -ENOTSUP (not something the writer does), -ENOSPC (no free
+ * space), -ENOTEMPTY, -EEXIST, -EINVAL (a NULL or malformed argument),
+ * -EIO (anything else); the reason is in fs_bcachefs_last_error(). */
+typedef struct fs_bcachefs_rw fs_bcachefs_rw;
+
+fs_bcachefs_rw *fs_bcachefs_mount_rw(const char *path);
+void fs_bcachefs_rw_close(fs_bcachefs_rw *fs);
+
+int fs_bcachefs_create(fs_bcachefs_rw *fs, const char *path, const void *data, uint64_t len,
+                       uint32_t mode);
+int fs_bcachefs_mkdir(fs_bcachefs_rw *fs, const char *path, uint32_t mode);
+int fs_bcachefs_unlink(fs_bcachefs_rw *fs, const char *path);
+int fs_bcachefs_rmdir(fs_bcachefs_rw *fs, const char *path);
+/* A file already at `to` is replaced; a directory may move to another. */
+int fs_bcachefs_rename(fs_bcachefs_rw *fs, const char *from, const char *to);
+int fs_bcachefs_symlink(fs_bcachefs_rw *fs, const char *path, const char *target);
+int fs_bcachefs_link(fs_bcachefs_rw *fs, const char *existing, const char *path);
+/* Replace a file's whole contents. */
+int fs_bcachefs_write_file(fs_bcachefs_rw *fs, const char *path, const void *data, uint64_t len);
+int fs_bcachefs_chmod(fs_bcachefs_rw *fs, const char *path, uint32_t mode);
+int fs_bcachefs_chown(fs_bcachefs_rw *fs, const char *path, uint32_t uid, uint32_t gid);
+int fs_bcachefs_setxattr(fs_bcachefs_rw *fs, const char *path, const char *name,
+                         const void *value, uint64_t len);
+int fs_bcachefs_removexattr(fs_bcachefs_rw *fs, const char *path, const char *name);
+
 #ifdef __cplusplus
 }
 #endif
