@@ -87,7 +87,32 @@ pub struct Inode {
     pub mtime: u64,
     /// The seed of a directory's name hash (fixed part, bytes 8..16).
     pub hash_seed: u64,
+    /// The per-inode option fields as stored (#81): each holds its value
+    /// plus one, 0 when the inode has none; see [`Inode::option`].
+    pub options: InodeOptions,
 }
+
+/// The option fields of an inode as stored: `data_checksum`,
+/// `compression`, `background_compression` and `data_replicas` hold the
+/// option's value plus one (0: not set, the filesystem's own applies), and
+/// `fields_set` has one bit per option set on this inode itself, counted
+/// from `data_checksum` in [`FIELD_NAMES`] order; an inherited option is
+/// stored but has no bit (S3 + S4: the reference tool's `set-file-option`
+/// on files and a directory in the kernel oracle's VM, read back with
+/// `get-file-option` and the lister, docs/clean-room.md open question 7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InodeOptions {
+    pub data_checksum: u64,
+    pub compression: u64,
+    pub background_compression: u64,
+    pub data_replicas: u64,
+    pub fields_set: u64,
+}
+
+/// Data checksum types, by stored value minus one.
+const CHECKSUM_NAMES: &[&str] = &["none", "crc32c", "crc64", "xxhash"];
+/// Compression types, by stored value minus one.
+const COMPRESSION_NAMES: &[&str] = &["none", "lz4", "gzip", "zstd"];
 
 impl Inode {
     pub fn is_dir(&self) -> bool {
@@ -126,6 +151,31 @@ impl Inode {
         }
     }
 
+    /// Option `name` (a field of [`InodeOptions`]) as the reference tool
+    /// names it: `"lz4"`, `"crc64"`, `"1"`; `None` when the inode does not
+    /// carry it (the filesystem's own applies) or `name` is not one of
+    /// them. Inherited options are included. A value no reference image
+    /// has shown comes back as `"unknown N"`, never as a guess.
+    pub fn option(&self, name: &str) -> Option<String> {
+        let (stored, names) = match name {
+            "data_checksum" => (self.options.data_checksum, Some(CHECKSUM_NAMES)),
+            "compression" => (self.options.compression, Some(COMPRESSION_NAMES)),
+            "background_compression" => {
+                (self.options.background_compression, Some(COMPRESSION_NAMES))
+            }
+            "data_replicas" => (self.options.data_replicas, None),
+            _ => return None,
+        };
+        let v = stored.checked_sub(1)?;
+        Some(match names {
+            Some(n) => n
+                .get(v as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("unknown {v}")),
+            None => v.to_string(),
+        })
+    }
+
     pub fn from_key(k: &Bkey) -> Result<Self> {
         if k.key_type != key_type::INODE_V3 {
             return Err(Error::Unsupported(format!("inode key type {}", k.key_type)));
@@ -151,6 +201,7 @@ impl Inode {
             ctime: 0,
             mtime: 0,
             hash_seed: le64(v, 8),
+            options: InodeOptions::default(),
         };
         let mut p = 48;
         for (i, (name, count)) in FIELDS.iter().enumerate() {
@@ -175,6 +226,15 @@ impl Inode {
                 _ => {}
             }
         }
+        let raw = InodeV3Raw::parse(v)?;
+        let f = |n: &str| raw.field(n).unwrap_or(0);
+        ino.options = InodeOptions {
+            data_checksum: f("data_checksum"),
+            compression: f("compression"),
+            background_compression: f("background_compression"),
+            data_replicas: f("data_replicas"),
+            fields_set: f("fields_set"),
+        };
         Ok(ino)
     }
 }

@@ -615,11 +615,36 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
    (`inode::FIELD_NAMES`, `InodeV3Raw::field`,
-   tests/oracle_inode_fields.rs). What a non-zero option field does, and
-   whether a new inode takes its parent's options, stays OPEN and cannot
-   be observed with the pinned reference, by any route tried (S3, S8):
-   - its mount refuses every `bcachefs.*` option xattr, and the reference
-     tool's `set-file-option`, with "Operation not supported";
+   tests/oracle_inode_fields.rs). What the option fields mean is SETTLED
+   for `data_checksum`, `compression`, `background_compression` and
+   `data_replicas` (S3 + S4, #81): the reference tool, run in the kernel
+   oracle's VM (S10), set each with `set-file-option` on an empty file,
+   which was then written, and once on a directory, which a new file was
+   created in. What `get-file-option` printed (`kernel.options.txt`) and
+   each inode's fields:
+   - each field holds the option's value plus one, 0 when unset:
+     `data_checksum` none 1, crc64 3, xxhash 4 (so crc32c 2);
+     `compression` and `background_compression` lz4 2, gzip 3, zstd 4 (so
+     none 1, the filesystem option's numbering plus one); `data_replicas`
+     1 is stored as 2;
+   - `fields_set` has one bit per option set on the inode itself, counted
+     from `data_checksum` in field order (data_checksum 1, compression 2,
+     background_compression 8, data_replicas 16);
+   - a file created in a directory with an option inherits it: the field
+     is stored (`compression` 4) with no `fields_set` bit, and
+     `get-file-option` lists it not;
+   - the data follows the option: every extent of the lz4, gzip and zstd
+     files, the inherited one included, is compressed with that codec
+     (tests/oracle_kernel.rs);
+   - setting an option also sets inode flag bit 12 (0x1000), on the
+     inherited file too; what that bit is called is open.
+   Still open: the other option fields (`promote_target`,
+   `foreground_target`, `background_target`, `erasure_code`, `nocow`,
+   `project`), which no image sets; and a compression level (`zstd:3`).
+   The routes that showed nothing:
+   - the FUSE mount refuses every `bcachefs.*` option xattr, and the
+     reference tool's `set-file-option` through it, with "Operation not
+     supported";
    - an option given to the formatter is not copied into any inode: every
      inode of the lz4, zstd, gzip, crc64, xxhash and bgcompress sets has
      its option fields 0, and of the casefold set too (`casefold: 1` in
@@ -629,11 +654,8 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
      inode only up to its fixed header in the pinned release: `update
      inodes <pos> bi_compression=2` answers "bch_inode_v3 has no field
      'bi_compression'" (write-study/kvdb-options.txt).
-   So no image has an inode with options. The writer leaves the option
-   fields 0, as every inode seen has them. One route is untried: this
-   crate's writer could store an option value in an inode, and the
-   reference mount, writing into that file, would show what the value
-   means (write, then judge, as the write path was learned).
+   The writer leaves the option fields 0 and writes data as the
+   filesystem's options say, whatever an inode carries.
 8. **Whiteouts and deleted keys across bsets**: SETTLED for what the aged
    image holds. Nodes of up to 78 bsets merge newest-bset-wins with deleted
    keys dropped, and the result equals the lister's keys exactly. A

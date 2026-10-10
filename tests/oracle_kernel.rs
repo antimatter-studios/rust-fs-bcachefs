@@ -154,3 +154,87 @@ fn every_reflink_pointer_holds_the_index_the_lister_printed() {
     assert!(listed.len() >= 40, "only {} reflink_p listed", listed.len());
     assert_eq!(ours, listed);
 }
+
+/// Per-file options (#81): the reference tool set each option on a file of
+/// `/opts` (and one on a directory, which its new file inherits), and
+/// every option it read back from a file reads back here, by the name and
+/// value it printed. The tool lists only the options set on the file itself,
+/// not inherited ones.
+#[test]
+fn every_per_file_option_reads_back_as_the_reference_tool_reports_it() {
+    let r = record();
+    let set: Vec<_> = r.iter().filter(|(k, _)| k.starts_with("option.")).collect();
+    assert!(
+        set.len() >= 9,
+        "kernel.txt records {} options set",
+        set.len()
+    );
+    for (k, v) in &set {
+        assert_eq!(v.as_str(), "ok", "{k}");
+    }
+    let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap()).unwrap();
+    let text = read_text("kernel.options.txt");
+    let mut compared = 0;
+    for line in text.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let (Some(path), Some(said)) = (parts.next(), parts.next()) else {
+            panic!("kernel.options.txt: {line:?}");
+        };
+        // The reference tool prints one option per line, `name<TAB>value`.
+        let Some((name, value)) = said.split_once('\t') else {
+            panic!("kernel.options.txt: {line:?}");
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if !fs_bcachefs::inode::FIELD_NAMES.contains(&name) {
+            continue;
+        }
+        let ino = fs.lookup(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let got = fs.inode(ino).unwrap().option(name);
+        assert_eq!(got.as_deref(), Some(value), "{path}: {name}\n{text}");
+        compared += 1;
+    }
+    assert!(compared >= 9, "only {compared} options compared:\n{text}");
+}
+
+/// What a compression option means is what the kernel did with the data
+/// (#81): every data extent of a file whose inode carries `lz4`, `gzip` or
+/// `zstd`, set on the file or inherited from its directory, is stored
+/// compressed with that codec, by the crc entry the kernel wrote.
+#[test]
+fn every_file_option_is_what_the_kernel_wrote_its_data_with() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::{compression, DataExtent};
+    let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap()).unwrap();
+    let dev = FileDevice::open(fixture("kernel.img")).unwrap();
+    let sb = fs_bcachefs::superblock::Superblock::read(&dev).unwrap();
+    let extents = btree::walk(&dev, &sb, btree_id::EXTENTS).unwrap();
+    let crcs = |ino: u64| -> Vec<(u8, u8)> {
+        extents
+            .iter()
+            .filter(|k| k.pos.inode == ino && k.key_type == fs_bcachefs::bkey::key_type::EXTENT)
+            .map(|k| {
+                let c = DataExtent::from_key(k).unwrap().crc.expect("a crc entry");
+                (c.compression_type, c.csum_type)
+            })
+            .collect()
+    };
+    for (path, option, codec) in [
+        ("/opts/compression-lz4", "lz4", compression::LZ4),
+        ("/opts/compression-gzip", "gzip", compression::GZIP),
+        ("/opts/compression-zstd", "zstd", compression::ZSTD),
+        ("/opts/dir/inherited", "zstd", compression::ZSTD),
+    ] {
+        let ino = fs.lookup(path).unwrap();
+        assert_eq!(
+            fs.inode(ino).unwrap().option("compression").as_deref(),
+            Some(option),
+            "{path}"
+        );
+        let got = crcs(ino);
+        assert!(!got.is_empty(), "{path}: no data extents");
+        assert!(
+            got.iter().all(|&(c, _)| c == codec),
+            "{path}: {option} stored as {got:?}"
+        );
+    }
+}

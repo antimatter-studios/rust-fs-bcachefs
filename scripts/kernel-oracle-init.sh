@@ -63,6 +63,35 @@ if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
     else
         say "snapshot: failed ($(head -c 200 /tmp/snap.err))"
     fi
+    # Per-file options (#81), by the reference tool: each set on an empty
+    # file, which is then written; and one set on a directory, whose new
+    # file inherits it. Each file's options as the tool reads them back go
+    # to the record as `ORACLE O<TAB>path<TAB>line`.
+    mkdir /mnt/opts /mnt/opts/dir
+    for spec in compression=lz4 compression=gzip compression=zstd \
+        background_compression=zstd data_checksum=none data_checksum=crc64 \
+        data_checksum=xxhash data_replicas=1; do
+        f="/mnt/opts/${spec%%=*}-${spec#*=}"
+        : >"$f"
+        if bcachefs set-file-option "--$spec" "$f" 2>/tmp/opt.err; then
+            say "option.$spec: ok"
+        else
+            say "option.$spec: failed ($(head -c 200 /tmp/opt.err | tr '\n' ' '))"
+        fi
+        yes "a line of text for $spec" | head -c 131072 >>"$f"
+    done
+    if bcachefs set-file-option --compression=zstd /mnt/opts/dir 2>/tmp/opt.err; then
+        say "option.dir.compression=zstd: ok"
+    else
+        say "option.dir.compression=zstd: failed ($(head -c 200 /tmp/opt.err | tr '\n' ' '))"
+    fi
+    yes "inherited" | head -c 131072 >/mnt/opts/dir/inherited
+    sync
+    for f in /mnt/opts/* /mnt/opts/dir/inherited; do
+        bcachefs get-file-option "$f" 2>&1 | while read -r line; do
+            say "$(printf 'O\t%s\t%s' "${f#/mnt}" "$line")"
+        done
+    done
     sync
     cd /mnt || exit 1
     find . -mindepth 1 | sort | while read -r p; do

@@ -56,7 +56,7 @@ States:
 | Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | Unreleased (#129) | #12; the writer and the checker read the root subvolume only | `oracle_kernel.rs` |
 | Reflinked extents (`reflink_p` into the reflink btree): read; the checker names one, the writer will not free one | Partial | Unreleased (#128) | #7; checking and freeing reflinks are not implemented | `oracle_kernel.rs`, `oracle_refused_local.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | Unreleased (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
-| Per-inode options (compression, checksum, replicas, ...) | Partial: fields read, effects unknown | Unreleased (#93) | #81; Unobservable: neither the reference mount nor its offline editor sets one (#99) | `oracle_inode_fields.rs` |
+| Per-inode options: data_checksum, compression, background_compression and data_replicas read as the reference tool reports them, inherited ones included (`Inode::option`) | Supported (read) | Unreleased (#127) | #81; the other option fields are read raw, no image sets them | `oracle_kernel.rs`, `oracle_inode_fields.rs` |
 
 ## Checking
 
@@ -95,7 +95,7 @@ reads back byte for byte through the reference implementation's mount
 | A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: nodes split, but no test writes on such an image yet | | #44 | |
 | Data on every data checksum, and compressed with lz4 or zstd as the filesystem asks (stored as incompressible when that saves no block, and on gzip filesystems) | Experimental | Unreleased (#122) | gzip extents: open question 20 | `oracle_write_local.rs`, `write_oracle.rs` |
-| Per-inode options | Unobservable | | #81 | |
+| Per-inode options | Not written: new inodes carry none, and data is written as the filesystem's options say | | #81 | |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |
 
