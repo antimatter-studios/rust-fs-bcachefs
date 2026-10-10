@@ -21,6 +21,12 @@ API, a patch never does.
 
 ### Added
 
+- **Subvolumes and snapshots are read** (#12): `Filesystem::resolve` turns
+  a path into a `Node` (an inode number and the snapshot it is read at),
+  entering each subvolume on the way, and `inode_at`, `readdir_at`,
+  `read_at`, `read_range_at` and `xattrs_at` read it as that snapshot sees
+  it. The plain calls read the root subvolume; `lookup` refuses a path into
+  another, whose inode numbers repeat in its snapshots.
 - **Reflinked files are read** (#7): a `reflink_p` is followed into the
   reflink btree, laid out as the reference kernel module writes it. The
   kernel oracle clones a file with FICLONE and both read back as its mount

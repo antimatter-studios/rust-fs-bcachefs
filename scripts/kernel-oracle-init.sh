@@ -2,10 +2,10 @@
 # shellcheck shell=dash
 # kernel-oracle-init.sh -- /init of the reference kernel module's VM (built
 # and booted by scripts/kernel-oracle.sh). Loads the module, mounts the
-# image on /dev/vda, writes the tree from /tree, a hard link and a reflink,
-# prints the manifest as the mount reports it, unmounts and powers off.
-# Every line the host reads goes to ttyS1 and starts with `ORACLE `:
-# `ORACLE key: value` for kernel.txt;
+# image on /dev/vda, writes the tree from /tree, a hard link, a reflink, a
+# subvolume and a snapshot of it, prints the manifest as the mount reports
+# it, unmounts and powers off. Every line the host reads goes to ttyS1 and
+# starts with `ORACLE `: `ORACLE key: value` for kernel.txt;
 # `ORACLE M<TAB>path<TAB>type<TAB>mode<TAB>ino<TAB>nlink<TAB>size<TAB>extra`
 # for the manifest (extra: a file's sha256, a symlink's target).
 /bin/busybox --install -s /bin
@@ -41,6 +41,27 @@ if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
         say "reflink: ok"
     else
         say "reflink: failed ($(head -c 200 /tmp/ficlone.err))"
+    fi
+    # A subvolume and a snapshot of it (#12), by the reference tool: the
+    # snapshot keeps the files as they were, the subvolume goes on to
+    # change one, remove one and add one.
+    if bcachefs subvolume create /mnt/sv 2>/tmp/snap.err; then
+        echo "kept" >/mnt/sv/kept.txt
+        echo "before the snapshot" >/mnt/sv/changed.txt
+        echo "removed after the snapshot" >/mnt/sv/gone.txt
+        mkdir /mnt/sv/inner
+        echo "inner" >/mnt/sv/inner/file.txt
+        sync
+        if bcachefs subvolume snapshot /mnt/sv /mnt/snap 2>>/tmp/snap.err; then
+            echo "after the snapshot, longer than before" >/mnt/sv/changed.txt
+            rm /mnt/sv/gone.txt
+            echo "new" >/mnt/sv/new.txt
+            say "snapshot: ok"
+        else
+            say "snapshot: failed ($(head -c 200 /tmp/snap.err))"
+        fi
+    else
+        say "snapshot: failed ($(head -c 200 /tmp/snap.err))"
     fi
     sync
     cd /mnt || exit 1

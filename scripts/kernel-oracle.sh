@@ -17,7 +17,8 @@
 # deterministic tree (scripts/fixture-tree.py) and kernel-oracle-init.sh go
 # into an initramfs; QEMU boots it under KVM with the image as a virtio disk.
 # The init loads the module, mounts the image, writes the tree, a hard
-# link and a reflink (scripts/ficlone.c), prints the manifest as the mount
+# link, a reflink (scripts/ficlone.c) and a subvolume with a snapshot of it
+# (the reference tool, run in the VM), prints the manifest as the mount
 # reports it, unmounts and powers off; on a second image it writes and
 # removes 16M files until buckets are reused (#94). Its console becomes
 # kernel.txt and kernel.json; the reference checker judges both images. A
@@ -89,6 +90,14 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     done
     cp /bin/busybox /work/root/bin/busybox
     gcc -static -O2 -o /work/root/bin/ficlone /work/ficlone.c
+    # The reference tool, with the libraries it loads, for the subvolume
+    # and the snapshot (#12): only it knows their ioctls.
+    tool="$(command -v bcachefs)"
+    cp "$tool" /work/root/bin/bcachefs
+    ldd "$tool" | awk "/=> \// {print \$3} /^\t\/lib/ {print \$1}" | while read -r lib; do
+        mkdir -p "/work/root$(dirname "$lib")"
+        cp -L "$lib" "/work/root$lib"
+    done
     # The reference module source goes with the container; it is never read.
     rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs
     truncate -s 64M /work/kernel.img
@@ -153,10 +162,11 @@ else
     record reuse-fsck "errors (kernel-reuse.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
-# The reflink (#7): the reference lister's view of the reflink btree and of
-# the extents that point into it, the record a reader's layout is checked
-# against.
-for b in reflink extents; do
+# The reflink (#7) and the snapshot (#12): the reference lister's view of
+# the reflink btree, the extents that point into it, and the btrees a
+# snapshot touches, the record a reader's layout and visibility rules are
+# checked against.
+for b in reflink subvolumes snapshots snapshot_trees inodes dirents extents; do
     docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
         bcachefs list -b "$b" /work/kernel.img >"$OUT/kernel.$b.txt" 2>&1 || true
 done
