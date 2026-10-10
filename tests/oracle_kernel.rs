@@ -40,12 +40,15 @@ fn the_reference_kernel_module_mounted_and_unmounted_an_image() {
         "{text}"
     );
     assert_eq!(r.get("mount").map(String::as_str), Some("ok"), "{text}");
+    assert_eq!(r.get("reflink").map(String::as_str), Some("ok"), "{text}");
     assert_eq!(r.get("unmount").map(String::as_str), Some("ok"), "{text}");
     assert_eq!(r.get("fsck").map(String::as_str), Some("clean"), "{text}");
 }
 
 /// Every file, directory and symlink the kernel wrote reads back here at the
-/// inode number, mode, size and contents its mount reported.
+/// inode number, mode, size and contents its mount reported, the reflinked
+/// pair (#7) among them: big/random.bin and its clone both read through a
+/// `reflink_p` into the reflink btree.
 #[test]
 fn what_the_kernel_wrote_reads_back_byte_for_byte() {
     let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap())
@@ -89,4 +92,56 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
         }
     }
     assert!(files >= 10, "kernel: only {files} files compared");
+    assert!(
+        manifest("kernel")
+            .iter()
+            .any(|e| e.path == "/big/random-clone.bin"),
+        "the kernel's manifest has no reflinked clone"
+    );
+}
+
+/// Every `reflink_p` the kernel wrote (#7) is laid out as the reference
+/// lister prints it: the index into the reflink btree in the low 56 bits
+/// of the first word, `may_update_opts` at bit 57, and both pads 0 in the
+/// second word (no image has shown a pad that is not, so where each sits
+/// in it is not known).
+#[test]
+fn every_reflink_pointer_holds_the_index_the_lister_printed() {
+    use fs_bcachefs::btree::{self, btree_id};
+    let listed: Vec<(u64, u64, bool)> = read_text("kernel.extents.txt")
+        .lines()
+        .filter(|l| l.contains("type reflink_p "))
+        .map(|l| {
+            let pos = l.split_whitespace().nth(4).unwrap();
+            let offset: u64 = pos.split(':').nth(1).unwrap().parse().unwrap();
+            let idx: u64 = l
+                .split(" idx ")
+                .nth(1)
+                .and_then(|r| r.split_whitespace().next())
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(l.contains("front_pad 0 back_pad 0"), "{l}");
+            (offset, idx, l.contains("may_update_opts"))
+        })
+        .collect();
+    let dev = FileDevice::open(fixture("kernel.img")).unwrap();
+    let sb = fs_bcachefs::superblock::Superblock::read(&dev).unwrap();
+    let ours: Vec<(u64, u64, bool)> = btree::walk(&dev, &sb, btree_id::EXTENTS)
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.key_type == fs_bcachefs::bkey::key_type::REFLINK_P)
+        .map(|k| {
+            let w0 = u64::from_le_bytes(k.value[..8].try_into().unwrap());
+            let w1 = u64::from_le_bytes(k.value[8..16].try_into().unwrap());
+            assert_eq!(w1, 0, "{}: the pads' word", k.pos);
+            (
+                k.pos.offset,
+                fs_bcachefs::extent::reflink_p_idx(&k.value).unwrap(),
+                w0 >> 57 & 1 == 1,
+            )
+        })
+        .collect();
+    assert!(listed.len() >= 40, "only {} reflink_p listed", listed.len());
+    assert_eq!(ours, listed);
 }

@@ -290,7 +290,7 @@ fn a_directory_hashed_with_another_string_hash_is_refused_by_the_writer_and_scan
 }
 
 #[test]
-fn a_reflink_pointer_is_refused_by_name_by_the_reader_the_checker_and_the_writer() {
+fn a_reflink_pointer_to_nothing_is_an_error_and_the_checker_and_the_writer_refuse_one() {
     let img = scratch("write-study/base.img", "reflink-p");
     let inline = keys(&img, btree_id::EXTENTS)
         .into_iter()
@@ -298,10 +298,9 @@ fn a_reflink_pointer_is_refused_by_name_by_the_reader_the_checker_and_the_writer
         .expect("an inline extent in the fixture");
     let ino = inline.pos.inode;
     // The same range as a reflink copy leaves it (S1 9.1.6.2): a pointer
-    // into the reflink btree, which holds the data. No reference image has
-    // one (the reference mount does not reflink: tests/oracle_probes.rs),
-    // so the value's layout is unknown; two zero words stand in, and the
-    // refusal must not depend on reading them.
+    // into the reflink btree, which holds the data (#7: the kernel oracle's
+    // reflink, tests/oracle_kernel.rs). This image has no reflink btree, so
+    // index 0 points at nothing: the reader must fail, not read zeros.
     insert(
         &img,
         btree_id::EXTENTS,
@@ -315,9 +314,9 @@ fn a_reflink_pointer_is_refused_by_name_by_the_reader_the_checker_and_the_writer
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
     assert_eq!(fs.lookup("/d/existing").unwrap(), ino);
     match fs.read(ino) {
-        Err(Error::Unsupported(m)) if m.contains("reflink_p") => {}
+        Err(Error::Corrupt(m)) if m.contains("reflink_p") => {}
         other => panic!(
-            "a reflink_p was not refused by name: {:?}",
+            "a reflink_p to nothing was not an error: {:?}",
             other.map(|b| b.len())
         ),
     }

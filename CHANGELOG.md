@@ -21,6 +21,10 @@ API, a patch never does.
 
 ### Added
 
+- **Reflinked files are read** (#7): a `reflink_p` is followed into the
+  reflink btree, laid out as the reference kernel module writes it. The
+  kernel oracle clones a file with FICLONE and both read back as its mount
+  reported.
 - **Journal reclaim** (#113): when a journalled session's journal is full,
   everything it holds is written into the btree nodes in place, its
   accounting deltas summed, the superblock is marked clean at the newest

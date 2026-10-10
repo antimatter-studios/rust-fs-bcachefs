@@ -50,6 +50,9 @@ pub mod btree_id {
     pub const DIRENTS: u8 = 2;
     pub const XATTRS: u8 = 3;
     pub const ALLOC: u8 = 4;
+    /// Data shared by reflinked files (S1 9.1.6), positioned at inode 0
+    /// and the end of its range, as an extent is.
+    pub const REFLINK: u8 = 7;
 }
 
 /// A pointer to a btree node: a `btree_ptr_v2` value.
