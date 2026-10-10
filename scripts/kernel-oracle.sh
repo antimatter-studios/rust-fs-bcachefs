@@ -103,16 +103,18 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
     -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
     -append "console=ttyS0,115200 panic=-1 rdinit=/init" \
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
-    -display none -serial "file:$work/console.log" -no-reboot ||
+    -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
+    -no-reboot ||
     echo "kernel-oracle: qemu exited $?" >&2
 
-# The init's lines carry `ORACLE `; a manifest line carries `ORACLE M`.
-sed -n 's/\r$//; s/^.*ORACLE \([a-z]*\): /\1: /p' "$work/console.log" >>"$OUT/kernel.txt"
+# The init's lines carry `ORACLE `, on the second serial port (#134); a
+# manifest line carries `ORACLE M`.
+sed -n 's/\r$//; s/^.*ORACLE \([a-z]*\): /\1: /p' "$work/oracle.log" >>"$OUT/kernel.txt"
 grep -q '^kernel: ' "$OUT/kernel.txt" || {
     record kernel "the VM printed nothing of the oracle's (kernel.console.txt)"
 }
 tail -n 200 "$work/console.log" >"$OUT/kernel.console.txt"
-sed -n 's/\r$//; s/^.*ORACLE M\t//p' "$work/console.log" | python3 -c '
+sed -n 's/\r$//; s/^.*ORACLE M\t//p' "$work/oracle.log" | python3 -c '
 import json, sys
 entries = []
 for line in sys.stdin:
