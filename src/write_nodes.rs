@@ -281,6 +281,31 @@ impl<D: BlockDevice> Writer<D> {
                 value: bp,
             },
         );
+        // A node smaller than its bucket leaves it partly filled, which
+        // takes a fragmentation lru entry as a partly filled data bucket does
+        // (the reference checker's "missing fragmentation lru entry" for the
+        // buckets of new nodes, CI run 38051787458). The lru btree gets its
+        // root first if it has none; the root's own node is in that btree.
+        if node_sectors < bucket_sectors {
+            if id != alloc::aids::LRU && self.root(alloc::aids::LRU).is_err() {
+                self.create_root(alloc::aids::LRU, t)?;
+            }
+            t.put_uncounted(
+                alloc::aids::LRU,
+                Bkey {
+                    key_type: alloc::aids::SET,
+                    size: 0,
+                    version_hi: 0,
+                    version_lo: 0,
+                    pos: Bpos {
+                        inode: (1 << 61) | ((node_sectors << 31) / bucket_sectors),
+                        offset: bucket,
+                        snapshot: 0,
+                    },
+                    value: Vec::new(),
+                },
+            );
+        }
         alloc::count_btree_bucket(t, id, level, node_sectors as i64, bucket_sectors as i64, 1);
         Ok(())
     }
@@ -337,6 +362,19 @@ impl<D: BlockDevice> Writer<D> {
         // write reuse the bucket over them (#132's reuse, CI run
         // 38048734742: "btree node: bad magic").
         let dirty = crate::util::le64(&a.value, 16) & 0xffff_ffff;
+        // A partly filled bucket has a fragmentation lru entry (S8), btree
+        // buckets as data ones: it moves with the bucket's dirty count, and
+        // goes when the bucket is emptied (the reference checker's
+        // "incorrect lru entry" and "missing fragmentation lru entry",
+        // CI run 38051787458).
+        let lru_at = |sectors: u64| Bpos {
+            inode: (1 << 61) | ((sectors << 31) / bucket_sectors),
+            offset: bucket,
+            snapshot: 0,
+        };
+        if dirty < bucket_sectors {
+            t.delete_uncounted(alloc::aids::LRU, lru_at(dirty));
+        }
         if dirty > node_sectors {
             let mut v = a.value.clone();
             v[16..20].copy_from_slice(&((dirty - node_sectors) as u32).to_le_bytes());
@@ -345,6 +383,17 @@ impl<D: BlockDevice> Writer<D> {
                 Bkey {
                     value: v,
                     ..a.clone()
+                },
+            );
+            t.put_uncounted(
+                alloc::aids::LRU,
+                Bkey {
+                    key_type: alloc::aids::SET,
+                    size: 0,
+                    version_hi: 0,
+                    version_lo: 0,
+                    pos: lru_at(dirty - node_sectors),
+                    value: Vec::new(),
                 },
             );
             alloc::count_btree_node(t, id, level, -(node_sectors as i64), -1);
