@@ -154,3 +154,44 @@ fn every_reflink_pointer_holds_the_index_the_lister_printed() {
     assert!(listed.len() >= 40, "only {} reflink_p listed", listed.len());
     assert_eq!(ours, listed);
 }
+
+/// Per-file options (#81): the reference tool set each option on a file of
+/// `/opts` (and one on a directory, which its new file inherits), and
+/// every option it read back from a file reads back here, by the name and
+/// value it printed. The tool lists only the options set on the file itself,
+/// not inherited ones.
+#[test]
+fn every_per_file_option_reads_back_as_the_reference_tool_reports_it() {
+    let r = record();
+    let set: Vec<_> = r.iter().filter(|(k, _)| k.starts_with("option.")).collect();
+    assert!(
+        set.len() >= 9,
+        "kernel.txt records {} options set",
+        set.len()
+    );
+    for (k, v) in &set {
+        assert_eq!(v.as_str(), "ok", "{k}");
+    }
+    let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap()).unwrap();
+    let text = read_text("kernel.options.txt");
+    let mut compared = 0;
+    for line in text.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let (Some(path), Some(said)) = (parts.next(), parts.next()) else {
+            panic!("kernel.options.txt: {line:?}");
+        };
+        // The reference tool prints one option per line, `name<TAB>value`.
+        let Some((name, value)) = said.split_once('\t') else {
+            panic!("kernel.options.txt: {line:?}");
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if !fs_bcachefs::inode::FIELD_NAMES.contains(&name) {
+            continue;
+        }
+        let ino = fs.lookup(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let got = fs.inode(ino).unwrap().option(name);
+        assert_eq!(got.as_deref(), Some(value), "{path}: {name}\n{text}");
+        compared += 1;
+    }
+    assert!(compared >= 9, "only {compared} options compared:\n{text}");
+}

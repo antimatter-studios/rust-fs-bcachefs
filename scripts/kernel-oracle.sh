@@ -100,6 +100,9 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     done
     # The reference module source goes with the container; it is never read.
     rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs
+    # The option commands as the reference tool describes them (#81).
+    { bcachefs set-file-option --help; bcachefs get-file-option --help; } \
+        >/work/options-help.txt 2>&1 || true
     truncate -s 64M /work/kernel.img
     bcachefs format -q /work/kernel.img
     truncate -s 64M /work/kernel-reuse.img
@@ -125,7 +128,7 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
 
 # The init's lines carry `ORACLE `, on the second serial port (#134); a
 # manifest line carries `ORACLE M`.
-sed -n 's/\r$//; s/^.*ORACLE \([a-z]*\): /\1: /p' "$work/oracle.log" >>"$OUT/kernel.txt"
+sed -n 's/\r$//; s/^.*ORACLE \([a-z][a-z0-9_.=-]*\): /\1: /p' "$work/oracle.log" >>"$OUT/kernel.txt"
 grep -q '^kernel: ' "$OUT/kernel.txt" || {
     record kernel "the VM printed nothing of the oracle's (kernel.console.txt)"
 }
@@ -162,6 +165,10 @@ else
     record reuse-fsck "errors (kernel-reuse.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
+# Per-file options (#81): what the reference tool read back from each file,
+# and its help for the commands that set and read them.
+sed -n 's/\r$//; s/^.*ORACLE O\t//p' "$work/oracle.log" >"$OUT/kernel.options.txt"
+cp "$work/options-help.txt" "$OUT/kernel.options-help.txt" 2>/dev/null || true
 # The reflink (#7) and the snapshot (#12): the reference lister's view of
 # the reflink btree, the extents that point into it, and the btrees a
 # snapshot touches, the record a reader's layout and visibility rules are
