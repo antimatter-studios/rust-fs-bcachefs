@@ -73,6 +73,10 @@ fn assert_fsck_clean(img: &Path) {
 fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
     let host_mnt = PathBuf::from(format!("{REF_ROOT}{MNT}"));
     std::fs::create_dir_all(&host_mnt).unwrap();
+    // The daemon's own output is kept: when it dies under a test, what it
+    // said last is the reason (CI run 38006023802: "Transport endpoint is
+    // not connected" and nothing else).
+    let log = img.with_extension("fuse.log");
     let mut child = Command::new("bcachefs-ref")
         .args([
             "fusemount",
@@ -83,7 +87,7 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
             MNT,
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
     let mounted = (0..60).any(|_| {
@@ -99,13 +103,27 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
         "the reference implementation did not mount {}",
         img.display()
     );
-    let out = f(&host_mnt);
+    // The mount comes down whether `f` passes or panics, so one test that
+    // kills the daemon cannot leave a dead mount for every test after it.
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&host_mnt)));
     let _ = child.kill();
     let _ = child.wait();
     let _ = Command::new("fusermount3")
         .args(["-uz", host_mnt.to_str().unwrap()])
         .status();
-    out
+    match out {
+        Ok(v) => v,
+        Err(panic) => {
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail: Vec<&str> = said.lines().rev().take(30).collect();
+            eprintln!(
+                "the reference mount's last words ({}):\n{}",
+                log.display(),
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            );
+            std::panic::resume_unwind(panic)
+        }
+    }
 }
 
 /// Re-stating the newest key of a btree changes nothing a reader can see,
@@ -881,12 +899,16 @@ fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
         drop(w);
         assert_fsck_clean(&img);
         with_reference_mount(&img, |m| {
+            let read = |name: &str| {
+                std::fs::read(m.join(name))
+                    .unwrap_or_else(|e| panic!("{set}: the reference could not read {name}: {e}"))
+            };
             assert!(
-                std::fs::read(m.join("written-here")).unwrap() == data,
+                read("written-here") == data,
                 "{set}: the reference read other bytes"
             );
             assert!(
-                std::fs::read(m.join("random")).unwrap() == random,
+                read("random") == random,
                 "{set}: the reference read other bytes of the random file"
             );
         });
