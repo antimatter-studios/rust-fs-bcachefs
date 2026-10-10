@@ -5,11 +5,15 @@
 //! one is needed): every lookup, listing and read seeks a btree cursor to
 //! its own keys and reads only the nodes on their path.
 //!
-//! Snapshots are not read. Every key this reader uses must carry the
-//! snapshot the root inode carries (U32_MAX on every fixture; inferred,
-//! docs/clean-room.md): a key at any other snapshot means a snapshot or
-//! subvolume exists, whose visibility rules (S1 9.4) are not implemented,
-//! so it is refused rather than misread.
+//! Snapshots and subvolumes (#12). Every key carries a snapshot id; a
+//! snapshot sees the keys at its own id and at each of its ancestors', and
+//! where several are at one position the nearest wins: a key at a
+//! descendant replaces its ancestor's, and a whiteout there hides it
+//! (docs/clean-room.md, "Snapshots and subvolumes"). The plain API
+//! (`lookup`, `inode`, `read`, ...) reads the root subvolume; a path into
+//! another subvolume resolves to a [`Node`], an inode number with the
+//! snapshot it is read at, since the same number names a file in a
+//! subvolume and in each of its snapshots.
 
 use crate::bkey::{Bkey, Bpos};
 use crate::btree::{btree_id, Cursor};
@@ -20,6 +24,25 @@ use crate::journal::Replay;
 use crate::superblock::Superblock;
 use fs_core::BlockRead;
 
+/// A file or directory as one snapshot sees it: its inode number and the
+/// snapshot its keys are read at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Node {
+    pub ino: u64,
+    pub snapshot: u32,
+}
+
+/// The snapshots and subvolumes btrees (S1 11.3's order: subvolumes 8,
+/// snapshots 9) and their key types (S1 11.5: subvolume 21, snapshot 22).
+const SUBVOLUMES: u8 = 8;
+const SNAPSHOTS: u8 = 9;
+const KEY_SUBVOLUME: u8 = 21;
+const KEY_SNAPSHOT: u8 = 22;
+/// A dirent's type when it names a subvolume (the lister's `type subvol`).
+const DT_SUBVOL: u8 = 16;
+/// Deeper than any snapshot tree; a parent cycle stops here.
+const MAX_SNAPSHOT_DEPTH: usize = 1024;
+
 pub struct Filesystem<D: BlockRead> {
     dev: D,
     sb: Superblock,
@@ -28,8 +51,11 @@ pub struct Filesystem<D: BlockRead> {
     replay: Option<Replay>,
     /// The nodes lookups pass through, read once.
     cache: crate::btree::NodeCache,
-    /// The one snapshot every key is read at: the root inode's.
+    /// The root subvolume's snapshot, the one the plain API reads at.
     snapshot: u32,
+    /// Each snapshot's parent (0 for a tree's root), from the snapshots
+    /// btree; empty on a filesystem without one.
+    parents: std::collections::BTreeMap<u32, u32>,
     /// This device's index and bucket size (sectors), for judging pointers.
     dev_idx: u8,
     bucket_size: u64,
@@ -77,13 +103,39 @@ impl<D: BlockRead> Filesystem<D> {
             replay,
             cache: Default::default(),
             snapshot: u32::MAX,
+            parents: Default::default(),
         };
+        fs.parents = fs.load_snapshots()?;
         fs.snapshot = fs.root_snapshot()?;
         Ok(fs)
     }
 
-    /// The snapshot of the root inode's key, and a refusal when the root
-    /// exists at more than one.
+    /// Each snapshot's parent: the high half of a snapshot key's first
+    /// word (S3 + S4: the kernel oracle's snapshots, against the lister's
+    /// `parent`).
+    fn load_snapshots(&self) -> Result<std::collections::BTreeMap<u32, u32>> {
+        let mut c = match self.cursor(SNAPSHOTS) {
+            Err(Error::NotFound(_)) => return Ok(Default::default()),
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: 0,
+            offset: 0,
+            snapshot: 0,
+        })?;
+        let mut out = std::collections::BTreeMap::new();
+        while let Some(k) = c.next_key()? {
+            if k.key_type == KEY_SNAPSHOT && k.value.len() >= 8 {
+                let parent = (crate::util::le64(&k.value, 0) >> 32) as u32;
+                out.insert(k.pos.offset as u32, parent);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The root subvolume's snapshot: subvolume 1's, or, without a
+    /// subvolumes btree, the root inode's. A root inode at a snapshot the
+    /// snapshots btree does not know is refused rather than misread.
     fn root_snapshot(&self) -> Result<u32> {
         let mut c = self.cursor(btree_id::INODES)?;
         c.seek(Bpos {
@@ -91,29 +143,86 @@ impl<D: BlockRead> Filesystem<D> {
             offset: ROOT_INO,
             snapshot: 0,
         })?;
-        let mut found: Option<u32> = None;
+        let mut roots: Vec<Bkey> = Vec::new();
         while let Some(k) = c.next_key()? {
             if k.pos.inode != 0 || k.pos.offset != ROOT_INO {
                 break;
             }
-            if k.key_type != crate::bkey::key_type::INODE_V3 {
-                continue;
+            if k.key_type == crate::bkey::key_type::INODE_V3 {
+                roots.push(k);
             }
-            if let Some(first) = found {
-                return Err(snapshots_not_read(&k, first));
-            }
-            found = Some(k.pos.snapshot);
         }
-        found.ok_or_else(|| Error::NotFound(format!("inode {ROOT_INO}")))
+        let first = roots
+            .first()
+            .ok_or_else(|| Error::NotFound(format!("inode {ROOT_INO}")))?;
+        let snap = match self.subvolume(1) {
+            Ok(n) => n.snapshot,
+            Err(Error::NotFound(_)) => first.pos.snapshot,
+            Err(e) => return Err(e),
+        };
+        for k in &roots {
+            if k.pos.snapshot != snap && !self.parents.contains_key(&k.pos.snapshot) {
+                return Err(snapshots_not_read(k, snap));
+            }
+        }
+        Ok(snap)
     }
 
-    /// A key at any snapshot but the root's is a snapshot this reader
-    /// cannot resolve.
-    fn same_snapshot(&self, k: &Bkey) -> Result<()> {
-        if k.pos.snapshot == self.snapshot {
-            Ok(())
-        } else {
-            Err(snapshots_not_read(k, self.snapshot))
+    /// Subvolume `id`'s root directory: its snapshot in the high half of
+    /// the first word and its root inode in the second (S3 + S4: the
+    /// kernel oracle's subvolumes, against the lister's `root` and
+    /// `snapshot id`).
+    fn subvolume(&self, id: u32) -> Result<Node> {
+        let mut c = match self.cursor(SUBVOLUMES) {
+            Err(Error::NotFound(_)) => return Err(Error::NotFound(format!("subvolume {id}"))),
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: 0,
+            offset: u64::from(id),
+            snapshot: 0,
+        })?;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != 0 || k.pos.offset != u64::from(id) {
+                break;
+            }
+            if k.key_type == KEY_SUBVOLUME && k.value.len() >= 16 {
+                return Ok(Node {
+                    ino: crate::util::le64(&k.value, 8),
+                    snapshot: (crate::util::le64(&k.value, 0) >> 32) as u32,
+                });
+            }
+        }
+        Err(Error::NotFound(format!("subvolume {id}")))
+    }
+
+    /// The snapshots `snap` sees, nearest first: itself, its parent, and so
+    /// on to its tree's root.
+    fn chain(&self, snap: u32) -> Vec<u32> {
+        let mut out = vec![snap];
+        let mut at = snap;
+        while let Some(&p) = self.parents.get(&at) {
+            if p == 0 || out.len() >= MAX_SNAPSHOT_DEPTH || out.contains(&p) {
+                break;
+            }
+            out.push(p);
+            at = p;
+        }
+        out
+    }
+
+    /// The node the root subvolume's root directory is.
+    pub fn root(&self) -> Node {
+        Node {
+            ino: ROOT_INO,
+            snapshot: self.snapshot,
+        }
+    }
+
+    fn node(&self, ino: u64) -> Node {
+        Node {
+            ino,
+            snapshot: self.snapshot,
         }
     }
 
@@ -125,9 +234,10 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(Cursor::new(&self.dev, &self.sb, id, self.replay.as_ref())?.with_cache(&self.cache))
     }
 
-    /// Every key of btree `id` whose position's inode field is `inode`, in
-    /// order, read through a cursor.
-    fn keys_of(&self, id: u8, inode: u64) -> Result<Vec<crate::bkey::Bkey>> {
+    /// The keys of btree `id` at `inode` that a snapshot whose chain is
+    /// `chain` sees, in order: at each position the nearest, none where
+    /// that is a whiteout.
+    fn keys_of(&self, id: u8, inode: u64, chain: &[u32]) -> Result<Vec<Bkey>> {
         let mut c = self.cursor(id)?;
         c.seek(Bpos {
             inode,
@@ -135,60 +245,88 @@ impl<D: BlockRead> Filesystem<D> {
             snapshot: 0,
         })?;
         let mut out = Vec::new();
+        let mut group: Vec<Bkey> = Vec::new();
         while let Some(k) = c.next_key()? {
             if k.pos.inode != inode {
                 break;
             }
-            self.same_snapshot(&k)?;
+            if group.last().is_some_and(|g| g.pos.offset != k.pos.offset) {
+                out.extend(nearest(chain, std::mem::take(&mut group)));
+            }
+            group.push(k);
+        }
+        out.extend(nearest(chain, group));
+        Ok(out)
+    }
+
+    /// The keys at exactly `inode:offset` of btree `id`, at every snapshot.
+    fn keys_at(&self, id: u8, inode: u64, offset: u64) -> Result<Vec<Bkey>> {
+        let mut c = self.cursor(id)?;
+        c.seek(Bpos {
+            inode,
+            offset,
+            snapshot: 0,
+        })?;
+        let mut out = Vec::new();
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != inode || k.pos.offset != offset {
+                break;
+            }
             out.push(k);
         }
         Ok(out)
     }
 
+    /// An inode of the root subvolume.
     pub fn inode(&self, ino: u64) -> Result<Inode> {
-        let mut c = self.cursor(btree_id::INODES)?;
-        c.seek(Bpos {
-            inode: 0,
-            offset: ino,
-            snapshot: 0,
-        })?;
-        let mut found: Option<Inode> = None;
-        while let Some(k) = c.next_key()? {
-            if k.pos.inode != 0 || k.pos.offset != ino {
-                break;
-            }
-            self.same_snapshot(&k)?;
-            match k.key_type {
-                crate::bkey::key_type::INODE_V3 if found.is_none() => {
-                    found = Some(Inode::from_key(&k)?);
-                }
-                // The earlier encodings (S1 11.5, 11.6: `inode` is v1,
-                // `inode_v2` is 0.18 to 0.22): a filesystem older than this
-                // reader decodes, which is not the same as no inode.
-                crate::bkey::key_type::INODE | crate::bkey::key_type::INODE_V2 => {
-                    return Err(Error::Unsupported(format!(
-                        "inode {ino} is stored in the {} encoding (key type {}), older than \
-                         the inode_v3 this reader decodes",
-                        if k.key_type == crate::bkey::key_type::INODE {
-                            "inode (v1)"
-                        } else {
-                            "inode_v2"
-                        },
-                        k.key_type
-                    )));
-                }
-                _ => {}
-            }
-        }
-        found.ok_or_else(|| Error::NotFound(format!("inode {ino}")))
+        self.inode_at(self.node(ino))
     }
 
-    /// The entries of a directory, by inode, in btree (hash) order.
-    pub fn readdir(&self, dir: u64) -> Result<Vec<Dirent>> {
-        if !self.inode(dir)?.is_dir() {
-            return Err(Error::Corrupt(format!("inode {dir} is not a directory")));
+    /// An inode as the snapshot `n.snapshot` sees it.
+    pub fn inode_at(&self, n: Node) -> Result<Inode> {
+        let ino = n.ino;
+        let keys = self.keys_at(btree_id::INODES, 0, ino)?;
+        let Some(k) = nearest(&self.chain(n.snapshot), keys) else {
+            return Err(Error::NotFound(format!("inode {ino}")));
+        };
+        match k.key_type {
+            crate::bkey::key_type::INODE_V3 => Inode::from_key(&k),
+            // The earlier encodings (S1 11.5, 11.6: `inode` is v1,
+            // `inode_v2` is 0.18 to 0.22): a filesystem older than this
+            // reader decodes, which is not the same as no inode.
+            crate::bkey::key_type::INODE | crate::bkey::key_type::INODE_V2 => {
+                Err(Error::Unsupported(format!(
+                    "inode {ino} is stored in the {} encoding (key type {}), older than the \
+                     inode_v3 this reader decodes",
+                    if k.key_type == crate::bkey::key_type::INODE {
+                        "inode (v1)"
+                    } else {
+                        "inode_v2"
+                    },
+                    k.key_type
+                )))
+            }
+            _ => Err(Error::NotFound(format!("inode {ino}"))),
         }
-        self.keys_of(btree_id::DIRENTS, dir)?
+    }
+
+    /// The entries of a directory of the root subvolume, in btree (hash)
+    /// order.
+    pub fn readdir(&self, dir: u64) -> Result<Vec<Dirent>> {
+        self.readdir_at(self.node(dir))
+    }
+
+    /// The entries of a directory as its snapshot sees them, in btree
+    /// (hash) order. An entry of type `subvol` names a subvolume, whose
+    /// root [`Filesystem::resolve`] enters.
+    pub fn readdir_at(&self, dir: Node) -> Result<Vec<Dirent>> {
+        if !self.inode_at(dir)?.is_dir() {
+            return Err(Error::Corrupt(format!(
+                "inode {} is not a directory",
+                dir.ino
+            )));
+        }
+        self.keys_of(btree_id::DIRENTS, dir.ino, &self.chain(dir.snapshot))?
             .iter()
             .filter(|k| k.key_type == crate::bkey::key_type::DIRENT)
             .map(Dirent::from_key)
@@ -208,13 +346,22 @@ impl<D: BlockRead> Filesystem<D> {
     /// (S3: every ASCII name of the set), any other by Unicode's folding
     /// ([`crate::inode::casefold`], #111). A name that is not UTF-8 has no
     /// folded form and is matched as stored, by a scan.
-    fn find(&self, dir: &Inode, name: &[u8]) -> Result<Option<Dirent>> {
+    ///
+    /// In a snapshot (#12) each slot is what the snapshot sees there: a
+    /// whiteout at a nearer snapshot is a removed entry, passed over like a
+    /// `hash_whiteout`; a slot with nothing the snapshot sees ends the run.
+    fn find(&self, dir: &Inode, snapshot: u32, name: &[u8]) -> Result<Option<Dirent>> {
+        let node = Node {
+            ino: dir.ino,
+            snapshot,
+        };
+        let chain = self.chain(snapshot);
         let casefolded = dir.is_casefolded();
         let key = if casefolded {
             match crate::inode::casefold(name) {
                 Some(k) => k,
                 None => {
-                    return Ok(self.readdir(dir.ino)?.into_iter().find(|d| d.name == name));
+                    return Ok(self.readdir_at(node)?.into_iter().find(|d| d.name == name));
                 }
             }
         } else {
@@ -229,7 +376,7 @@ impl<D: BlockRead> Filesystem<D> {
             Ok(hit.then_some(d))
         };
         let Some(mut at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, &key) else {
-            let keys = self.keys_of(btree_id::DIRENTS, dir.ino)?;
+            let keys = self.keys_of(btree_id::DIRENTS, dir.ino, &chain)?;
             for k in keys
                 .iter()
                 .filter(|k| k.key_type == crate::bkey::key_type::DIRENT)
@@ -240,64 +387,95 @@ impl<D: BlockRead> Filesystem<D> {
             }
             return Ok(None);
         };
-        let mut c = self.cursor(btree_id::DIRENTS)?;
-        c.seek(Bpos {
-            inode: dir.ino,
-            offset: at,
-            snapshot: 0,
-        })?;
-        while let Some(k) = c.next_key()? {
-            if k.pos.inode != dir.ino || k.pos.offset != at {
-                break;
-            }
-            self.same_snapshot(&k)?;
+        loop {
+            let keys = self.keys_at(btree_id::DIRENTS, dir.ino, at)?;
+            let Some(k) = nearest_or_whiteout(&chain, keys) else {
+                return Ok(None);
+            };
             match k.key_type {
                 crate::bkey::key_type::DIRENT => {
                     if let Some(d) = found(&k)? {
                         return Ok(Some(d));
                     }
                 }
-                crate::bkey::key_type::HASH_WHITEOUT => {}
-                _ => break,
+                crate::bkey::key_type::HASH_WHITEOUT | crate::bkey::key_type::WHITEOUT => {}
+                _ => return Ok(None),
             }
             at += 1;
         }
-        Ok(None)
     }
 
-    /// Resolve an absolute path to an inode, without following a symlink
-    /// in the last component.
+    /// Resolve an absolute path to an inode of the root subvolume, without
+    /// following a symlink in the last component. A path into another
+    /// subvolume is refused: its inode numbers repeat in its snapshots, so
+    /// it is read through [`Filesystem::resolve`] and the `_at` calls.
     pub fn lookup(&self, path: &str) -> Result<u64> {
-        let mut ino = ROOT_INO;
+        let n = self.resolve(path)?;
+        if n.snapshot != self.snapshot {
+            return Err(Error::Unsupported(format!(
+                "{path} is in a subvolume other than the root one (snapshot {}): read it \
+                 through Filesystem::resolve",
+                n.snapshot
+            )));
+        }
+        Ok(n.ino)
+    }
+
+    /// Resolve an absolute path to the node it names, entering each
+    /// subvolume on the way at its root: a dirent of type `subvol` holds
+    /// the subvolume's id in the low half of its first word and its
+    /// parent's in the high half (S3 + S4: the kernel oracle's `sv` and
+    /// `snap`, against the lister's `sv -> 1 -> 2`).
+    pub fn resolve(&self, path: &str) -> Result<Node> {
+        let mut n = self.root();
         for part in path.split('/').filter(|p| !p.is_empty()) {
-            let dir = self.inode(ino)?;
+            let dir = self.inode_at(n)?;
             if !dir.is_dir() {
                 return Err(Error::NotFound(path.to_string()));
             }
-            ino = self
-                .find(&dir, part.as_bytes())?
-                .ok_or_else(|| Error::NotFound(path.to_string()))?
-                .inum;
+            let d = self
+                .find(&dir, n.snapshot, part.as_bytes())?
+                .ok_or_else(|| Error::NotFound(path.to_string()))?;
+            n = if d.d_type == DT_SUBVOL {
+                self.subvolume(d.inum as u32)?
+            } else {
+                Node {
+                    ino: d.inum,
+                    snapshot: n.snapshot,
+                }
+            };
         }
-        Ok(ino)
+        Ok(n)
     }
 
-    /// The extended attributes of an inode, in btree order.
+    /// The extended attributes of an inode of the root subvolume, in btree
+    /// order.
     pub fn xattrs(&self, ino: u64) -> Result<Vec<crate::xattr::Xattr>> {
-        self.inode(ino)?;
-        self.keys_of(btree_id::XATTRS, ino)?
+        self.xattrs_at(self.node(ino))
+    }
+
+    /// The extended attributes of an inode as its snapshot sees them.
+    pub fn xattrs_at(&self, n: Node) -> Result<Vec<crate::xattr::Xattr>> {
+        self.inode_at(n)?;
+        self.keys_of(btree_id::XATTRS, n.ino, &self.chain(n.snapshot))?
             .iter()
             .filter(|k| k.key_type == crate::bkey::key_type::XATTR)
             .map(crate::xattr::Xattr::from_key)
             .collect()
     }
 
-    /// The whole contents of a file (or a symlink's target).
+    /// The whole contents of a file (or a symlink's target) of the root
+    /// subvolume.
     pub fn read(&self, ino: u64) -> Result<Vec<u8>> {
-        let size = self.inode(ino)?.size;
+        self.read_at(self.node(ino))
+    }
+
+    /// The whole contents of a file as its snapshot sees it.
+    pub fn read_at(&self, n: Node) -> Result<Vec<u8>> {
+        let size = self.inode_at(n)?.size;
         let len = usize::try_from(size)
             .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
-        self.read_range(ino, 0, len)
+        self.read_range_at(n, 0, len)
     }
 
     /// Up to `len` bytes of a file from byte `offset`: empty at or past the
@@ -305,7 +483,18 @@ impl<D: BlockRead> Filesystem<D> {
     /// window are read and decoded, so a reader taking a file in pieces
     /// does work proportional to the pieces, not to the file.
     pub fn read_range(&self, ino: u64, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let size = self.inode(ino)?.size;
+        self.read_range_at(self.node(ino), offset, len)
+    }
+
+    /// [`Filesystem::read_range`] as the snapshot `n.snapshot` sees the
+    /// file. Each sector is read from the nearest snapshot that has an
+    /// extent over it (#12): the extents of farther snapshots are laid down
+    /// first and nearer ones over them, a whiteout or a reservation as
+    /// zeros.
+    pub fn read_range_at(&self, n: Node, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let ino = n.ino;
+        let chain = self.chain(n.snapshot);
+        let size = self.inode_at(n)?.size;
         if offset >= size {
             return Ok(Vec::new());
         }
@@ -319,19 +508,28 @@ impl<D: BlockRead> Filesystem<D> {
             offset: offset / 512 + 1,
             snapshot: 0,
         })?;
-        // Extents of one file must not overlap (S1's check_extents: "no
-        // overlaps"): two keys claiming the same sectors would be written
-        // into the buffer in position order, and the later one, not the
-        // newer one, would win. Refused instead (issue #60).
-        let mut prev_end: Option<u64> = None;
+        // Extents of one file at one snapshot must not overlap (S1's
+        // check_extents: "no overlaps"): two keys claiming the same sectors
+        // would be written into the buffer in position order, and the later
+        // one, not the newer one, would win. Refused instead (issue #60).
+        let mut prev_end: std::collections::BTreeMap<usize, u64> = Default::default();
+        let mut seen: Vec<(usize, Bkey)> = Vec::new();
         while let Some(k) = c.next_key()? {
             if k.pos.inode != ino {
                 break;
             }
-            self.same_snapshot(&k)?;
+            let Some(rank) = chain.iter().position(|&s| s == k.pos.snapshot) else {
+                continue;
+            };
             let key_start = k.start_offset().saturating_mul(512);
             if key_start >= end {
-                break;
+                // Starts only grow within one snapshot; an extent of another
+                // may still start before this one, so with more than one
+                // snapshot in view the scan goes on to the file's last key.
+                if chain.len() == 1 {
+                    break;
+                }
+                continue;
             }
             if matches!(
                 k.key_type,
@@ -341,7 +539,7 @@ impl<D: BlockRead> Filesystem<D> {
                     | crate::bkey::key_type::ERROR
                     | crate::bkey::key_type::REFLINK_P
             ) {
-                if let Some(prev) = prev_end {
+                if let Some(&prev) = prev_end.get(&rank) {
                     if k.start_offset() < prev {
                         return Err(Error::Corrupt(format!(
                             "extent {} starts at sector {} before the extent before it ends at \
@@ -351,8 +549,14 @@ impl<D: BlockRead> Filesystem<D> {
                         )));
                     }
                 }
-                prev_end = Some(k.pos.offset);
+                prev_end.insert(rank, k.pos.offset);
             }
+            seen.push((rank, k));
+        }
+        // Farthest snapshot first, so a nearer one's extents land over it.
+        seen.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
+        for (_, k) in seen {
+            let key_start = k.start_offset().saturating_mul(512);
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {
                     // "Reads of poisoned extents return an error rather than
@@ -381,11 +585,13 @@ impl<D: BlockRead> Filesystem<D> {
                     copy_window(&mut out, offset, end, key_start, &k.value[..n]);
                 }
                 // A reservation is space with no data yet, a whiteout hides
-                // nothing on a filesystem without snapshots: both read as
-                // zeros.
+                // what a farther snapshot had there: both read as zeros.
                 crate::bkey::key_type::RESERVATION
                 | crate::bkey::key_type::WHITEOUT
-                | crate::bkey::key_type::EXTENT_WHITEOUT => {}
+                | crate::bkey::key_type::EXTENT_WHITEOUT => {
+                    let zeros = vec![0u8; k.size as usize * 512];
+                    copy_window(&mut out, offset, end, key_start, &zeros);
+                }
                 // "Reads to these ranges return IO errors" (S1 9.1.2.1).
                 crate::bkey::key_type::ERROR => {
                     return Err(Error::Io(format!(
@@ -548,10 +754,24 @@ pub(crate) fn extent_bytes(
 }
 
 /// The refusal for a key at a snapshot other than the root's.
+/// Of the keys at one position, the one a snapshot whose chain is `chain`
+/// sees: the one at the snapshot nearest it, whiteouts included.
+fn nearest_or_whiteout(chain: &[u32], keys: Vec<Bkey>) -> Option<Bkey> {
+    keys.into_iter()
+        .filter_map(|k| Some((chain.iter().position(|&s| s == k.pos.snapshot)?, k)))
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, k)| k)
+}
+
+/// [`nearest_or_whiteout`], with a whiteout read as nothing there.
+fn nearest(chain: &[u32], keys: Vec<Bkey>) -> Option<Bkey> {
+    nearest_or_whiteout(chain, keys).filter(|k| k.key_type != crate::bkey::key_type::WHITEOUT)
+}
+
 fn snapshots_not_read(k: &Bkey, root_snapshot: u32) -> Error {
     Error::Unsupported(format!(
-        "key {} is at snapshot {}, the root inode at {root_snapshot}: snapshots and subvolumes \
-         are not read (issue #12)",
+        "key {} is at snapshot {}, which the snapshots btree does not have (the root \
+         subvolume is at {root_snapshot}): the snapshot cannot be placed, so it is not read",
         k.pos, k.pos.snapshot
     ))
 }

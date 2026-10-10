@@ -596,61 +596,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    `start <= seq < end` (`Node::parse_filtered`). Still open: the journal's
    own `blacklist` and `blacklist_v2` entries (types 3, 4) -- none in any
    fixture's journal; a replay window holding one is refused.
-5. **Snapshots and subvolumes**: visibility rules (S1 9.4) are not
-   implemented. Inferred and relied on: on a filesystem that never had a
-   snapshot, every key of the extents, inodes, dirents and xattrs btrees
-   carries the root inode's snapshot (U32_MAX on every fixture, checked
-   by every oracle test's positions). The reader and the checker refuse a
-   key at any other snapshot rather than resolve it (issue #53); what a
-   snapshotted filesystem looks like needs a fixture no guest can make
-   yet (issue #12). The fixture build probes for one: it asks the
-   reference implementation's mount for a subvolume and a snapshot on a
-   scratch image and records the answer and the lister's view in
-   `probe.*` (scripts/guest-build-fixtures.sh).
-   **Not through the reference mount** (S3, S8). Pointed at it, the
-   reference tool's `subvolume create` and `subvolume snapshot` fail before
-   they reach it ("error reading superblock: Invalid argument", "Failed to
-   open the filesystem at /mnt/aged"). Their help (`probe.help.txt`, from
-   #100 on) takes paths only, with no device or image form. S1 (6.7 and
-   its list of ioctls) has subvolumes made by an ioctl on a mounted
-   filesystem, and no ioctl reaches this FUSE daemon (#7). The formatter
-   has no option that makes one. A kernel mount would (#110).
-   **Through the reference key editor** (S3: `probe.kvdb.txt`, from #114
-   on). The reference tool's `kvdb`, by its own help a btree editor that
-   sets keys by field name through the normal transactional path, can
-   fabricate snapshot keys. Observed so far:
-   - Every image holds one subvolume (1: `root 4096 snapshot id
-     4294967295 creation_parent 0 fs_parent 0 live`), one snapshot
-     (4294967295: `parent 0 children 0 0 subvol 1 tree 1 depth 0 skiplist
-     0 0 0 live`) and one snapshot tree (1: `subvol 1 root snapshot
-     4294967295`).
-   - The editor takes the snapshot fields `parent`, `children[0]`,
-     `children[1]`, `subvol`, `tree`, `depth` and `state=live`, and the
-     subvolume field `snapshot`. The subvolume's root inode is not a field
-     called `root` ("bch_subvolume has no field 'root'"), so no second
-     subvolume has been made yet.
-   - What the reference checker requires of a snapshot, in its own
-     messages:
-     - a parent that names it among its children; without one, the
-       filesystem does not start (`EINVAL_snapshot_parent_missing_child_ptr`);
-     - a state ("snapshot state unset, recovering from legacy flags");
-     - skiplist entries that are ancestors: it rewrote a depth-1 leaf's
-       `0 0 0` to its parent's id (`snapshot_bad_skiplist`);
-     - a subvolume, with a root inode, for each leaf's `subvol` ("snapshot
-       points to missing subvolume 2", "no root inode found for subvol 2");
-     - flags that agree with the subvolumes (`snapshot_subvol_flag_wrong`,
-       `snapshot_subvol_backref_wrong`).
-     An interior node prints `subvol_obsolete=1`.
-   - Visibility, from the editor's snapshot-filtered lookup. With the root
-     snapshot made interior and two leaves under it, each leaf sees the
-     root inode's key at the interior 4294967295 (`get -k inodes 0:4096` in
-     either leaf's context gives `inode_v3 0:4096:U32_MAX`): a key at an
-     ancestor is visible from its descendants, as S1 (9.4) says.
-   Next (#12): the subvolume's field names, the skiplists and flags as the
-   checker asks, and the second subvolume's root inode, until the checker
-   passes the image clean. The editor edits an inode only up to its fixed
-   header, so that inode would come from this crate's writer. That image is
-   the fixture a snapshot-aware reader is written against.
+5. **Snapshots and subvolumes** (#12) are answered for reading; see
+   "Snapshots and subvolumes" below. No route through the reference FUSE
+   mount makes one, and the reference key editor fabricates snapshot keys
+   but never a whole subvolume the checker passes (#114), so the
+   reference tool makes them in the kernel oracle's VM. Still open: what
+   the low half of a snapshot key's first word and of a subvolume key's
+   first word hold (2 and 0 seen; the lister prints `live` and, for a
+   snapshot of a subvolume, `snapshot`), and the skiplist's use.
 6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
    multiple devices and replicas**: not seen in any fixture read by this
    crate. (inline_data, xattrs and crc128: seen and read, see above.)
@@ -831,6 +784,40 @@ reflink btrees is kept as `kernel.extents.txt` and `kernel.reflink.txt`.
   index and flag match the lister (`tests/oracle_kernel.rs`). The checker
   does not yet follow a reflink, and the writer will not free one (it
   would have to drop the shared extent's refcount).
+
+### Snapshots and subvolumes -- read
+
+The reference tool, run in the kernel oracle's VM (S10,
+`scripts/kernel-oracle.sh`), makes a subvolume `sv`, fills it, snapshots
+it as `snap`, then changes, removes and adds a file in `sv`. The lister's
+view of the subvolumes, snapshots, snapshot_trees, inodes, dirents and
+extents btrees is kept as `kernel.<btree>.txt`.
+
+- Subvolumes (btree 8, key type 21) at `0:id`: the first word's high half
+  is the subvolume's snapshot and the second word its root inode (`sv`: 2,
+  snapshot 4294967292, root 2305843009213693952; `snap`: 3, snapshot
+  4294967293, the same root inode). The third word holds
+  `creation_parent` in its low half and `fs_parent` in its high half.
+- Snapshots (btree 9, key type 22) at `0:id`: the first word's high half
+  is the parent (0 for a tree's root), the second word the two children,
+  the third `subvol` in its low half and `tree` in its high half. Taking
+  the snapshot made 4294967294 the interior parent of the two leaves
+  4294967292 (`sv`) and 4294967293 (`snap`); the keys written before it
+  are at 4294967294.
+- A dirent of type 16 (`subvol`) names a subvolume: the low half of its
+  first word is the subvolume and the high half its parent (the lister's
+  `sv -> 1 -> 2`).
+- Visibility: a snapshot sees keys at its own id and its ancestors'; at
+  one position the nearest wins. `new.txt`'s dirent and the changed
+  file's new inode and inline data are at `sv`'s 4294967292, beside the
+  old ones at 4294967294; the removed `gone.txt` is a
+  `whiteout` (key type 1) there over its dirent at 4294967294, which
+  `snap` still sees. A file keeps its inode number in every snapshot.
+- Judged: every file, directory and symlink in the root subvolume, in
+  `sv` as it is now and in `snap` as it was reads back at the inode
+  number, mode and SHA-256 the kernel's mount reported
+  (`tests/oracle_kernel.rs`). The writer and the checker still read one
+  snapshot, the root subvolume's.
 
 ## Confirmation
 

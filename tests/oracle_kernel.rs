@@ -57,11 +57,11 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
         .unwrap_or_else(|e| panic!("kernel.img: {e}"));
     let mut files = 0;
     for e in manifest("kernel") {
-        let ino = fs
-            .lookup(&e.path)
+        let node = fs
+            .resolve(&e.path)
             .unwrap_or_else(|err| panic!("kernel {}: {err}", e.path));
-        assert_eq!(Some(ino), e.ino, "kernel {}: inode number", e.path);
-        let inode = fs.inode(ino).unwrap();
+        assert_eq!(Some(node.ino), e.ino, "kernel {}: inode number", e.path);
+        let inode = fs.inode_at(node).unwrap();
         assert_eq!(inode.mode & 0o7777, e.mode, "kernel {}: mode", e.path);
         match e.kind.as_str() {
             "file" => {
@@ -75,7 +75,7 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
                     e.path,
                     e.sha256
                 );
-                let data = fs.read(ino).unwrap();
+                let data = fs.read_at(node).unwrap();
                 assert_eq!(Some(data.len() as u64), e.size, "kernel {}: size", e.path);
                 assert_eq!(
                     Some(format!("{:x}", Sha256::digest(&data))),
@@ -86,7 +86,7 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
                 files += 1;
             }
             "symlink" => {
-                let target = String::from_utf8(fs.read(ino).unwrap()).unwrap();
+                let target = String::from_utf8(fs.read_at(node).unwrap()).unwrap();
                 assert_eq!(Some(target), e.target, "kernel {}: target", e.path);
             }
             "dir" => assert!(inode.is_dir(), "kernel {}: not a directory", e.path),
