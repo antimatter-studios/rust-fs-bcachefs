@@ -21,6 +21,10 @@ API, a patch never does.
 
 ### Added
 
+- **Buckets a writer frees are used again in the same session** (#132): a
+  write that allocates first returns buckets emptied by earlier commits to
+  the free pool, as the reference kernel module does, so a long session on
+  a small image no longer runs out of space.
 - **Data is written on every data checksum and on compressed
   filesystems** (#105): crc64 and xxhash in a crc64 entry, none as a bare
   pointer, as the formatter's fixtures store them; on a filesystem
@@ -30,8 +34,6 @@ API, a patch never does.
   it cannot compress. On a gzip filesystem data is stored as
   incompressible: the reference mount crashed reading this writer's raw
   deflate (open question 20).
-  formatted with compression the data is stored uncompressed, its entry
-  marked incompressible, as the reference stores data it cannot compress.
 - **`Writer::write_at`, `append` and `truncate`** (#102): a write into
   part of a file, an append, and a truncation to any size. The file's
   contents are read (compressed and checksummed extents included, through

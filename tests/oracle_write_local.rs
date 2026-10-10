@@ -920,3 +920,27 @@ fn files_on_every_data_checksum_and_compression_read_back() {
         );
     }
 }
+
+/// Buckets this writer frees are used again in the same session (#132): a
+/// 4 MiB file written and removed 25 times, 100 MiB through the 64 MiB base
+/// image, which only works if each removal's buckets come back.
+#[test]
+fn a_session_reuses_the_buckets_it_frees() {
+    let img = scratch("write-study/base.img", "reuse-freed");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let big: Vec<u8> = (0..4 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..25 {
+        w.create_file(d, b"big", &big, 0o644)
+            .unwrap_or_else(|e| panic!("write {i}: {e}"));
+        if i < 24 {
+            w.unlink(d, b"big").unwrap();
+        }
+    }
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.read(fs.lookup("/d/big").unwrap()).unwrap() == big);
+}

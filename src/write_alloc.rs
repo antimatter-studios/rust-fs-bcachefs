@@ -798,6 +798,111 @@ impl<D: BlockDevice> Writer<D> {
 }
 
 impl<D: BlockDevice> Writer<D> {
+    /// Return the buckets earlier commits emptied to the free pool, as the
+    /// reference's discard does on a device it does not discard (#132: the
+    /// reference kernel module's `kernel-freed` image, S10, in
+    /// docs/clean-room.md, "Allocating space"). A bucket
+    /// waiting in need_discard becomes free with its generation kept, its
+    /// need_discard flag and both journal sequence numbers cleared; its
+    /// need_discard key goes; freespace gets it back, in a run of the freed
+    /// buckets beside it (the reference also merges it into an existing
+    /// run; this writer leaves those alone, see below); accounting moves it
+    /// from need_discard to free. Buckets of
+    /// generation 16 or more are left waiting: whether a freespace key
+    /// carries a generation's high bits has not been seen
+    /// (docs/clean-room.md, "Allocating space"). Committed on its own, so a bucket freed by the transaction
+    /// that is being built is never handed out again by it.
+    pub(super) fn discard_freed(&mut self) -> Result<()> {
+        let waiting = match self.keys(NEED_DISCARD) {
+            Err(Error::NotFound(_)) => return Ok(()),
+            r => r?,
+        };
+        let waiting: std::collections::BTreeMap<u64, Bpos> = waiting
+            .into_iter()
+            .filter(|k| k.key_type == aids::SET)
+            .map(|k| (k.pos.offset, k.pos))
+            .collect();
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        let freed: Vec<Bkey> = self
+            .keys(aids::ALLOC)?
+            .into_iter()
+            .filter(|k| {
+                k.pos.inode == 0
+                    && waiting.contains_key(&k.pos.offset)
+                    && k.key_type == aids::ALLOC_V4
+                    && k.value.len() >= 56
+                    && k.value[14] == DATA_NEED_DISCARD
+                    && k.value[12] < 16
+            })
+            .collect();
+        if freed.is_empty() {
+            return Ok(());
+        }
+        let mut t = Txn::default();
+        let mut free: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        for a in &freed {
+            let b = a.pos.offset;
+            let mut v = a.value.clone();
+            let w1 = le64(&v, 8);
+            // Data type free, need_discard (flag bit 0) cleared; the
+            // generations and the other flags stay.
+            let w1 = (w1 & !(0xff << 48)) & !1;
+            v[8..16].copy_from_slice(&w1.to_le_bytes());
+            v[0..8].copy_from_slice(&0u64.to_le_bytes());
+            v[48..56].copy_from_slice(&0u64.to_le_bytes());
+            t.put_uncounted(
+                aids::ALLOC,
+                Bkey {
+                    value: v,
+                    ..a.clone()
+                },
+            );
+            t.delete_uncounted(NEED_DISCARD, waiting[&b]);
+            free.insert(b);
+            self.reserved.remove(&b);
+        }
+        // Runs of their own, one per stretch of adjacent freed buckets.
+        // An existing run is never rewritten here: a btree node this
+        // commit rewrites takes its bucket from the runs as they stand on
+        // disk, and its shrunk run, put under the same key, would replace
+        // a merged one and lose the buckets merged in (CI run 38024306750:
+        // the reference checker's "bucket incorrectly unset in freespace
+        // btree").
+        let mut runs: Vec<(u64, u64)> = Vec::new(); // (end, length)
+        for &b in &free {
+            match runs.last_mut() {
+                Some((end, len)) if *end == b => {
+                    *end += 1;
+                    *len += 1;
+                }
+                _ => runs.push((b + 1, 1)),
+            }
+        }
+        for (end, len) in runs {
+            t.put_uncounted(
+                aids::FREESPACE,
+                Bkey {
+                    key_type: aids::SET,
+                    size: len as u32,
+                    version_hi: 0,
+                    version_lo: 0,
+                    pos: Bpos {
+                        inode: 0,
+                        offset: end,
+                        snapshot: 0,
+                    },
+                    value: Vec::new(),
+                },
+            );
+        }
+        let n = free.len() as i64;
+        t.count(acct_dev_data_type(0, DATA_NEED_DISCARD), 3, 0, -n);
+        t.count(acct_dev_data_type(0, 0), 3, 0, n);
+        self.commit(t)
+    }
+
     /// An emptied bucket, its alloc key `a` (dirty sectors already 0): it
     /// becomes need_discard with its generation and oldest generation one
     /// higher, need_inc_gen cleared and journal_seq_empty set, gets a

@@ -914,3 +914,29 @@ fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
         });
     }
 }
+
+/// Buckets freed earlier in the session are used again (#132): a 4 MiB
+/// file written and removed 25 times on the 64 MiB base image; the
+/// reference checker passes the result and its mount reads the last copy.
+#[test]
+fn reused_buckets_are_accepted_by_the_reference() {
+    let img = scratch("write-study/base.img", "reuse-freed");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let big = pattern(4 * 1024 * 1024, 9);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..25 {
+        w.create_file(d, b"big", &big, 0o644)
+            .unwrap_or_else(|e| panic!("write {i}: {e}"));
+        if i < 24 {
+            w.unlink(d, b"big").unwrap();
+        }
+    }
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(std::fs::read(m.join("d/big")).unwrap() == big);
+    });
+}
