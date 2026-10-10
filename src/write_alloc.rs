@@ -800,7 +800,8 @@ impl<D: BlockDevice> Writer<D> {
 impl<D: BlockDevice> Writer<D> {
     /// Return the buckets earlier commits emptied to the free pool, as the
     /// reference's discard does on a device it does not discard (#132: the
-    /// reference kernel module's `kernel-freed` image, S10). A bucket
+    /// reference kernel module's `kernel-freed` image, S10, in
+    /// docs/clean-room.md, "Allocating space"). A bucket
     /// waiting in need_discard becomes free with its generation kept, its
     /// need_discard flag and both journal sequence numbers cleared; its
     /// need_discard key goes; freespace gets it back, in a run of the freed

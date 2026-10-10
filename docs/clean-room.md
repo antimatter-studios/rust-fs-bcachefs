@@ -462,7 +462,10 @@ checker judged each attempt and named what was missing until nothing was.
   reference checker and the mount reads what remains (S8 checker run).
 - Reusing a freed bucket (#132; the reference kernel module's
   `kernel-freed` image, S10: a 4 MiB file written, removed, and ten
-  seconds before the unmount): the reference returns a need_discard
+  seconds before the unmount, made once by an observation build of the
+  kernel oracle in CI run 38017596962, whose `fixtures` artifact keeps the
+  reference lister's view of its alloc, need_discard, freespace,
+  bucket_gens and accounting btrees): the reference returns a need_discard
   bucket to the free pool on a device it does not discard. Its alloc key
   becomes data type free with gen and oldest_gen kept, need_discard
   cleared and both journal sequence numbers (words 0 and 6) 0, io_time
