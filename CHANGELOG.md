@@ -21,6 +21,11 @@ API, a patch never does.
 
 ### Added
 
+- **`Writer::write_at`, `append` and `truncate`** (#102): a write into
+  part of a file, an append, and a truncation to any size. The file's
+  contents are read (compressed and checksummed extents included, through
+  the reader's own extent decoding), changed, and rewritten whole, laid
+  out as `write_file` lays it out.
 - **A read-only spike of a clean-room bcachefs reader.** The superblock is
   parsed and checksummed; btree nodes are read, checksummed and walked;
   inodes, directory entries and extents are decoded; files read back byte

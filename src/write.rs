@@ -1092,6 +1092,74 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
+    /// A file's whole contents as this writer sees them, a session's
+    /// journal included: inline data, and data extents read, checked and
+    /// decompressed as the reader does (`fs::extent_bytes`). Holes and
+    /// reservations read as zeros.
+    fn contents(&self, ino: u64) -> Result<Vec<u8>> {
+        let size = usize::try_from(self.inode(ino)?.raw.size)
+            .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
+        let mut out = vec![0u8; size];
+        for k in self.extents_of(ino)? {
+            let start = k.start_offset().saturating_mul(512);
+            match k.key_type {
+                key_type::EXTENT => {
+                    let e = crate::extent::DataExtent::from_key(&k)?;
+                    let data =
+                        crate::fs::extent_bytes(&e, |at, buf| Ok(self.dev.read_at(at, buf)?))?;
+                    crate::fs::copy_window(&mut out, 0, size as u64, e.file_start * 512, &data);
+                }
+                key_type::INLINE_DATA => {
+                    let n = k.value.len().min(k.size as usize * 512);
+                    crate::fs::copy_window(&mut out, 0, size as u64, start, &k.value[..n]);
+                }
+                key_type::RESERVATION | key_type::WHITEOUT | key_type::EXTENT_WHITEOUT => {}
+                other => {
+                    return Err(Error::Unsupported(format!(
+                        "inode {ino}: extent key type {other} cannot be rewritten"
+                    )))
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Write `data` into a file at byte `offset` (#102), growing it when
+    /// the write ends past its size; a gap past the old end reads as zeros.
+    /// The file is rewritten whole, laid out as [`Writer::write_file`] lays
+    /// it out, so what the reference would store for those bytes is what
+    /// is stored.
+    pub fn write_at(&mut self, ino: u64, offset: u64, data: &[u8]) -> Result<()> {
+        let mut c = self.contents(ino)?;
+        let from = usize::try_from(offset)
+            .map_err(|_| Error::Unsupported("offset larger than memory".into()))?;
+        let to = from
+            .checked_add(data.len())
+            .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))?;
+        if to > c.len() {
+            c.resize(to, 0);
+        }
+        c[from..to].copy_from_slice(data);
+        self.write_file(ino, &c)
+    }
+
+    /// Append `data` to a file (#102).
+    pub fn append(&mut self, ino: u64, data: &[u8]) -> Result<()> {
+        let size = self.inode(ino)?.raw.size;
+        self.write_at(ino, size, data)
+    }
+
+    /// Set a file's size (#102): cut short, or grown with zeros.
+    pub fn truncate(&mut self, ino: u64, size: u64) -> Result<()> {
+        let mut c = self.contents(ino)?;
+        c.resize(
+            usize::try_from(size)
+                .map_err(|_| Error::Unsupported("size larger than memory".into()))?,
+            0,
+        );
+        self.write_file(ino, &c)
+    }
+
     /// Replace a file's whole contents with `data`, laid out as the
     /// reference would (see [`inline_max`]); empty truncates it.
     /// The old contents' space is freed.

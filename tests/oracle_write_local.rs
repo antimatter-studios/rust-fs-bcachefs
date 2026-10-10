@@ -782,3 +782,50 @@ fn colliding_xattrs_on_a_crc32c_image_read_back() {
     want.sort();
     assert_eq!(got, want);
 }
+
+/// Writes into part of a file (#102): at an offset inside it, across its
+/// end, past its end with a gap, an append, and truncations shorter and
+/// longer; after each, every byte reads back as the model says.
+#[test]
+fn ranged_writes_appends_and_truncations_read_back() {
+    let img = scratch("write-study/base.img", "ranged");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let start: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+    let mut model = start.clone();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let f = w.create_file(d, b"ranged", &start, 0o644).unwrap();
+    let step = |model: &mut Vec<u8>, offset: usize, data: &[u8]| {
+        if offset + data.len() > model.len() {
+            model.resize(offset + data.len(), 0);
+        }
+        model[offset..offset + data.len()].copy_from_slice(data);
+    };
+    for (offset, data) in [
+        (1000usize, vec![b'a'; 300]),
+        (69_900, vec![b'b'; 500]),
+        (80_000, vec![b'c'; 10]),
+    ] {
+        w.write_at(f, offset as u64, &data)
+            .unwrap_or_else(|e| panic!("write at {offset}: {e}"));
+        step(&mut model, offset, &data);
+    }
+    w.append(f, b"appended").unwrap();
+    let end = model.len();
+    step(&mut model, end, b"appended");
+    w.truncate(f, 5000).unwrap();
+    model.truncate(5000);
+    w.truncate(f, 6000).unwrap();
+    model.resize(6000, 0);
+    w.write_at(f, 10, b"tiny").unwrap();
+    step(&mut model, 10, b"tiny");
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        fs.read(f).unwrap() == model,
+        "contents differ from the model"
+    );
+    assert_eq!(fs.inode(f).unwrap().size, 6000);
+}

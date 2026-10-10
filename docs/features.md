@@ -79,6 +79,7 @@ reads back byte for byte through the reference implementation's mount
 | mkdir, unlink, rmdir, rename | Experimental | Unreleased (#30) | | `write_oracle.rs` |
 | rename over an existing file, and a directory moved to another directory | Experimental | Unreleased (#118) | renaming over a directory is refused (#104) | `oracle_write_local.rs`, `write_oracle.rs` |
 | File data inline or in extents, as the reference lays it out | Experimental | Unreleased (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
+| Writing at an offset, appending, truncating to any size (the file is rewritten whole) | Experimental | Unreleased (#120) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data in allocated buckets, freed on unlink and rewrite | Experimental | Unreleased (#35, #36) | | `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | Unreleased (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | Unreleased (#37) | | `write_oracle.rs` |
