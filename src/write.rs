@@ -134,7 +134,7 @@ impl<D: BlockDevice> Writer<D> {
             return Err(Error::Corrupt("clean field shorter than its header".into()));
         }
         let journal_seq = le64(&clean.body, 8);
-        let w = Writer {
+        Ok(Writer {
             dev,
             sb,
             sb_raw,
@@ -142,16 +142,15 @@ impl<D: BlockDevice> Writer<D> {
             session: None,
             reserved: Default::default(),
             cache: Default::default(),
-        };
-        w.refuse_a_snapshotted_root()?;
-        Ok(w)
+        })
     }
 
     /// Every key this writer makes is at snapshot u32::MAX, the root
     /// subvolume's until it is snapshotted. After that the root subvolume
     /// moves to a child snapshot and the keys at u32::MAX are shared with
     /// its snapshot, so a write there would change the snapshot too (#138):
-    /// refused.
+    /// refused, before anything is committed: not at open, where a
+    /// journalled session's replay is not laid over the nodes yet.
     fn refuse_a_snapshotted_root(&self) -> Result<()> {
         let root = self
             .keys_from(
@@ -954,6 +953,7 @@ impl<D: BlockDevice> Writer<D> {
     /// Write a transaction: the accounting it implies first computed from
     /// the keys as they stand, then each btree's keys, then accounting.
     fn commit(&mut self, mut t: Txn) -> Result<()> {
+        self.refuse_a_snapshotted_root()?;
         if self.session.is_some() {
             return self.commit_journal(t);
         }
