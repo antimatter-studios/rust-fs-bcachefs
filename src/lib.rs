@@ -14,6 +14,9 @@ pub mod bkey;
 pub mod btree;
 #[allow(non_camel_case_types)]
 pub mod capi;
+#[cfg(feature = "write")]
+#[allow(non_camel_case_types)]
+pub mod capi_write;
 pub mod check;
 pub mod compress;
 pub mod csum;

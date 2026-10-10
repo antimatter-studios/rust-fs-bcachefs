@@ -21,6 +21,11 @@ API, a patch never does.
 
 ### Added
 
+- **The C ABI writes, behind the `write` feature** (#103):
+  `fs_bcachefs_mount_rw` and entry points for create, mkdir, unlink, rmdir,
+  rename, symlink, link, write_file, chmod, chown, setxattr and
+  removexattr, by absolute path, each committed in place; failures come
+  back as negative errnos (`include/fs_bcachefs.h`).
 - **Per-file options are read** (#81): `Inode::option` gives a file's
   data checksum, compression, background compression and replicas as the
   reference tool names them, including options inherited from its

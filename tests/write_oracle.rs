@@ -1030,3 +1030,60 @@ fn nodes_split_on_other_geometries_pass_the_reference() {
         });
     }
 }
+
+/// The C ABI's writes (#103), called as a C caller would: the reference
+/// checker passes the image and the reference mount reads the result.
+#[test]
+fn writes_through_the_c_abi_are_read_by_the_reference() {
+    use fs_bcachefs::capi_write::*;
+    use std::ffi::{c_void, CString};
+    let img = scratch("write-study/base.img", "capi-write");
+    let c = |s: &str| CString::new(s).unwrap();
+    let data = b"written through the C ABI\n";
+    unsafe {
+        let fs = fs_bcachefs_mount_rw(c(img.to_str().unwrap()).as_ptr());
+        assert!(!fs.is_null());
+        for (r, what) in [
+            (
+                fs_bcachefs_create(
+                    fs,
+                    c("/d/new").as_ptr(),
+                    data.as_ptr() as *const c_void,
+                    data.len() as u64,
+                    0o640,
+                ),
+                "create",
+            ),
+            (fs_bcachefs_mkdir(fs, c("/d/sub").as_ptr(), 0o750), "mkdir"),
+            (
+                fs_bcachefs_rename(fs, c("/d/new").as_ptr(), c("/d/sub/moved").as_ptr()),
+                "rename",
+            ),
+            (
+                fs_bcachefs_symlink(fs, c("/d/link").as_ptr(), c("sub/moved").as_ptr()),
+                "symlink",
+            ),
+            (
+                fs_bcachefs_setxattr(
+                    fs,
+                    c("/d/sub/moved").as_ptr(),
+                    c("user.colour").as_ptr(),
+                    b"blue".as_ptr() as *const c_void,
+                    4,
+                ),
+                "setxattr",
+            ),
+        ] {
+            assert_eq!(r, 0, "{what}");
+        }
+        fs_bcachefs_rw_close(fs);
+    }
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert_eq!(std::fs::read(m.join("d/sub/moved")).unwrap(), data);
+        assert_eq!(
+            std::fs::read_link(m.join("d/link")).unwrap(),
+            std::path::Path::new("sub/moved")
+        );
+    });
+}

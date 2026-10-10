@@ -112,3 +112,4 @@ reads back byte for byte through the reference implementation's mount
 | C ABI: mount (path or fs_core device), volume info, stat, readdir, directory iterator, read, readlink, listxattr, getxattr | Supported | Unreleased (#34) | | `capi.rs`, `oracle_capi.rs` |
 | `fs.bcachefs info`, `ls`, `cat`, `stat`, `tree` (`--features cli`) | Supported | Unreleased (#33) | | `tests/cli/` |
 | `fs.bcachefs` write verbs: `put`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `chmod`, `chown`, `setfattr`, `rmfattr` (experimental; the `cli` feature now includes `write`) | Experimental | Unreleased (#46) | | `tests/cli/test-write.sh`, `write_oracle.rs` |
+| C ABI writes (`write` feature): read-write mount, create, mkdir, unlink, rmdir, rename, symlink, link, write_file, chmod, chown, setxattr, removexattr; negative errnos | Experimental | Unreleased (#123) | | `oracle_capi_write.rs`, `write_oracle.rs` |
