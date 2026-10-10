@@ -2,9 +2,10 @@
 # shellcheck shell=dash
 # kernel-oracle-init.sh -- /init of the reference kernel module's VM (built
 # and booted by scripts/kernel-oracle.sh). Loads the module, mounts the
-# image on /dev/vda, writes the tree from /tree and a hard link, prints the
-# manifest as the mount reports it, unmounts and powers off. Every line the
-# host reads goes to ttyS1 and starts with `ORACLE `: `ORACLE key: value` for kernel.txt,
+# image on /dev/vda, writes the tree from /tree, a hard link and a reflink,
+# prints the manifest as the mount reports it, unmounts and powers off.
+# Every line the host reads goes to ttyS1 and starts with `ORACLE `:
+# `ORACLE key: value` for kernel.txt;
 # `ORACLE M<TAB>path<TAB>type<TAB>mode<TAB>ino<TAB>nlink<TAB>size<TAB>extra`
 # for the manifest (extra: a file's sha256, a symlink's target).
 /bin/busybox --install -s /bin
@@ -34,6 +35,13 @@ if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
     say "mount: ok"
     cp -a /tree/. /mnt/
     ln /mnt/hello.txt /mnt/dir/hello-again.txt
+    # A reflink (#7): the clone shares big/random.bin's data through the
+    # reflink btree, and both files then read through a reflink_p.
+    if ficlone /mnt/big/random.bin /mnt/big/random-clone.bin 2>/tmp/ficlone.err; then
+        say "reflink: ok"
+    else
+        say "reflink: failed ($(head -c 200 /tmp/ficlone.err))"
+    fi
     sync
     cd /mnt || exit 1
     find . -mindepth 1 | sort | while read -r p; do

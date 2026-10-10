@@ -16,11 +16,12 @@
 # formatter. The kernel, the module and what it needs, a static busybox, the
 # deterministic tree (scripts/fixture-tree.py) and kernel-oracle-init.sh go
 # into an initramfs; QEMU boots it under KVM with the image as a virtio disk.
-# The init loads the module, mounts the image, writes the tree and a hard
-# link, prints the manifest as the mount reports it, unmounts and powers
-# off; on a second image it writes and removes 16M files until buckets are
-# reused (#94). Its console becomes kernel.txt and kernel.json; the reference
-# checker judges both images. A stage that fails is recorded, not fatal here:
+# The init loads the module, mounts the image, writes the tree, a hard
+# link and a reflink (scripts/ficlone.c), prints the manifest as the mount
+# reports it, unmounts and powers off; on a second image it writes and
+# removes 16M files until buckets are reused (#94). Its console becomes
+# kernel.txt and kernel.json; the reference checker judges both images. A
+# stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing.
 set -euo pipefail
 
@@ -45,6 +46,7 @@ fi
 
 python3 "$here/scripts/fixture-tree.py" "$work/root/tree"
 cp "$here/scripts/kernel-oracle-init.sh" "$work/root/init"
+cp "$here/scripts/ficlone.c" "$work/ficlone.c"
 chmod 0755 "$work/root/init"
 
 echo "kernel-oracle: building the module in a Debian 13 container"
@@ -56,7 +58,7 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
         >/etc/apt/sources.list.d/trixie-backports.list
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends ca-certificates curl busybox-static \
-        kmod xz-utils zstd cpio >/dev/null
+        kmod xz-utils zstd cpio gcc libc6-dev >/dev/null
     install -d -m 0755 /etc/apt/keyrings
     curl -fsSL -o /etc/apt/keyrings/apt.bcachefs.org.asc https://apt.bcachefs.org/apt.bcachefs.org.asc
     echo "deb [signed-by=/etc/apt/keyrings/apt.bcachefs.org.asc] https://apt.bcachefs.org/trixie bcachefs-tools-release main" \
@@ -86,6 +88,7 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
         echo "$name" >>/work/root/modules.order
     done
     cp /bin/busybox /work/root/bin/busybox
+    gcc -static -O2 -o /work/root/bin/ficlone /work/ficlone.c
     # The reference module source goes with the container; it is never read.
     rm -rf /usr/src/bcachefs-* /var/lib/dkms/bcachefs
     truncate -s 64M /work/kernel.img
@@ -150,5 +153,12 @@ else
     record reuse-fsck "errors (kernel-reuse.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
+# The reflink (#7): the reference lister's view of the reflink btree and of
+# the extents that point into it, the record a reader's layout is checked
+# against.
+for b in reflink extents; do
+    docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+        bcachefs list -b "$b" /work/kernel.img >"$OUT/kernel.$b.txt" 2>&1 || true
+done
 docker rmi rust-fs-bcachefs-ko:tools >/dev/null 2>&1 || true
 echo "kernel-oracle: $(tr '\n' ';' <"$OUT/kernel.txt")"

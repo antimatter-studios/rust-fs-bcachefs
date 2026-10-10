@@ -40,12 +40,15 @@ fn the_reference_kernel_module_mounted_and_unmounted_an_image() {
         "{text}"
     );
     assert_eq!(r.get("mount").map(String::as_str), Some("ok"), "{text}");
+    assert_eq!(r.get("reflink").map(String::as_str), Some("ok"), "{text}");
     assert_eq!(r.get("unmount").map(String::as_str), Some("ok"), "{text}");
     assert_eq!(r.get("fsck").map(String::as_str), Some("clean"), "{text}");
 }
 
 /// Every file, directory and symlink the kernel wrote reads back here at the
-/// inode number, mode, size and contents its mount reported.
+/// inode number, mode, size and contents its mount reported, the reflinked
+/// pair (#7) among them: big/random.bin and its clone both read through a
+/// `reflink_p` into the reflink btree.
 #[test]
 fn what_the_kernel_wrote_reads_back_byte_for_byte() {
     let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap())
@@ -89,4 +92,10 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
         }
     }
     assert!(files >= 10, "kernel: only {files} files compared");
+    assert!(
+        manifest("kernel")
+            .iter()
+            .any(|e| e.path == "/big/random-clone.bin"),
+        "the kernel's manifest has no reflinked clone"
+    );
 }
