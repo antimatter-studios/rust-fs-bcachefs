@@ -941,3 +941,72 @@ fn a_session_reuses_the_buckets_it_frees() {
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
     assert!(fs.read(fs.lookup("/d/big").unwrap()).unwrap() == big);
 }
+
+/// Hundreds of creates and removals and some large files, enough to fill,
+/// rewrite and split nodes and grow a root, in `dir` of a copy of `set`;
+/// every file read back (#109).
+fn many_operations(set: &str, dir: &str, test: &str, n: usize) {
+    let img = scratch(set, test);
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup(dir)
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..n {
+        w.create_file(
+            d,
+            format!("g{i:05}").as_bytes(),
+            format!("file {i}\n").as_bytes(),
+            0o644,
+        )
+        .unwrap_or_else(|e| panic!("{set}: create {i}: {e}"));
+    }
+    for i in (0..n).step_by(3) {
+        w.unlink(d, format!("g{i:05}").as_bytes())
+            .unwrap_or_else(|e| panic!("{set}: unlink {i}: {e}"));
+    }
+    let big: Vec<u8> = (0..50_000u32).map(|i| (i % 249) as u8).collect();
+    for i in 0..5 {
+        w.create_file(d, format!("gbig{i}").as_bytes(), &big, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: big {i}: {e}"));
+    }
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let dir = dir.trim_end_matches('/');
+    for i in (0..n).filter(|i| i % 3 != 0) {
+        let f = fs.lookup(&format!("{dir}/g{i:05}")).unwrap();
+        assert_eq!(
+            fs.read(f).unwrap(),
+            format!("file {i}\n").as_bytes(),
+            "{set}"
+        );
+    }
+    assert!(
+        fs.read(fs.lookup(&format!("{dir}/gbig4")).unwrap())
+            .unwrap()
+            == big
+    );
+}
+
+/// 4096-byte blocks with 32 KiB nodes, the `block4k` geometry (#109). Each
+/// appended bset takes a whole 4096-byte block, so a node fills after about
+/// eight appends and is rewritten into a fresh bucket; the buckets freed
+/// wait for discard and are not reused in one session (#132), so this small
+/// image takes 80 creates, not 400: at 400 it ran out at create 259, and
+/// at 150 the reference checker found no room left for its own journal.
+#[test]
+fn nodes_split_on_4096_byte_blocks_with_32k_nodes() {
+    many_operations("block4k.img", "/", "many-block4k", 80);
+}
+
+/// 32 KiB nodes in 128 KiB buckets (#109): a new node takes a bucket of
+/// its own and leaves the rest unused.
+#[test]
+fn nodes_split_where_nodes_are_smaller_than_buckets() {
+    many_operations(
+        "write-study/base-small-nodes.img",
+        "/d",
+        "many-small-nodes",
+        400,
+    );
+}

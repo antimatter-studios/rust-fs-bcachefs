@@ -979,3 +979,54 @@ fn a_session_longer_than_its_journal_is_read_by_the_reference() {
         }
     });
 }
+
+/// Hundreds of operations on two geometries (#109): 4096-byte blocks with
+/// 32 KiB nodes, and 32 KiB nodes in 128 KiB buckets. The reference
+/// checker passes each image and the reference mount reads every file.
+#[test]
+fn nodes_split_on_other_geometries_pass_the_reference() {
+    // 80 creates on block4k: freed buckets are not reused in one session
+    // (#132); at 150 the image held so few free buckets that the reference
+    // checker's own journal stuck ("journal full", CI run 37994531102).
+    for (set, dir, n) in [
+        ("block4k.img", "/", 80),
+        ("write-study/base-small-nodes.img", "/d", 400),
+    ] {
+        let img = scratch(set, &format!("many-{}", set.replace('/', "-")));
+        let d = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup(dir)
+            .unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        for i in 0..n {
+            w.create_file(
+                d,
+                format!("g{i:05}").as_bytes(),
+                format!("file {i}\n").as_bytes(),
+                0o644,
+            )
+            .unwrap_or_else(|e| panic!("{set}: create {i}: {e}"));
+        }
+        for i in (0..n).step_by(3) {
+            w.unlink(d, format!("g{i:05}").as_bytes()).unwrap();
+        }
+        let big = pattern(50_000, 13);
+        for i in 0..5 {
+            w.create_file(d, format!("gbig{i}").as_bytes(), &big, 0o644)
+                .unwrap();
+        }
+        drop(w);
+        assert_fsck_clean(&img);
+        with_reference_mount(&img, |m| {
+            let base = m.join(dir.trim_start_matches('/'));
+            for i in (1..n).filter(|i| i % 3 != 0) {
+                assert_eq!(
+                    std::fs::read(base.join(format!("g{i:05}"))).unwrap(),
+                    format!("file {i}\n").as_bytes(),
+                    "{set}"
+                );
+            }
+            assert!(std::fs::read(base.join("gbig4")).unwrap() == big);
+        });
+    }
+}

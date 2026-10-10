@@ -135,6 +135,10 @@ API, a patch never does.
 
 ### Fixed
 
+- **Nodes smaller than their bucket are written** (#109): a new node takes
+  a bucket of its own and leaves the rest unused, as the accounting already
+  recorded; the 4096-byte-block, 32 KiB-node geometry is now tested to
+  split and grow.
 - **A non-ASCII name in a casefolded directory is found in any case**
   (#111): names fold by Unicode full case folding after canonical
   decomposition, then NFD (`inode::casefold`), checked against every

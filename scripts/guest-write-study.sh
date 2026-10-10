@@ -109,6 +109,28 @@ settle "$base4k" base-bs4k
 dump "$base4k" base-bs4k
 cp --sparse=always "$ROOT$base4k" "$out/base-bs4k.img"
 
+# NODES SMALLER THAN BUCKETS (#109): 32k nodes in 128k buckets, the
+# base image's one directory and file, settled; then a thousand files
+# written through the mount, so the reference grows its btrees there and
+# the dump shows how it places nodes in buckets (alloc, backpointers).
+step "write-study: base-small-nodes"
+small="$work/base-small-nodes.img"
+truncate -s 128M "$ROOT$small"
+bcachefs-ref format -q --btree_node_size=32k --bucket_size=128k "$small" \
+    >"$out/base-small-nodes.format.txt" 2>&1
+mount_rw "$small"
+mkdir "$ROOT$mnt/d"
+printf 'an existing file\n' >"$ROOT$mnt/d/existing"
+settle "$small" base-small-nodes
+dump "$small" base-small-nodes
+cp --sparse=always "$ROOT$small" "$out/base-small-nodes.img"
+step "write-study: small-nodes-grown"
+mount_rw "$small"
+for i in $(seq 1 1000); do printf '%s\n' "$i" >"$ROOT$mnt/d/f$i"; done
+settle "$small" small-nodes-grown
+dump "$small" small-nodes-grown
+cp --sparse=always "$ROOT$small" "$out/small-nodes-grown.img"
+
 # name | what is done through the mount, with $M the mount point
 ops=(
     'create-small|printf "hello\n" > "$M/d/new.txt"'
