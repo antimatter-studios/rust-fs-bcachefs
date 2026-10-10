@@ -11,7 +11,7 @@ vars:
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
   FS_CORE_REF: v0.3.8
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
-  LINUX_HARNESS_REF: v0.4.0
+  LINUX_HARNESS_REF: v0.4.1
 
 includes:
   vm:

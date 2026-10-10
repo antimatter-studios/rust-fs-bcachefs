@@ -73,6 +73,10 @@ fn assert_fsck_clean(img: &Path) {
 fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
     let host_mnt = PathBuf::from(format!("{REF_ROOT}{MNT}"));
     std::fs::create_dir_all(&host_mnt).unwrap();
+    // The daemon's own output is kept: when it dies under a test, what it
+    // said last is the reason (CI run 38006023802: "Transport endpoint is
+    // not connected" and nothing else).
+    let log = img.with_extension("fuse.log");
     let mut child = Command::new("bcachefs-ref")
         .args([
             "fusemount",
@@ -83,7 +87,7 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
             MNT,
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
     let mounted = (0..60).any(|_| {
@@ -99,13 +103,27 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
         "the reference implementation did not mount {}",
         img.display()
     );
-    let out = f(&host_mnt);
+    // The mount comes down whether `f` passes or panics, so one test that
+    // kills the daemon cannot leave a dead mount for every test after it.
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&host_mnt)));
     let _ = child.kill();
     let _ = child.wait();
     let _ = Command::new("fusermount3")
         .args(["-uz", host_mnt.to_str().unwrap()])
         .status();
-    out
+    match out {
+        Ok(v) => v,
+        Err(panic) => {
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail: Vec<&str> = said.lines().rev().take(30).collect();
+            eprintln!(
+                "the reference mount's last words ({}):\n{}",
+                log.display(),
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            );
+            std::panic::resume_unwind(panic)
+        }
+    }
 }
 
 /// Re-stating the newest key of a btree changes nothing a reader can see,
@@ -821,4 +839,78 @@ fn colliding_xattrs_set_here_are_read_by_the_reference() {
             );
         }
     });
+}
+
+/// Writes into part of a file, an append and truncations (#102): the
+/// reference checker passes the image and the reference mount reads the
+/// bytes the model says.
+#[test]
+fn ranged_writes_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "ranged");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut model = pattern(70_000, 3);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let f = w.create_file(d, b"ranged", &model, 0o644).unwrap();
+    w.write_at(f, 1000, &[b'a'; 300]).unwrap();
+    model[1000..1300].fill(b'a');
+    w.write_at(f, 80_000, b"past the end").unwrap();
+    model.resize(80_000, 0);
+    model.extend_from_slice(b"past the end");
+    w.append(f, b"appended").unwrap();
+    model.extend_from_slice(b"appended");
+    w.truncate(f, 75_000).unwrap();
+    model.truncate(75_000);
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(std::fs::read(m.join("d/ranged")).unwrap() == model);
+    });
+}
+
+/// Files written on every data checksum and on compressed filesystems
+/// (#105): the reference checker passes each image and the reference mount
+/// reads the file back.
+#[test]
+fn files_on_every_data_checksum_and_compression_are_read_by_the_reference() {
+    let data = pattern(70_000, 11);
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let random: Vec<u8> = (0..70_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    for set in ["crc64", "xxhash", "nocsum", "lz4", "zstd", "gzip"] {
+        let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
+        let root = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup("/")
+            .unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.create_file(root, b"written-here", &data, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        w.create_file(root, b"random", &random, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        drop(w);
+        assert_fsck_clean(&img);
+        with_reference_mount(&img, |m| {
+            let read = |name: &str| {
+                std::fs::read(m.join(name))
+                    .unwrap_or_else(|e| panic!("{set}: the reference could not read {name}: {e}"))
+            };
+            assert!(
+                read("written-here") == data,
+                "{set}: the reference read other bytes"
+            );
+            assert!(
+                read("random") == random,
+                "{set}: the reference read other bytes of the random file"
+            );
+        });
+    }
 }

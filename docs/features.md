@@ -79,6 +79,7 @@ reads back byte for byte through the reference implementation's mount
 | mkdir, unlink, rmdir, rename | Experimental | Unreleased (#30) | | `write_oracle.rs` |
 | rename over an existing file, and a directory moved to another directory | Experimental | Unreleased (#118) | renaming over a directory is refused (#104) | `oracle_write_local.rs`, `write_oracle.rs` |
 | File data inline or in extents, as the reference lays it out | Experimental | Unreleased (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
+| Writing at an offset, appending, truncating to any size (the file is rewritten whole) | Experimental | Unreleased (#120) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data in allocated buckets, freed on unlink and rewrite | Experimental | Unreleased (#35, #36) | | `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | Unreleased (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | Unreleased (#37) | | `write_oracle.rs` |
@@ -91,10 +92,16 @@ reads back byte for byte through the reference implementation's mount
 | A new btree root, any btree id | Experimental: no write needs an id of 16 and above yet | Unreleased (#92) | #80 | `oracle_node_flags.rs` |
 | A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Any write on 4096-byte blocks with 32 KiB nodes | Upcoming: nodes split, but no test writes on such an image yet | | #44 | |
-| Compressed or non-crc32c data | Refused | | | |
+| Data on every data checksum, and compressed with lz4 or zstd as the filesystem asks (stored as incompressible when that saves no block, and on gzip filesystems) | Experimental | Unreleased (#122) | gzip extents: open question 20 | `oracle_write_local.rs`, `write_oracle.rs` |
 | Per-inode options | Unobservable | | #81 | |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device, snapshotted filesystems | Refused | | | |
+
+## Oracles
+
+| Feature | State | Since | Tracking | Checked by |
+|---|---|---|---|---|
+| The reference kernel module, in a VM of its own on the CI runner: an image it writes reads back here as its mount reported | Supported | Unreleased (#115) | | `oracle_kernel.rs` |
 
 ## Interfaces
 

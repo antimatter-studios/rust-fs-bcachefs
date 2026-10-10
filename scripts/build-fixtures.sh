@@ -17,6 +17,8 @@ harness="$here/../fs-linux-test-harness"
 [ -n "${KEEP_VM:-}" ] || source "$harness/scripts/vm-session.sh"
 "$harness/scripts/vm.sh" run "bash /repo/scripts/guest-build-fixtures.sh"
 share="$("$harness/scripts/vm.sh" share)"
+# The reference kernel module, in a VM of its own on this host (#110).
+bash "$here/scripts/kernel-oracle.sh" "$share/fixtures"
 n="$(find "$share/fixtures" -name '*.img' | wc -l | tr -d ' ')"
 [ "$n" -gt 0 ] || { echo "build-fixtures: the guest produced no images" >&2; exit 1; }
 echo "build-fixtures: $n images in $share/fixtures"

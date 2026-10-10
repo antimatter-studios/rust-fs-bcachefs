@@ -21,6 +21,22 @@ API, a patch never does.
 
 ### Added
 
+- **Data is written on every data checksum and on compressed
+  filesystems** (#105): crc64 and xxhash in a crc64 entry, none as a bare
+  pointer, as the formatter's fixtures store them; on a filesystem
+  formatted with lz4 or zstd each piece is compressed (lz4 as a bare
+  block, zstd length-prefixed) and stored so when that saves a block, or
+  stored as it is and marked incompressible, as the reference stores data
+  it cannot compress. On a gzip filesystem data is stored as
+  incompressible: the reference mount crashed reading this writer's raw
+  deflate (open question 20).
+  formatted with compression the data is stored uncompressed, its entry
+  marked incompressible, as the reference stores data it cannot compress.
+- **`Writer::write_at`, `append` and `truncate`** (#102): a write into
+  part of a file, an append, and a truncation to any size. The file's
+  contents are read (compressed and checksummed extents included, through
+  the reader's own extent decoding), changed, and rewritten whole, laid
+  out as `write_file` lays it out.
 - **A read-only spike of a clean-room bcachefs reader.** The superblock is
   parsed and checksummed; btree nodes are read, checksummed and walked;
   inodes, directory entries and extents are decoded; files read back byte
