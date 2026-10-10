@@ -1138,3 +1138,64 @@ fn a_session_that_reuses_buckets_leaves_no_extents_of_removed_files() {
         .collect();
     assert!(orphans.is_empty(), "extents of removed inodes {orphans:?}");
 }
+
+/// A filesystem whose root subvolume the reference kernel module
+/// snapshotted (#138): the root and its snapshot share every key made before
+/// the snapshot, at snapshot u32::MAX. A write into the root is either
+/// refused, or seen in the root and nowhere in the snapshot, which must read
+/// exactly as the kernel left it.
+#[test]
+fn a_write_into_a_snapshotted_root_leaves_the_snapshot_as_it_was() {
+    let rec = common::read_text("kernel.txt");
+    assert!(
+        rec.lines().any(|l| l == "rootsnap: ok"),
+        "the kernel oracle made no snapshotted root (chore fixtures):\n{rec}"
+    );
+    let img = scratch("kernel-rootsnap.img", "rootsnap");
+    let snap_before = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let mut names: Vec<Vec<u8>> = fs
+            .readdir_at(fs.resolve("/snap").unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        names.sort();
+        let kept = fs.read_at(fs.resolve("/snap/kept.txt").unwrap()).unwrap();
+        assert_eq!(kept, b"before the snapshot\n", "the snapshot's kept.txt");
+        names
+    };
+    let root = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .resolve("/")
+        .unwrap()
+        .ino;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    match w.create_file(root, b"written.txt", b"written\n", 0o644) {
+        Err(Error::Unsupported(_)) => return,
+        Err(e) => panic!("create in a snapshotted root: {e}"),
+        Ok(_) => {}
+    }
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let written = fs
+        .resolve("/written.txt")
+        .unwrap_or_else(|e| panic!("the root does not see what was written: {e}"));
+    assert_eq!(fs.read_at(written).unwrap(), b"written\n");
+    let mut names: Vec<Vec<u8>> = fs
+        .readdir_at(fs.resolve("/snap").unwrap())
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names, snap_before,
+        "a write into the root changed its snapshot"
+    );
+    assert_eq!(
+        fs.read_at(fs.resolve("/snap/kept.txt").unwrap()).unwrap(),
+        b"before the snapshot\n",
+        "the snapshot's kept.txt after a write into the root"
+    );
+}
