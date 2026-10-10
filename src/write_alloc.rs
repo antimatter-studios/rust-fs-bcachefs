@@ -803,8 +803,10 @@ impl<D: BlockDevice> Writer<D> {
     /// reference kernel module's `kernel-freed` image, S10). A bucket
     /// waiting in need_discard becomes free with its generation kept, its
     /// need_discard flag and both journal sequence numbers cleared; its
-    /// need_discard key goes; freespace gets it back, merged into the runs
-    /// beside it; accounting moves it from need_discard to free. Buckets of
+    /// need_discard key goes; freespace gets it back, in a run of the freed
+    /// buckets beside it (the reference also merges it into an existing
+    /// run; this writer leaves those alone, see below); accounting moves it
+    /// from need_discard to free. Buckets of
     /// generation 16 or more are left waiting: whether a freespace key
     /// carries a generation's high bits has not been seen
     /// (docs/clean-room.md, "Allocating space"). Committed on its own, so a bucket freed by the transaction
@@ -860,19 +862,15 @@ impl<D: BlockDevice> Writer<D> {
             free.insert(b);
             self.reserved.remove(&b);
         }
-        // The runs as they are, and as they are with these buckets in.
-        let old: Vec<Bkey> = self
-            .keys(aids::FREESPACE)?
-            .into_iter()
-            .filter(|k| k.key_type == aids::SET && k.pos.inode == 0)
-            .collect();
-        let mut all = free.clone();
-        for r in &old {
-            let start = r.pos.offset.saturating_sub(u64::from(r.size));
-            all.extend(start..r.pos.offset);
-        }
+        // Runs of their own, one per stretch of adjacent freed buckets.
+        // An existing run is never rewritten here: a btree node this
+        // commit rewrites takes its bucket from the runs as they stand on
+        // disk, and its shrunk run, put under the same key, would replace
+        // a merged one and lose the buckets merged in (CI run 38024306750:
+        // the reference checker's "bucket incorrectly unset in freespace
+        // btree").
         let mut runs: Vec<(u64, u64)> = Vec::new(); // (end, length)
-        for b in all {
+        for &b in &free {
             match runs.last_mut() {
                 Some((end, len)) if *end == b => {
                     *end += 1;
@@ -881,19 +879,7 @@ impl<D: BlockDevice> Writer<D> {
                 _ => runs.push((b + 1, 1)),
             }
         }
-        let ends: std::collections::BTreeSet<u64> = runs.iter().map(|r| r.0).collect();
-        for r in &old {
-            if !ends.contains(&r.pos.offset) {
-                t.delete_uncounted(aids::FREESPACE, r.pos);
-            }
-        }
         for (end, len) in runs {
-            if old
-                .iter()
-                .any(|r| r.pos.offset == end && u64::from(r.size) == len)
-            {
-                continue;
-            }
             t.put_uncounted(
                 aids::FREESPACE,
                 Bkey {

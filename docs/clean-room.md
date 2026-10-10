@@ -470,7 +470,12 @@ checker judged each attempt and named what was missing until nothing was.
   the run beside it (buckets 89 and 90, both gen 1, as one run `0:91 len
   2`); accounting moves it from `dev_data_type need_discard` to `free`.
   The writer does this before any write that allocates, for buckets
-  emptied by earlier commits. Judged: a 4 MiB file written and removed 25
+  emptied by earlier commits, giving the freed buckets runs of their own
+  rather than merging them into an existing run: a node the same commit
+  rewrites takes its bucket from the runs on disk and rewrites the run it
+  shrinks under the same key, which replaced a merged run and lost the
+  buckets merged in (the reference checker, CI run 38024306750: "bucket
+  incorrectly unset in freespace btree"). Judged: a 4 MiB file written and removed 25
   times through the 64 MiB base image passes the reference checker and
   reads back through the reference mount (`write_oracle.rs`). Not seen:
   whether a freespace key's position carries a generation's high bits
