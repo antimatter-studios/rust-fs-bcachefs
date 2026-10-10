@@ -940,3 +940,42 @@ fn reused_buckets_are_accepted_by_the_reference() {
         assert!(std::fs::read(m.join("d/big")).unwrap() == big);
     });
 }
+
+/// A journalled session longer than its journal (#113): 1100 creates in
+/// one session and 1100 more in a session continuing it, the journal
+/// reclaimed each time it fills. The reference checker passes the image,
+/// which it replays, and the reference mount reads every file.
+#[test]
+fn a_session_longer_than_its_journal_is_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "journal-reclaim");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let mut names = Vec::new();
+    for (prefix, journalled) in [("j", false), ("k", true)] {
+        let mut w = if journalled {
+            Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap()
+        } else {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.journal_commits().unwrap();
+            w
+        };
+        for i in 0..1100 {
+            let name = format!("{prefix}{i:04}");
+            w.create_file(d, name.as_bytes(), name.as_bytes(), 0o644)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            names.push(name);
+        }
+    }
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        for name in &names {
+            assert_eq!(
+                std::fs::read(m.join("d").join(name)).unwrap(),
+                name.as_bytes(),
+                "{name}"
+            );
+        }
+    });
+}

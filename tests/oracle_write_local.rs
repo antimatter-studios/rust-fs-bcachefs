@@ -568,14 +568,14 @@ fn create_until_refused(
     (made, None)
 }
 
-/// A journalled session longer than its journal (#101). Nothing is
-/// reclaimed, so every entry since the session began is one the replay
-/// needs: an entry that does not fit must be refused, not written over the
-/// oldest of them, and a session continuing the journal is held to the same.
-/// The base image's journal is 16 buckets of 32 KiB, 1024 blocks, and every
-/// entry takes at least one block, so 1100 creates cannot all fit.
+/// A journalled session longer than its journal (#101, #113). The base
+/// image's journal is 16 buckets of 32 KiB, 1024 blocks, and every entry
+/// takes at least one block, so 1100 creates cannot fit: when the journal
+/// is full it is reclaimed, everything it holds written into the nodes in
+/// place and the superblock marked clean, and the session goes on. A
+/// session continuing that journal does the same. Every file reads back.
 #[test]
-fn a_full_journal_is_refused_rather_than_overwritten() {
+fn a_full_journal_is_reclaimed_and_the_session_goes_on() {
     let img = scratch("write-study/base.img", "local-journal-full");
     let d = {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
@@ -585,22 +585,19 @@ fn a_full_journal_is_refused_rather_than_overwritten() {
     w.journal_commits().unwrap();
     let (mut made, refused) = create_until_refused(&mut w, d, "j", 1100);
     drop(w);
-    match refused {
-        Some(Error::Unsupported(m)) if m.contains("journal is full") => {}
-        other => panic!("{} journalled creates, then: {other:?}", made.len()),
-    }
-    // A session continuing that journal may fill what is left of the last
-    // bucket (64 blocks at most), and is then refused in turn.
+    assert!(
+        refused.is_none(),
+        "{} journalled creates, then: {refused:?}",
+        made.len()
+    );
     let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
-    let (more, refused) = create_until_refused(&mut w, d, "k", 64);
+    let (more, refused) = create_until_refused(&mut w, d, "k", 1100);
     drop(w);
-    match refused {
-        Some(Error::Unsupported(m)) if m.contains("journal is full") => {}
-        other => panic!(
-            "{} creates in a continued session, then: {other:?}",
-            more.len()
-        ),
-    }
+    assert!(
+        refused.is_none(),
+        "{} creates in a continued session, then: {refused:?}",
+        more.len()
+    );
     made.extend(more);
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
     assert_eq!(fs.readdir(d).unwrap().len(), made.len() + 1);

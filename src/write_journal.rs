@@ -192,6 +192,13 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Write one transaction as a journal entry.
     pub(super) fn commit_journal(&mut self, t: Txn) -> Result<()> {
+        // Kept whole in case the journal is full: it is then reclaimed and
+        // this transaction goes into the fresh session's first entry.
+        let retry = Txn {
+            keys: t.keys.clone(),
+            acct: t.acct.clone(),
+            inflight: None,
+        };
         let seq = self.session.as_ref().expect("journalled").next_seq;
         // Accounting as deltas, each with a version above any it adds to:
         // this entry's sequence number, then its place in the entry.
@@ -275,13 +282,8 @@ impl<D: BlockDevice> Writer<D> {
             // this writer reclaims none: going on into the bucket that
             // holds the first would write over it (#101).
             if s.window_bucket == Some(idx) {
-                return Err(Error::Unsupported(format!(
-                    "the journal is full: its {} buckets hold entries a replay still needs, from \
-                     sequence {} on, and this writer does not reclaim journal space; replay the \
-                     journal before writing more (#101)",
-                    s.buckets.len(),
-                    s.first_seq
-                )));
+                self.reclaim()?;
+                return self.commit_journal(retry);
             }
         }
         let where_ = s.buckets[idx] * bucket_bytes as u64 + off as u64;
@@ -305,6 +307,99 @@ impl<D: BlockDevice> Writer<D> {
             self.mark_unclean()?;
         }
         Ok(())
+    }
+
+    /// Reclaim the whole journal (#113, S1 9.7.2-9.7.3): every key the
+    /// session's replay holds -- what this session committed, and what a
+    /// continued journal held before it -- is written into its node in
+    /// place, the accounting deltas summed onto the accounting keys; the
+    /// superblock is then marked clean at the newest sequence, so no entry
+    /// is needed any more, and a fresh session starts after it. Each step
+    /// leaves an image the reference replays: until the clean bit is
+    /// written the journal still holds everything, and after it nothing is
+    /// needed from it.
+    fn reclaim(&mut self) -> Result<()> {
+        let s = self.session.take().expect("journalled");
+        let refuse = |w: &mut Self, s: Session, why: String| -> Result<()> {
+            let first = s.first_seq;
+            w.session = Some(s);
+            Err(Error::Unsupported(format!(
+                "the journal is full: its buckets hold entries a replay still needs, from \
+                 sequence {first} on, and they cannot be reclaimed: {why}; replay the journal \
+                 before writing more"
+            )))
+        };
+        let pending = match pending_from(&s.replay) {
+            Ok(t) => t,
+            Err(why) => return refuse(self, s, why),
+        };
+        // Roots the session moved must be where the superblock names them.
+        let on_disk: Result<BTreeMap<u8, (u8, Bkey)>> = self.sb.btree_roots().and_then(|rs| {
+            rs.into_iter()
+                .map(|r| {
+                    Ok((
+                        r.btree_id,
+                        (r.level, crate::bkey::decode(&r.key, &super::UNPACKED)?),
+                    ))
+                })
+                .collect()
+        });
+        let on_disk = match on_disk {
+            Ok(r) => r,
+            Err(e) => return refuse(self, s, e.to_string()),
+        };
+        let moved: Vec<(u8, u8, Bkey)> = s
+            .roots
+            .iter()
+            .filter(|(id, root)| on_disk.get(id) != Some(root))
+            .map(|(&id, (level, k))| (id, *level, k.clone()))
+            .collect();
+        for (id, level, k) in moved {
+            if let Err(e) = self.set_root(id, level, &k) {
+                return refuse(self, s, format!("btree {id}'s root: {e}"));
+            }
+        }
+        let newest = s.next_seq.saturating_sub(1);
+        self.journal_seq = newest;
+        // The in-place path reads the btrees from their nodes, which it does
+        // only on a clean filesystem (CI run 37925455364: "its journal must
+        // be replayed first"). The clean bit is set in memory for it; on
+        // disk it is set by mark_clean once every key is in its node, or by
+        // a root the commit moves, which writes the superblock with the
+        // nodes already written.
+        let f = le64(&self.sb_raw, 0x90) | 0b10;
+        self.sb_raw[0x90..0x98].copy_from_slice(&f.to_le_bytes());
+        self.sb = crate::superblock::Superblock::parse_unchecked(&self.sb_raw)?;
+        self.commit_in_place(pending)?;
+        self.mark_clean(newest)?;
+        self.journal_commits()
+    }
+
+    /// Set the superblock's clean bit and its clean field's journal
+    /// sequence, and write every copy.
+    fn mark_clean(&mut self, seq: u64) -> Result<()> {
+        let mut p = crate::superblock::SB_HEADER_BYTES;
+        let mut found = false;
+        while p + 8 <= self.sb_raw.len() {
+            let u64s = crate::util::le32(&self.sb_raw, p) as usize;
+            let ty = crate::util::le32(&self.sb_raw, p + 4);
+            if u64s == 0 || p + u64s * 8 > self.sb_raw.len() {
+                break;
+            }
+            if ty == crate::superblock::FIELD_CLEAN && u64s >= 3 {
+                // The field's body: flags u32, two u16 clocks, journal_seq.
+                self.sb_raw[p + 16..p + 24].copy_from_slice(&seq.to_le_bytes());
+                found = true;
+            }
+            p += u64s * 8;
+        }
+        if !found {
+            return Err(Error::Corrupt("no clean field to mark".into()));
+        }
+        let f = le64(&self.sb_raw, 0x90) | 0b10;
+        self.sb_raw[0x90..0x98].copy_from_slice(&f.to_le_bytes());
+        self.sb = crate::superblock::Superblock::parse_unchecked(&self.sb_raw)?;
+        self.write_superblock()
     }
 
     /// Clear the superblock's clean bit (flags[0] bit 1, as the reference
@@ -377,6 +472,36 @@ impl<D: BlockDevice> Writer<D> {
             s.roots.insert(id, (level, key));
         }
     }
+}
+
+/// The transaction a replay amounts to: its leaf keys in order, and its
+/// accounting keys' deltas summed per position (#113). Interior node keys
+/// cannot be written this way.
+fn pending_from(replay: &Replay) -> std::result::Result<Txn, String> {
+    let mut pending = Txn::default();
+    for (&(id, level), ks) in &replay.keys {
+        if ks.is_empty() {
+            continue;
+        }
+        if level != 0 {
+            return Err(format!("it holds interior node keys of btree {id}"));
+        }
+        for k in ks {
+            if id == ids::ACCOUNTING && k.key_type == ids::ACCOUNTING_KEY {
+                let n = k.value.len() / 8;
+                let d = pending.acct.entry(k.pos).or_insert_with(|| vec![0; n]);
+                if d.len() < n {
+                    d.resize(n, 0);
+                }
+                for (i, c) in k.value.chunks_exact(8).enumerate() {
+                    d[i] = d[i].wrapping_add(le64(c, 0) as i64);
+                }
+            } else {
+                pending.keys.entry(id).or_default().push(k.clone());
+            }
+        }
+    }
+    Ok(pending)
 }
 
 fn push_entry(out: &mut Vec<u8>, ty: u8, btree: u8, level: u8, payload: &[u8]) {

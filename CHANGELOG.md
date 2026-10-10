@@ -21,6 +21,11 @@ API, a patch never does.
 
 ### Added
 
+- **Journal reclaim** (#113): when a journalled session's journal is full,
+  everything it holds is written into the btree nodes in place, its
+  accounting deltas summed, the superblock is marked clean at the newest
+  sequence, and the session goes on in a fresh journal window, instead of
+  refusing the write.
 - **Buckets a writer frees are used again in the same session** (#132): a
   write that allocates first returns buckets emptied by earlier commits to
   the free pool, as the reference kernel module does, so a long session on
