@@ -300,11 +300,29 @@ impl<D: BlockDevice> Writer<D> {
         let node_sectors = u64::from(self.sb.btree_node_size());
         let p = ptr.ptrs[0];
         let bucket = p.offset / bucket_sectors;
-        let a = self
-            .keys(alloc::aids::ALLOC)?
+        // The bucket's alloc key as this transaction leaves it so far: an
+        // earlier node of the same bucket may have been freed in it already.
+        let pending = t
+            .keys
+            .get(&alloc::aids::ALLOC)
             .into_iter()
-            .find(|k| k.pos.inode == 0 && k.pos.offset == bucket)
-            .ok_or_else(|| Error::Corrupt(format!("node bucket {bucket} has no alloc key")))?;
+            .flatten()
+            .chain(
+                t.inflight
+                    .iter()
+                    .filter(|(id, _)| *id == alloc::aids::ALLOC)
+                    .flat_map(|(_, keys)| keys),
+            )
+            .rfind(|k| k.pos.inode == 0 && k.pos.offset == bucket)
+            .cloned();
+        let a = match pending {
+            Some(a) => a,
+            None => self
+                .keys(alloc::aids::ALLOC)?
+                .into_iter()
+                .find(|k| k.pos.inode == 0 && k.pos.offset == bucket)
+                .ok_or_else(|| Error::Corrupt(format!("node bucket {bucket} has no alloc key")))?,
+        };
         t.delete_uncounted(
             alloc::aids::BACKPOINTERS,
             Bpos {
@@ -313,6 +331,25 @@ impl<D: BlockDevice> Writer<D> {
                 snapshot: 0,
             },
         );
+        // A bucket the reference filled with several nodes (#109) keeps the
+        // others: only this node's sectors go, and the bucket is emptied
+        // once none is left. Emptying it with live nodes in it let a later
+        // write reuse the bucket over them (#132's reuse, CI run
+        // 38048734742: "btree node: bad magic").
+        let dirty = crate::util::le64(&a.value, 16) & 0xffff_ffff;
+        if dirty > node_sectors {
+            let mut v = a.value.clone();
+            v[16..20].copy_from_slice(&((dirty - node_sectors) as u32).to_le_bytes());
+            t.put_uncounted(
+                alloc::aids::ALLOC,
+                Bkey {
+                    value: v,
+                    ..a.clone()
+                },
+            );
+            alloc::count_btree_node(t, id, level, -(node_sectors as i64), -1);
+            return Ok(());
+        }
         self.empty_bucket(&a, t)?;
         alloc::count_btree_bucket(
             t,

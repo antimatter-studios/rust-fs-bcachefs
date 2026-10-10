@@ -1012,6 +1012,27 @@ pub(super) fn acct_compression(ty: u8) -> Bpos {
     }
 }
 
+/// One node of a bucket that holds others (#109), added or removed: btree
+/// sectors in the replicas and on the device, the part of the device's
+/// btree buckets no node uses, and the btree's own node count; the bucket
+/// itself stays counted.
+pub(super) fn count_btree_node(t: &mut Txn, id: u8, level: u8, sectors: i64, nodes: i64) {
+    t.count(acct_replicas(DATA_BTREE, 0), 1, 0, sectors);
+    let dev = acct_dev_data_type(0, DATA_BTREE);
+    t.count(dev, 3, 1, sectors);
+    t.count(dev, 3, 2, -sectors);
+    let per_btree = Bpos {
+        inode: 6 << 56 | u64::from(id) << 48,
+        offset: 0,
+        snapshot: 0,
+    };
+    t.count(per_btree, 3, 0, sectors);
+    t.count(per_btree, 3, 1, nodes);
+    if level > 0 {
+        t.count(per_btree, 3, 2, nodes);
+    }
+}
+
 /// A btree bucket's share of the accounting (S8): btree sectors in the
 /// replicas and on the device, the device's btree buckets and the part of
 /// them no node uses, the btree's own node count, and one free bucket fewer
