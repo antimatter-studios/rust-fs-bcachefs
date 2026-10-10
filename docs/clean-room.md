@@ -459,6 +459,19 @@ checker judged each attempt and named what was missing until nothing was.
   `dev_data_type need_discard` (and keeps zeroed keys, as the reference
   does). Judged: unlinking, shrinking and growing large files passes the
   reference checker and the mount reads what remains (S8 checker run).
+- A bucket holding several nodes (#109): on a filesystem whose nodes are
+  smaller than its buckets the reference formatter fills a bucket with
+  more than one node (`write-study/base-small-nodes.img`: 64-sector nodes
+  in 256-sector buckets, 17 of its 18 btree buckets holding more than one
+  node's sectors). Freeing one of them takes only its sectors from the
+  bucket's dirty count and one node from the btree's; the bucket is
+  emptied, as any emptied bucket is, only when none is left. This writer
+  puts one new node in each bucket. A partly filled btree bucket has a
+  fragmentation lru entry, as a partly filled data bucket does, at
+  `(1 << 61 | dirty * 2^31 / bucket_size) : bucket` (the reference
+  checker's "missing fragmentation lru entry" and "incorrect lru entry" on
+  such an image, CI run 38051787458): a new node's bucket gets one, and
+  freeing a node moves it.
 - Reusing a freed bucket (#132; the reference kernel module's
   `kernel-freed` image, S10: a 4 MiB file written, removed, and ten
   seconds before the unmount, made once by an observation build of the
