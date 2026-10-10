@@ -134,7 +134,7 @@ impl<D: BlockDevice> Writer<D> {
             return Err(Error::Corrupt("clean field shorter than its header".into()));
         }
         let journal_seq = le64(&clean.body, 8);
-        Ok(Writer {
+        let w = Writer {
             dev,
             sb,
             sb_raw,
@@ -142,7 +142,42 @@ impl<D: BlockDevice> Writer<D> {
             session: None,
             reserved: Default::default(),
             cache: Default::default(),
-        })
+        };
+        w.refuse_a_snapshotted_root()?;
+        Ok(w)
+    }
+
+    /// Every key this writer makes is at snapshot u32::MAX, the root
+    /// subvolume's until it is snapshotted. After that the root subvolume
+    /// moves to a child snapshot and the keys at u32::MAX are shared with
+    /// its snapshot, so a write there would change the snapshot too (#138):
+    /// refused.
+    fn refuse_a_snapshotted_root(&self) -> Result<()> {
+        let root = self
+            .keys_from(
+                ids::SUBVOLUMES,
+                Bpos {
+                    inode: 0,
+                    offset: ids::ROOT_SUBVOLUME,
+                    snapshot: 0,
+                },
+            )?
+            .into_iter()
+            .find(|k| {
+                k.pos.offset == ids::ROOT_SUBVOLUME
+                    && k.key_type == ids::SUBVOLUME
+                    && k.value.len() >= 16
+            });
+        match root.map(|k| (le64(&k.value, 0) >> 32) as u32) {
+            // A filesystem with no subvolumes btree is not snapshotted.
+            None | Some(u32::MAX) => Ok(()),
+            Some(snap) => Err(Error::Unsupported(format!(
+                "the root subvolume is at snapshot {snap}, not {}: it has been snapshotted, and \
+                 this writer writes only at {}, which its snapshot shares",
+                u32::MAX,
+                u32::MAX
+            ))),
+        }
     }
 
     pub fn superblock(&self) -> &Superblock {
@@ -396,6 +431,11 @@ mod ids {
     pub const EXTENTS: u8 = 0;
     pub const INODES: u8 = 1;
     pub const DIRENTS: u8 = 2;
+    /// The subvolumes btree (S1 11.3), its key type (S1 11.5), and the root
+    /// subvolume's id (the kernel oracle's lister: `subvolume 1`).
+    pub const SUBVOLUMES: u8 = 8;
+    pub const SUBVOLUME: u8 = 21;
+    pub const ROOT_SUBVOLUME: u64 = 1;
     pub const LOGGED_OPS: u8 = 17;
     pub const ACCOUNTING: u8 = 20;
     pub const INODE_ALLOC_CURSOR: u8 = 35;

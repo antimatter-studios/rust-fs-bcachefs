@@ -145,6 +145,10 @@ API, a patch never does.
 
 ### Fixed
 
+- **The writer refuses a filesystem whose root subvolume is snapshotted**
+  (#138): its keys are at snapshot u32::MAX, which such a root shares with
+  its snapshot, so a write there changed the snapshot too. The kernel
+  oracle makes such a filesystem (`kernel-rootsnap.img`).
 - **Nodes smaller than their bucket are written** (#109): a new node takes
   a bucket of its own and leaves the rest unused, as the accounting already
   recorded; the 4096-byte-block, 32 KiB-node geometry is now tested to
