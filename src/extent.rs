@@ -151,6 +151,19 @@ pub fn entry_kind_name(first_set_bit: u32) -> &'static str {
 const FLAG_POISONED: u64 = 1 << 7;
 
 /// Parse an extent value into its entries.
+/// A `reflink_p`'s index into the reflink btree, in sectors: the low 56
+/// bits of its first word (S1 9.1.6 gives 56 bits; docs/clean-room.md,
+/// "Reflinks", the lister's view of the reference kernel's reflink).
+pub fn reflink_p_idx(v: &[u8]) -> Result<u64> {
+    if v.len() < 16 {
+        return Err(Error::Corrupt(format!(
+            "a reflink_p value of {} bytes, not 16",
+            v.len()
+        )));
+    }
+    Ok(crate::util::le64(v, 0) & ((1 << 56) - 1))
+}
+
 pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
     Ok(entries(v)?.0)
 }

@@ -134,9 +134,13 @@ pub mod key_type {
     pub const DIRENT: u8 = 10;
     pub const XATTR: u8 = 11;
     /// A pointer from the extents btree into the reflink btree (S1 9.1.6,
-    /// 11.5): the file's data is shared, and lives there. Its value's bit
-    /// layout is not known (docs/clean-room.md, open question 6).
+    /// 11.5): the file's data is shared, and lives there. Its value is the
+    /// index into the reflink btree, then the front and back pads
+    /// (docs/clean-room.md, "Reflinks").
     pub const REFLINK_P: u8 = 15;
+    /// The shared data a `reflink_p` points at, in the reflink btree: a
+    /// refcount, then the entries of an extent (S1 9.1.6).
+    pub const REFLINK_V: u8 = 16;
     pub const INLINE_DATA: u8 = 17;
     pub const BTREE_PTR_V2: u8 = 18;
     /// Per-bucket allocation metadata, current form (S1 11.5; layout in

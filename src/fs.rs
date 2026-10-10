@@ -395,16 +395,11 @@ impl<D: BlockRead> Filesystem<D> {
                         k.pos.offset
                     )))
                 }
-                // Reflinked data is in the reflink btree, behind a pointer
-                // whose layout no reference image has shown (S1 9.1.6; open
-                // question 6): refused by name rather than misread (#7).
+                // Reflinked data is in the reflink btree (#7): the key
+                // covers `size` sectors there from the pointer's index.
                 crate::bkey::key_type::REFLINK_P => {
-                    return Err(Error::Unsupported(format!(
-                        "inode {ino}, sectors {}..{}: reflinked data (a `reflink_p` into the \
-                         reflink btree), which this reader does not follow yet (#7)",
-                        k.start_offset(),
-                        k.pos.offset
-                    )))
+                    let idx = crate::extent::reflink_p_idx(&k.value)?;
+                    self.read_reflinked(ino, &k, idx, &mut out, offset, end)?;
                 }
                 t => return Err(Error::Unsupported(format!("extent key type {t}"))),
             }
@@ -433,6 +428,70 @@ impl<D: BlockRead> Filesystem<D> {
             }
         }
         Ok(None)
+    }
+
+    /// The sectors `idx..idx + k.size` of the reflink btree, which the
+    /// `reflink_p` `k` of inode `ino` shows at its own sectors, copied into
+    /// the window `out` of the file's bytes `offset..end`. Each `reflink_v`
+    /// there is a refcount, then an extent's entries (S1 9.1.6); a gap is
+    /// shared data that is missing, an error rather than zeros.
+    fn read_reflinked(
+        &self,
+        ino: u64,
+        k: &Bkey,
+        idx: u64,
+        out: &mut [u8],
+        offset: u64,
+        end: u64,
+    ) -> Result<()> {
+        let hi = idx + k.size as u64;
+        let missing = |at: u64| {
+            Error::Corrupt(format!(
+                "inode {ino}: the reflink btree has nothing at sector {at}, which the \
+                 `reflink_p` at {} points into",
+                k.pos
+            ))
+        };
+        let mut c = match self.cursor(btree_id::REFLINK) {
+            Err(Error::NotFound(_)) => return Err(missing(idx)),
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: 0,
+            offset: idx + 1,
+            snapshot: 0,
+        })?;
+        let mut at = idx;
+        while at < hi {
+            let Some(v) = c.next_key()? else { break };
+            let from = v.start_offset();
+            if v.pos.inode != 0 || from > at {
+                break;
+            }
+            if v.key_type != crate::bkey::key_type::REFLINK_V || v.value.len() < 8 {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: reflinked data in a key of type {} at {} of the reflink \
+                     btree",
+                    v.key_type, v.pos
+                )));
+            }
+            let e = DataExtent::from_key(&Bkey {
+                key_type: crate::bkey::key_type::EXTENT,
+                value: v.value[8..].to_vec(),
+                ..v.clone()
+            })?;
+            let data = self.extent_data(&e)?;
+            // The part of this shared extent the pointer covers, at the
+            // file sector it shows up at.
+            let to = v.pos.offset.min(hi);
+            let cut = &data[((at - from) * 512) as usize..((to - from) * 512) as usize];
+            copy_window(out, offset, end, (k.start_offset() + at - idx) * 512, cut);
+            at = to;
+        }
+        if at < hi {
+            return Err(missing(at));
+        }
+        Ok(())
     }
 
     /// The `len` live sectors of one extent, decompressed and checked.

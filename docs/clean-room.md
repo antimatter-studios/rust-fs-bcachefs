@@ -126,9 +126,8 @@ all eight fixture sets.
   not yet seen in a fixture: error 2 (reads are I/O errors, S1 9.1.2.1),
   inode 8 and inode_v2 23 (older encodings, refused by name),
   extent_whiteout 36 (reads as a hole on a filesystem without snapshots),
-  reflink_p 15 (refused by name, see open question 6). S1's order also
-  puts reflink_v at 16 and indirect_inline_data at 19, the reflink btree's
-  own key types; nothing here reads that btree.
+  reflink_p 15 and reflink_v 16 (checked, see "Reflinks" below). S1's
+  order also puts indirect_inline_data at 19, which no image has shown.
 
 ### Btree nodes (`src/btree.rs`) -- documented structure, inferred layout
 
@@ -655,30 +654,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
    multiple devices and replicas**: not seen in any fixture read by this
    crate. (inline_data, xattrs and crc128: seen and read, see above.)
-   **Reflink** (#7): no reflink COPY can be made with the pinned reference
-   through its mount. S1 (9.1.6)
-   gives the shape: a `reflink_p` in the extents btree holds a 56-bit index
-   into the reflink btree (id 7) and front and back pads, and a `reflink_v`
-   there holds a refcount followed by extent entries (or, for inline data,
-   an `indirect_inline_data`, 9.1.7). It does not give the bits. The fixture
-   build tries every route to a clone through the reference mount (S8),
-   on an inline file and on an allocated one, and records each answer in
-   `probe.txt`. FICLONE (and `cp --reflink=always`), FICLONERANGE and
-   FIDEDUPERANGE fail with "Operation not supported", and the daemon's
-   log (`probe.fuse-log.txt`) shows no call for any of them, so the kernel
-   refuses them before the mount sees them. `copy_file_range` succeeds,
-   but the log shows plain reads and writes: the kernel copied the data.
-   The reflink btree stays empty and no extent is a `reflink_p`. The
-   reference tool's own help (`probe.help.txt`, S3) lists no format or
-   mount option that makes a reflink. So the reader refuses a `reflink_p`
-   by name, the checker reports it (`reflink`), and the writer will not
-   free one (`tests/oracle_refused_local.rs`). Two routes remain. A kernel
-   mount (#110) would make a real reflink. And the reference tool's `kvdb`,
-   by its own help a btree editor that sets keys by field name through the
-   normal transactional path (journalled, with triggers), could set a
-   `reflink_p` whose fields it encodes itself, which would show the bit
-   layout. Its help says only a value's fixed header is editable for
-   entry-stream values, so it cannot build a `reflink_v`'s pointers.
+   **Reflink** (#7) is answered; see "Reflinks" below. No route through
+   the reference FUSE mount makes one (FICLONE, FICLONERANGE and
+   FIDEDUPERANGE are refused before the daemon sees them;
+   `copy_file_range` copies), so the reference kernel module makes it.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
@@ -828,6 +807,30 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     path fails on any stream, is open. Until the reference kernel module
     judges such an extent, data on a gzip filesystem is written as
     incompressible.
+
+### Reflinks -- read
+
+The reference kernel module (S10, `scripts/kernel-oracle.sh`) clones a
+3 MiB file with FICLONE; the reference lister's view of the extents and
+reflink btrees is kept as `kernel.extents.txt` and `kernel.reflink.txt`.
+
+- Both files' extents become `reflink_p` keys (type 15, 7 u64s: a 16-byte
+  value), each covering a range of the file as an extent does. The lister
+  prints `idx N front_pad 0 back_pad 0 may_update_opts`: the first word's
+  low 56 bits are `idx` (S1 9.1.6 says 56 bits) and bit 57 is
+  `may_update_opts`; the second word is 0 with both pads 0, so where each
+  pad sits in it is still open.
+- The shared data is in the reflink btree (id 7) as `reflink_v` keys
+  (type 16) at `0:end`, `size` sectors long, like an extent: a u64
+  refcount (2 for a file and one clone), then an extent's entries
+  (`crc32`, then `ptr`).
+- A `reflink_p` at file sectors `start..end` reads the reflink btree's
+  sectors `idx..idx + (end - start)`.
+- Judged: every file the kernel wrote, the clone and its source included,
+  reads back here at the SHA-256 its mount reported, and every pointer's
+  index and flag match the lister (`tests/oracle_kernel.rs`). The checker
+  does not yet follow a reflink, and the writer will not free one (it
+  would have to drop the shared extent's refcount).
 
 ## Confirmation
 
