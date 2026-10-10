@@ -195,3 +195,46 @@ fn every_per_file_option_reads_back_as_the_reference_tool_reports_it() {
     }
     assert!(compared >= 9, "only {compared} options compared:\n{text}");
 }
+
+/// What a compression option means is what the kernel did with the data
+/// (#81): every data extent of a file whose inode carries `lz4`, `gzip` or
+/// `zstd`, set on the file or inherited from its directory, is stored
+/// compressed with that codec, by the crc entry the kernel wrote.
+#[test]
+fn every_file_option_is_what_the_kernel_wrote_its_data_with() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::{compression, DataExtent};
+    let fs = Filesystem::open(FileDevice::open(fixture("kernel.img")).unwrap()).unwrap();
+    let dev = FileDevice::open(fixture("kernel.img")).unwrap();
+    let sb = fs_bcachefs::superblock::Superblock::read(&dev).unwrap();
+    let extents = btree::walk(&dev, &sb, btree_id::EXTENTS).unwrap();
+    let crcs = |ino: u64| -> Vec<(u8, u8)> {
+        extents
+            .iter()
+            .filter(|k| k.pos.inode == ino && k.key_type == fs_bcachefs::bkey::key_type::EXTENT)
+            .map(|k| {
+                let c = DataExtent::from_key(k).unwrap().crc.expect("a crc entry");
+                (c.compression_type, c.csum_type)
+            })
+            .collect()
+    };
+    for (path, option, codec) in [
+        ("/opts/compression-lz4", "lz4", compression::LZ4),
+        ("/opts/compression-gzip", "gzip", compression::GZIP),
+        ("/opts/compression-zstd", "zstd", compression::ZSTD),
+        ("/opts/dir/inherited", "zstd", compression::ZSTD),
+    ] {
+        let ino = fs.lookup(path).unwrap();
+        assert_eq!(
+            fs.inode(ino).unwrap().option("compression").as_deref(),
+            Some(option),
+            "{path}"
+        );
+        let got = crcs(ino);
+        assert!(!got.is_empty(), "{path}: no data extents");
+        assert!(
+            got.iter().all(|&(c, _)| c == codec),
+            "{path}: {option} stored as {got:?}"
+        );
+    }
+}

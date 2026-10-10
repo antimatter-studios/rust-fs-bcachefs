@@ -21,6 +21,12 @@ API, a patch never does.
 
 ### Added
 
+- **Per-file options are read** (#81): `Inode::option` gives a file's
+  data checksum, compression, background compression and replicas as the
+  reference tool names them, including options inherited from its
+  directory; `Inode::options` keeps the stored fields. `Inode` gains a
+  public field, so the minor version moves to 0.4.
+
 - **Subvolumes and snapshots are read** (#12): `Filesystem::resolve` turns
   a path into a `Node` (an inode number and the snapshot it is read at),
   entering each subvolume on the way, and `inode_at`, `readdir_at`,
