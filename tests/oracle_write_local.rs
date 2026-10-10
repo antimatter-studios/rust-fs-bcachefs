@@ -829,3 +829,94 @@ fn ranged_writes_appends_and_truncations_read_back() {
     );
     assert_eq!(fs.inode(f).unwrap().size, 6000);
 }
+
+/// Files written on every data checksum the formatter offers, and on
+/// compressed filesystems (#105), read back here: crc64 and xxhash in a
+/// crc64 entry, none with only a pointer, and on lz4 and zstd stored
+/// uncompressed, marked incompressible.
+#[test]
+fn files_on_every_data_checksum_and_compression_read_back() {
+    // Compressible: a short repeating pattern. Incompressible: xorshift.
+    let pattern: Vec<u8> = (0..70_000u32).map(|i| (i * 7 % 253) as u8).collect();
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let random: Vec<u8> = (0..70_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    // A compression counter (kind 4 in the top byte, the type in the next):
+    // extents, sectors before, sectors after (#105).
+    let counter = |img: &std::path::Path, ty: u64| -> Vec<u64> {
+        use fs_bcachefs::{btree, superblock::Superblock};
+        let dev = FileDevice::open(img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, 20)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.pos.inode == (4 << 56 | ty << 48))
+            .map(|k| {
+                k.value
+                    .chunks_exact(8)
+                    .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![0, 0, 0])
+    };
+    let grew = |a: &[u64], b: &[u64]| -> Vec<u64> { a.iter().zip(b).map(|(a, b)| a - b).collect() };
+    for (set, codec) in [
+        ("crc64", None),
+        ("xxhash", None),
+        ("nocsum", None),
+        ("lz4", Some(3u64)),
+        ("zstd", Some(4)),
+        // gzip: stored as incompressible (open question 20).
+        ("gzip", None),
+    ] {
+        let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
+        let root = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup("/")
+            .unwrap();
+        let (inc0, cod0) = (counter(&img, 5), codec.map(|t| counter(&img, t)));
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        let p = w
+            .create_file(root, b"compressible", &pattern, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        let r = w
+            .create_file(root, b"random", &random, 0o644)
+            .unwrap_or_else(|e| panic!("{set}: {e}"));
+        drop(w);
+        let inc = grew(&counter(&img, 5), &inc0);
+        match (codec, cod0) {
+            (Some(t), Some(c0)) => {
+                // The pattern compresses: its extents, all 137 sectors of
+                // it, fewer stored. The random file is stored as it is.
+                let c = grew(&counter(&img, t), &c0);
+                assert!(
+                    c[0] >= 1 && c[1] == 137 && c[2] < 137,
+                    "{set}: the compressed counter grew by {c:?}"
+                );
+                assert_eq!(inc, vec![3, 137, 137], "{set}: the incompressible counter");
+            }
+            // Both files, 3 extents and 137 sectors each.
+            _ if set == "gzip" => {
+                assert_eq!(inc, vec![6, 274, 274], "{set}: the incompressible counter")
+            }
+            _ => assert_eq!(inc, vec![0, 0, 0], "{set}: the incompressible counter"),
+        }
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        assert!(
+            fs.read(p).unwrap() == pattern,
+            "{set}: compressible contents"
+        );
+        assert!(fs.read(r).unwrap() == random, "{set}: random contents");
+        assert_eq!(
+            fs.read(fs.lookup("/hello.txt").unwrap()).unwrap(),
+            b"hello world\n",
+            "{set}: an old file"
+        );
+    }
+}

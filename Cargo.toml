@@ -49,6 +49,8 @@ miniz_oxide = "0.9.1"
 # tables. MIT (caseless), MIT OR Apache-2.0 (unicode-normalization).
 caseless = "0.2"
 unicode-normalization = "0.1"
+# Writing lz4-compressed extents (#105): an LZ4 block encoder. MIT.
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode"] }
 # The command-line tools' argument parser, behind `cli`. MIT OR Apache-2.0.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 

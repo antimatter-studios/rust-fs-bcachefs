@@ -72,7 +72,6 @@ fn acct_inum(ino: u64) -> Bpos {
 
 /// One extent this writer is about to write.
 pub(super) struct Planned {
-    pub file_sector: u64,
     pub sectors: u64,
     pub dev_sector: u64,
     pub bucket: u64,
@@ -196,17 +195,52 @@ impl<D: BlockDevice> Writer<D> {
         if bucket == 0 {
             return Err(Error::Corrupt("bucket size 0".into()));
         }
+        // The entry before each pointer, by the data checksum option, as the
+        // formatter's fixtures show it (S3, #105): crc32c, a crc32 entry of
+        // checksum type 5 (from zero, not inverted, S4); crc64 and xxhash, a
+        // crc64 entry of type 6 and 7, the whole 64-bit checksum in its
+        // second word; none, no entry, only the pointer. Type 6 for crc64
+        // data is INFERRED (5 is crc32c's data-side type; csum.rs).
         let csum_type = match self.sb.data_checksum_opt() {
-            1 => 5u8, // crc32c, from zero, not inverted (data checksums, S4)
+            0 => 0u8,
+            1 => 5,
+            2 => 6,
+            3 => 7,
             o => {
                 return Err(Error::Unsupported(format!(
-                    "data checksum option {o}: only crc32c is written"
+                    "data checksum option {o} is not known"
                 )))
             }
         };
-        if self.sb.compression_opt() != 0 {
+        // The filesystem's compression (#105): the option lz4 1, gzip 2,
+        // zstd 3 (superblock::compression_opt) is crc compression type 3, 2
+        // and 4. Each piece is compressed and kept so only when that saves
+        // a whole block; otherwise it is stored as it is and marked
+        // incompressible, as the reference stores data it cannot compress
+        // (S3: the lz4 fixture's random file).
+        use crate::extent::compression;
+        let gzip = self.sb.compression_opt() == 2;
+        let codec = match self.sb.compression_opt() {
+            0 => None,
+            1 => Some(compression::LZ4),
+            // gzip is stored as incompressible, not compressed: the reference
+            // mount's daemon died (SIGSEGV in fuse_read) reading a raw deflate
+            // stream this writer made, which its checker had passed and this
+            // crate reads back (CI run 38013718306). Whose the fault is, is
+            // open (docs/clean-room.md, question 20) until the reference
+            // kernel module reads such an extent.
+            2 => None,
+            3 => Some(compression::ZSTD),
+            o => {
+                return Err(Error::Unsupported(format!(
+                    "compression option {o} is not known"
+                )))
+            }
+        };
+        if (codec.is_some() || gzip) && csum_type == 0 {
             return Err(Error::Unsupported(
-                "writing compressed data is not implemented".into(),
+                "compression without a data checksum: no entry has been observed to carry it"
+                    .into(),
             ));
         }
         // Data is written in whole blocks: the last one is zero-padded,
@@ -221,76 +255,140 @@ impl<D: BlockDevice> Writer<D> {
             )));
         }
         let sectors = (data.len() as u64).div_ceil(block * 512) * block;
-        let data_buckets = sectors.div_ceil(bucket);
+
+        // The pieces: at most 128 sectors of the file each, and no more than
+        // a bucket, then what is
+        // stored for each, compressed or not, padded to whole blocks.
+        struct Piece {
+            file_sector: u64,
+            sectors: u64,
+            stored: Vec<u8>,
+            stored_sectors: u64,
+            compression: u8,
+        }
+        let mut pieces = Vec::new();
+        let mut at = 0u64;
+        while at < sectors {
+            // No piece is longer than a bucket, so each fits one.
+            let n = MAX_EXTENT_SECTORS.min(bucket).min(sectors - at);
+            let from = (at * 512) as usize;
+            let to = (from + (n * 512) as usize).min(data.len());
+            let mut raw = data[from..to].to_vec();
+            raw.resize((n * 512) as usize, 0);
+            let (stored, ty) = match codec {
+                Some(t) => {
+                    let mut c = crate::compress::compress(t, &raw)?;
+                    let c_sectors = (c.len() as u64).div_ceil(block * 512) * block;
+                    if c_sectors < n {
+                        c.resize((c_sectors * 512) as usize, 0);
+                        (c, t)
+                    } else {
+                        (raw, compression::INCOMPRESSIBLE)
+                    }
+                }
+                None if gzip => (raw, compression::INCOMPRESSIBLE),
+                None => (raw, compression::NONE),
+            };
+            let stored_sectors = stored.len() as u64 / 512;
+            pieces.push(Piece {
+                file_sector: at,
+                sectors: n,
+                stored,
+                stored_sectors,
+                compression: ty,
+            });
+            at += n;
+        }
+
+        // Pack the stored pieces into buckets in order, none across two.
+        let mut layout: Vec<(usize, u64)> = Vec::new(); // (bucket index, offset)
+        let (mut idx, mut used) = (0usize, 0u64);
+        for p in &pieces {
+            if used + p.stored_sectors > bucket {
+                idx += 1;
+                used = 0;
+            }
+            layout.push((idx, used));
+            used += p.stored_sectors;
+        }
+        let data_buckets = layout.last().map(|l| l.0 as u64 + 1).unwrap_or(0);
+        let disk_sectors: u64 = pieces.iter().map(|p| p.stored_sectors).sum();
         // A bucket left partly empty needs an lru entry, and a filesystem
         // that never had one has no lru btree: its root is made here, in one
         // more bucket (S8: the reference made exactly that for its first
         // large file).
-        if !sectors.is_multiple_of(bucket) && self.root(aids::LRU).is_err() {
+        if !disk_sectors.is_multiple_of(bucket) && self.root(aids::LRU).is_err() {
             self.create_root(aids::LRU, t)?;
         }
         let buckets = self.take_buckets(data_buckets, t)?;
         let clock = self.write_clock()?;
-
-        // Plan the extents: each within one bucket, at most 128 sectors.
         let mut plan = Vec::new();
-        let mut done = 0u64;
-        for &b in &buckets {
-            let gen = self.bucket_gen(b)?;
-            let mut in_bucket = 0;
-            while in_bucket < bucket && done < sectors {
-                let n = (bucket - in_bucket)
-                    .min(MAX_EXTENT_SECTORS)
-                    .min(sectors - done);
-                plan.push(Planned {
-                    file_sector: done,
-                    sectors: n,
-                    dev_sector: b * bucket + in_bucket,
-                    bucket: b,
-                    gen,
-                });
-                in_bucket += n;
-                done += n;
-            }
+        for (p, &(i, off)) in pieces.iter().zip(&layout) {
+            let b = buckets[i];
+            plan.push(Planned {
+                sectors: p.stored_sectors,
+                dev_sector: b * bucket + off,
+                bucket: b,
+                gen: self.bucket_gen(b)?,
+            });
         }
 
-        for p in &plan {
-            let from = (p.file_sector * 512) as usize;
-            let to = (from + (p.sectors * 512) as usize).min(data.len());
-            let mut buf = data[from..to].to_vec();
-            buf.resize((p.sectors * 512) as usize, 0);
-            self.dev.write_at(p.dev_sector * 512, &buf)?;
-            let csum = crate::csum::compute(csum_type, &buf)?;
-            // crc32 entry (type bit 1), then the pointer (type bit 0).
-            let crc: u64 = 0b10
-                | (p.sectors - 1) << 2
-                | (p.sectors - 1) << 9
-                | u64::from(csum_type) << 24
-                | (csum & 0xffff_ffff) << 32;
+        for (p, piece) in plan.iter().zip(&pieces) {
+            self.dev.write_at(p.dev_sector * 512, &piece.stored)?;
+            let csum = crate::csum::compute(csum_type, &piece.stored)?;
             let ptr: u64 = 1 | p.dev_sector << 4 | u64::from(p.gen) << 56;
-            let mut value = crc.to_le_bytes().to_vec();
+            let (c_size, u_size) = (piece.stored_sectors, piece.sectors);
+            let mut value = Vec::with_capacity(24);
+            match csum_type {
+                0 => {}
+                5 => {
+                    // crc32 entry (type bit 1).
+                    let crc: u64 = 0b10
+                        | (c_size - 1) << 2
+                        | (u_size - 1) << 9
+                        | u64::from(csum_type) << 24
+                        | u64::from(piece.compression) << 28
+                        | (csum & 0xffff_ffff) << 32;
+                    value.extend_from_slice(&crc.to_le_bytes());
+                }
+                _ => {
+                    // crc64 entry (type bit 2): the checksum's high 16 bits
+                    // in the first word, its low 64 in the second.
+                    let crc: u64 = 0b100
+                        | (c_size - 1) << 3
+                        | (u_size - 1) << 12
+                        | u64::from(csum_type) << 40
+                        | u64::from(piece.compression) << 44;
+                    value.extend_from_slice(&crc.to_le_bytes());
+                    value.extend_from_slice(&csum.to_le_bytes());
+                }
+            }
+            // Then the pointer (type bit 0).
             value.extend_from_slice(&ptr.to_le_bytes());
             let extent = Bkey {
                 key_type: key_type::EXTENT,
-                size: p.sectors as u32,
+                size: u_size as u32,
                 version_hi: 0,
                 version_lo: 0,
-                pos: pos(ino, p.file_sector + p.sectors),
+                pos: pos(ino, piece.file_sector + u_size),
                 value,
             };
             t.put(ids::EXTENTS, None, extent.clone());
-            t.count(
-                super::btree_counter_pos(ids::EXTENTS),
-                3,
-                2,
-                p.sectors as i64,
-            );
+            if piece.compression != compression::NONE {
+                // The compression counter (S4: the lz4 fixture): extents,
+                // sectors before, sectors after.
+                let at = acct_compression(piece.compression);
+                t.count(at, 3, 0, 1);
+                t.count(at, 3, 1, u_size as i64);
+                t.count(at, 3, 2, c_size as i64);
+            }
+            t.count(super::btree_counter_pos(ids::EXTENTS), 3, 2, c_size as i64);
 
             // The backpointer: at the data's device sector << 16, naming
             // the extent (S8: btree, level, data type, bucket_len, pos).
             let mut bp = Vec::with_capacity(32);
             bp.extend_from_slice(&[ids::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0]);
-            bp.extend_from_slice(&(p.sectors as u32).to_le_bytes());
+            bp.extend_from_slice(&(c_size as u32).to_le_bytes());
             bp.extend_from_slice(&extent.pos.snapshot.to_le_bytes());
             bp.extend_from_slice(&extent.pos.offset.to_le_bytes());
             bp.extend_from_slice(&extent.pos.inode.to_le_bytes());
@@ -376,18 +474,21 @@ impl<D: BlockDevice> Writer<D> {
         // Accounting (S8): user sectors on the device, the device's user
         // buckets, sectors and the unused part of them, one free bucket
         // fewer each, and the inode's extents and sectors.
+        // The device and replicas count sectors as stored; the inode's
+        // counter holds its extents, their sectors and the sectors stored
+        // (S4: the lz4 fixture's inodes, e.g. 8 extents, 2071, 204).
         let n = buckets.len() as i64;
-        let s = sectors as i64;
-        t.count(acct_replicas_user(0), 1, 0, s);
+        let d = disk_sectors as i64;
+        t.count(acct_replicas_user(0), 1, 0, d);
         let user = acct_dev_data_type(0, DATA_USER);
         t.count(user, 3, 0, n);
-        t.count(user, 3, 1, s);
-        t.count(user, 3, 2, n * bucket as i64 - s);
+        t.count(user, 3, 1, d);
+        t.count(user, 3, 2, n * bucket as i64 - d);
         t.count(acct_dev_data_type(0, 0), 3, 0, -n);
         let inum = acct_inum(ino);
         t.count(inum, 3, 0, plan.len() as i64);
-        t.count(inum, 3, 1, s);
-        t.count(inum, 3, 2, s);
+        t.count(inum, 3, 1, sectors as i64);
+        t.count(inum, 3, 2, d);
         Ok(sectors)
     }
 }
@@ -574,6 +675,15 @@ impl<D: BlockDevice> Writer<D> {
                 },
             );
             *freed.entry(e.ptr.offset / bucket).or_default() += sectors;
+            if let Some(c) = e
+                .crc
+                .filter(|c| c.compression_type != crate::extent::compression::NONE)
+            {
+                let at = acct_compression(c.compression_type);
+                t.count(at, 3, 0, -1);
+                t.count(at, 3, 1, -i64::from(c.uncompressed_size));
+                t.count(at, 3, 2, -i64::from(c.compressed_size));
+            }
             t.count(
                 super::btree_counter_pos(ids::EXTENTS),
                 3,
@@ -780,6 +890,20 @@ impl<D: BlockDevice> Writer<D> {
         k.value[(b & 0xff) as usize] = gen;
         t.put_uncounted(aids::BUCKET_GENS, k);
         Ok(())
+    }
+}
+
+/// The compression accounting key for compression type `ty` (S4, #105:
+/// the lz4 fixture holds `0x0405 << 48` = [404, 6585, 6585] for its 404
+/// incompressible extents and `0x0403 << 48` for its lz4 ones, as the
+/// checker's "compression incompressible" names it): kind 4 in the top
+/// byte, the type in the next. Its value is extents, uncompressed sectors,
+/// compressed sectors.
+pub(super) fn acct_compression(ty: u8) -> Bpos {
+    Bpos {
+        inode: 4 << 56 | u64::from(ty) << 48,
+        offset: 0,
+        snapshot: 0,
     }
 }
 
