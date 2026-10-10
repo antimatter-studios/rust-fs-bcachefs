@@ -7,6 +7,9 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # The merge queue's run on main plus the queued pull requests: the run
+  # that decides whether they land.
+  merge_group:
   # Callable so release.yml runs THIS gate rather than a copy of it.
   workflow_call:
 
@@ -22,6 +25,62 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  # Does this change need the full pipeline? rust-fs-core's
+  # scripts/code-changed.sh reads the change's paths and says false only when
+  # every one is documentation. The change is the pull request's diff, the
+  # merge queue group's (its base_sha to its head_sha: what the queue is
+  # about to land), or a push to main's (before to after). A tag, a release
+  # calling this workflow, or a push it cannot diff runs everything. The
+  # jobs that boot the VM or read its fixtures run only when the answer is
+  # true, and ci-ok accepts their skip when, and only when, it is false.
+  changes:
+    name: changes (does this need the full pipeline?)
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Classify the change
+        id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          range=
+          case "$EVENT" in
+            pull_request) range="$PR_BASE...$PR_HEAD" ;;
+            merge_group) range="$MQ_BASE...$MQ_HEAD" ;;
+            push)
+              case "$REF" in
+                refs/heads/*)
+                  if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ] &&
+                    git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+                    range="$PUSH_BEFORE...$PUSH_AFTER"
+                  fi ;;
+              esac ;;
+          esac
+          if [ -n "$range" ]; then
+            git diff --name-only "$range" | tee changed.txt
+            code="$(bash ../rust-fs-core/scripts/code-changed.sh < changed.txt)"
+          else
+            code=true
+          fi
+          echo "code=$code ($EVENT${range:+ $range})"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   unit:
     name: unit (no tools, no fixtures)
     runs-on: ubuntu-24.04
@@ -102,6 +161,8 @@ jobs:
   # half an hour, not ninety minutes (#94's runs hung until 90).
   fixtures:
     name: fixtures (harness VM, x86_64 KVM)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -487,16 +548,20 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
+    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
+          # false only for a pull request that changes documentation alone:
+          # then, and only then, a skipped job is not a failed one.
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           set -euo pipefail
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          echo "code changed: $CODE"
+          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
           if [ -n "$bad" ]; then
             echo "::error::not green: $bad (failed, cancelled or skipped)"
             exit 1

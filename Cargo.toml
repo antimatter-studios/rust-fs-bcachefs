@@ -35,7 +35,7 @@ cli = ["dep:clap", "rust-fs-core/cli", "write"]
 
 [dependencies]
 # Block-device trait surface shared with the sister fs-* drivers.
-rust-fs-core = { path = "../rust-fs-core", version = "0.3.7" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.8" }
 # CRC32C (Castagnoli), the default metadata and data checksum. MIT OR Apache-2.0.
 crc32c = "0.6"
 # XXH64 (seed 0), checksum type 7. MIT.
