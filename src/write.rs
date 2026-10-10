@@ -883,6 +883,9 @@ impl<D: BlockDevice> Writer<D> {
     ) -> Result<u64> {
         let is_dir = kind == S_IFDIR;
         valid_name(name)?;
+        if self.layout(data.len()).0 > 0 {
+            self.discard_freed()?;
+        }
         let mut p = self.dir(parent)?;
         let (at, existing, taken) = self.dirent(&p, name)?;
         if existing.is_some() {
@@ -1167,6 +1170,11 @@ impl<D: BlockDevice> Writer<D> {
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
             return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
+        }
+        // Buckets freed by earlier commits come back first; the ones this
+        // rewrite frees wait for the next (#132).
+        if self.layout(data.len()).0 > 0 {
+            self.discard_freed()?;
         }
         let now = self.now();
         let mut t = Txn::default();

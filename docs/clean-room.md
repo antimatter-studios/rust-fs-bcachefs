@@ -460,6 +460,22 @@ checker judged each attempt and named what was missing until nothing was.
   `dev_data_type need_discard` (and keeps zeroed keys, as the reference
   does). Judged: unlinking, shrinking and growing large files passes the
   reference checker and the mount reads what remains (S8 checker run).
+- Reusing a freed bucket (#132; the reference kernel module's
+  `kernel-freed` image, S10: a 4 MiB file written, removed, and ten
+  seconds before the unmount): the reference returns a need_discard
+  bucket to the free pool on a device it does not discard. Its alloc key
+  becomes data type free with gen and oldest_gen kept, need_discard
+  cleared and both journal sequence numbers (words 0 and 6) 0, io_time
+  kept; its need_discard key goes; freespace holds it again, merged into
+  the run beside it (buckets 89 and 90, both gen 1, as one run `0:91 len
+  2`); accounting moves it from `dev_data_type need_discard` to `free`.
+  The writer does this before any write that allocates, for buckets
+  emptied by earlier commits. Judged: a 4 MiB file written and removed 25
+  times through the 64 MiB base image passes the reference checker and
+  reads back through the reference mount (`write_oracle.rs`). Not seen:
+  whether a freespace key's position carries a generation's high bits
+  once it reaches 16, so buckets of generation 16 or more are left
+  waiting.
 
 ### Committing through the journal (`src/write_journal.rs`) -- judged
 
