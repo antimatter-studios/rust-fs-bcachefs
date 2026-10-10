@@ -9,6 +9,11 @@ API, a patch never does.
 
 ### Changed
 
+- **The writer's lookups read only the nodes on a key's path** (#108): an
+  inode, a dirent slot, an inode's extents and a directory's entries go
+  through `btree::Cursor`, with a journalled session's replay laid over the
+  nodes, instead of a walk of the whole btree. `Writer::device` gives the
+  device back.
 - **Lookups, listings and reads go through a lazy btree cursor**
   (`btree::Cursor`): nothing but the superblock is loaded at open, and a
   lookup reads only the nodes on its path; a name is found at its hash.
