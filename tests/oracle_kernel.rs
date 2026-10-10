@@ -60,6 +60,16 @@ fn what_the_kernel_wrote_reads_back_byte_for_byte() {
         assert_eq!(inode.mode & 0o7777, e.mode, "kernel {}: mode", e.path);
         match e.kind.as_str() {
             "file" => {
+                // A hash that is not 64 hex digits is a garbled record,
+                // not a misread file (#134).
+                assert!(
+                    e.sha256
+                        .as_ref()
+                        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())),
+                    "kernel {}: the record's hash {:?} is garbled",
+                    e.path,
+                    e.sha256
+                );
                 let data = fs.read(ino).unwrap();
                 assert_eq!(Some(data.len() as u64), e.size, "kernel {}: size", e.path);
                 assert_eq!(
