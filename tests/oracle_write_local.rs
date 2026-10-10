@@ -1097,3 +1097,44 @@ fn a_create_reads_paths_not_whole_btrees() {
     assert_eq!(fs.lookup("/wide/new-entry").unwrap(), f);
     assert_eq!(fs.read(f).unwrap(), b"new\n");
 }
+
+/// A node written into a reused bucket is read as itself, not as the node
+/// that was there before (#108, #132): the writer's node cache keys a node
+/// by its bucket's generation too, which reuse raises. Read through a stale
+/// entry, a removal missed extents of the file it removed, and the
+/// reference checker found them in missing inodes. Every extent left after
+/// a session of writes and removals belongs to an inode that exists.
+#[test]
+fn a_session_that_reuses_buckets_leaves_no_extents_of_removed_files() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    let img = scratch("write-study/base.img", "reuse-orphans");
+    let d = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let big: Vec<u8> = (0..4 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for i in 0..25 {
+        w.create_file(d, b"big", &big, 0o644)
+            .unwrap_or_else(|e| panic!("write {i}: {e}"));
+        if i < 24 {
+            w.unlink(d, b"big").unwrap();
+        }
+    }
+    drop(w);
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let inodes: std::collections::BTreeSet<u64> = btree::walk(&dev, &sb, btree_id::INODES)
+        .unwrap()
+        .iter()
+        .map(|k| k.pos.offset)
+        .collect();
+    let orphans: std::collections::BTreeSet<u64> = btree::walk(&dev, &sb, btree_id::EXTENTS)
+        .unwrap()
+        .iter()
+        .map(|k| k.pos.inode)
+        .filter(|ino| !inodes.contains(ino))
+        .collect();
+    assert!(orphans.is_empty(), "extents of removed inodes {orphans:?}");
+}

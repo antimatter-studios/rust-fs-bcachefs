@@ -488,13 +488,21 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Parsed nodes, by where they are and how much of them is written: the
-/// root and the interior nodes are what every lookup reads, and they do not
-/// change under a reader. Bounded: it starts over past a few hundred nodes.
+/// Parsed nodes, by where they are, the generation of their bucket and how
+/// much of them is written: the root and the interior nodes are what every
+/// lookup reads, and they do not change under a reader. The generation is
+/// part of the key because a writer reuses freed buckets (#132): a new node
+/// in one can sit where an old one was, with the same sequence number, and
+/// only the bucket's new generation tells them apart. Bounded: it starts
+/// over past a few hundred nodes.
 #[derive(Default)]
 pub struct NodeCache {
-    nodes: std::sync::Mutex<std::collections::HashMap<(u64, u64, u16, u64), Node>>,
+    nodes: std::sync::Mutex<std::collections::HashMap<NodeKey, Node>>,
 }
+
+/// A cached node's identity: device offset, bucket generation, sequence
+/// number, sectors written, and the newest journal sequence read.
+type NodeKey = (u64, u8, u64, u16, u64);
 
 /// How many nodes a cache holds before it starts over.
 const NODE_CACHE_CAP: usize = 512;
@@ -510,7 +518,13 @@ impl NodeCache {
     ) -> Result<Node> {
         // The blacklist is the superblock's, the same for every node a
         // cache sees, so it is not part of the key.
-        let key = (ptr.ptrs[0].offset, ptr.seq, ptr.sectors_written, max_seq);
+        let key = (
+            ptr.ptrs[0].offset,
+            ptr.ptrs[0].gen,
+            ptr.seq,
+            ptr.sectors_written,
+            max_seq,
+        );
         if let Some(n) = self.nodes.lock().ok().and_then(|m| m.get(&key).cloned()) {
             return Ok(n);
         }

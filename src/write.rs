@@ -594,9 +594,10 @@ impl<D: BlockDevice> Writer<D> {
             id,
             self.session.as_ref().map(|s| &s.replay),
         )?
-        // Nodes are cached by where they are and how much of them is written
-        // (btree::NodeCache), so a node this writer appends to or rewrites is
-        // a new entry: what is cached is never stale.
+        // Nodes are cached by where they are, their bucket's generation and
+        // how much of them is written (btree::NodeCache), so a node this
+        // writer appends to, rewrites, or writes into a reused bucket is a
+        // new entry: what is cached is never stale.
         .with_cache(&self.cache))
     }
 
