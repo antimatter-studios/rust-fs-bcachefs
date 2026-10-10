@@ -872,7 +872,8 @@ fn files_on_every_data_checksum_and_compression_read_back() {
         ("nocsum", None),
         ("lz4", Some(3u64)),
         ("zstd", Some(4)),
-        ("gzip", Some(2)),
+        // gzip: stored as incompressible (open question 20).
+        ("gzip", None),
     ] {
         let img = scratch(&format!("{set}.img"), &format!("data-{set}"));
         let root = Filesystem::open(FileDevice::open(&img).unwrap())
@@ -899,6 +900,10 @@ fn files_on_every_data_checksum_and_compression_read_back() {
                     "{set}: the compressed counter grew by {c:?}"
                 );
                 assert_eq!(inc, vec![3, 137, 137], "{set}: the incompressible counter");
+            }
+            // Both files, 3 extents and 137 sectors each.
+            _ if set == "gzip" => {
+                assert_eq!(inc, vec![6, 274, 274], "{set}: the incompressible counter")
             }
             _ => assert_eq!(inc, vec![0, 0, 0], "{set}: the incompressible counter"),
         }

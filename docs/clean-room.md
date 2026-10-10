@@ -792,6 +792,19 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     reads one device, so a stripe pointer is refused by name. Kind 5 is
     the one kind no image has shown.
 
+20. **gzip-compressed extents this writer makes** (#105). The writer
+    stores data on an lz4 or zstd filesystem compressed, and the reference
+    mount reads it back byte for byte (CI run 38013718306). On a gzip
+    filesystem it wrote each piece as a raw deflate stream
+    (`miniz_oxide`, level 6), the framing this crate decodes from the gzip
+    fixture; the reference checker passed the image, and this crate reads
+    it back, but the reference mount's daemon died reading it
+    (`bcachefs: fatal SIGSEGV` in `fuse_read`, same run). Whether the
+    stream differs from what the reference writes, or its userspace gzip
+    path fails on any stream, is open. Until the reference kernel module
+    judges such an extent, data on a gzip filesystem is written as
+    incompressible.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

@@ -219,10 +219,17 @@ impl<D: BlockDevice> Writer<D> {
         // incompressible, as the reference stores data it cannot compress
         // (S3: the lz4 fixture's random file).
         use crate::extent::compression;
+        let gzip = self.sb.compression_opt() == 2;
         let codec = match self.sb.compression_opt() {
             0 => None,
             1 => Some(compression::LZ4),
-            2 => Some(compression::GZIP),
+            // gzip is stored as incompressible, not compressed: the reference
+            // mount's daemon died (SIGSEGV in fuse_read) reading a raw deflate
+            // stream this writer made, which its checker had passed and this
+            // crate reads back (CI run 38013718306). Whose the fault is, is
+            // open (docs/clean-room.md, question 20) until the reference
+            // kernel module reads such an extent.
+            2 => None,
             3 => Some(compression::ZSTD),
             o => {
                 return Err(Error::Unsupported(format!(
@@ -230,7 +237,7 @@ impl<D: BlockDevice> Writer<D> {
                 )))
             }
         };
-        if codec.is_some() && csum_type == 0 {
+        if (codec.is_some() || gzip) && csum_type == 0 {
             return Err(Error::Unsupported(
                 "compression without a data checksum: no entry has been observed to carry it"
                     .into(),
@@ -279,6 +286,7 @@ impl<D: BlockDevice> Writer<D> {
                         (raw, compression::INCOMPRESSIBLE)
                     }
                 }
+                None if gzip => (raw, compression::INCOMPRESSIBLE),
                 None => (raw, compression::NONE),
             };
             let stored_sectors = stored.len() as u64 / 512;
