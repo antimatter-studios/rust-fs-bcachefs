@@ -145,6 +145,11 @@ API, a patch never does.
 
 ### Fixed
 
+- **The writer frees reflinked data** (#140): unlinking or truncating a
+  file drops one reference from each indirect extent its `reflink_p`
+  covers, and the last reference deletes the indirect extent and frees its
+  data, counted at inode 0 as the reference counts shared data. A pointer
+  to nothing is refused as corrupt.
 - **The checker judges snapshots and follows reflinks** (#139): entries,
   inodes and link counts are checked as each subvolume sees them through
   its snapshot's chain, an entry naming a subvolume is checked against the

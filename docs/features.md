@@ -54,7 +54,7 @@ States:
 | Multi-device filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | A key at a snapshot the snapshots btree does not have, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
 | Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | Unreleased (#129) | #12; the writer writes the root subvolume only (#138) | `oracle_kernel.rs` |
-| Reflinked extents (`reflink_p` into the reflink btree): read, and checked; the writer will not free one | Partial | Unreleased (#128, #144) | #7; freeing reflinks is not implemented (#140) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs` |
+| Reflinked extents (`reflink_p` into the reflink btree): read, checked, and freed by the writer one reference at a time | Supported | Unreleased (#128, #144, #145) | #7, #140; a pointer covering part of an indirect extent is refused (none seen) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs`, `oracle_write_local.rs`, `write_oracle.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | Unreleased (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
 | Per-inode options: data_checksum, compression, background_compression and data_replicas read as the reference tool reports them, inherited ones included (`Inode::option`) | Supported (read) | Unreleased (#127) | #81; the other option fields are read raw, no image sets them | `oracle_kernel.rs`, `oracle_inode_fields.rs` |
 

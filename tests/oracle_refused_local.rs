@@ -328,11 +328,12 @@ fn a_reflink_pointer_to_nothing_is_an_error_and_the_checker_and_the_writer_refus
         "the checker did not name the pointer to nothing: {:?}",
         report.problems
     );
-    // Freeing it as data would leave the shared extent's refcount behind.
+    // There is no shared extent to drop a reference to (#140): the writer
+    // refuses, rather than freeing the pointer and leaving nothing behind.
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     match w.unlink(dir, b"existing") {
-        Err(Error::Unsupported(m)) if m.contains("reflink_p") => {}
-        other => panic!("the writer freed a reflink_p as if it were data: {other:?}"),
+        Err(Error::Corrupt(m)) if m.contains("reflink_p") => {}
+        other => panic!("the writer freed a reflink_p to nothing: {other:?}"),
     }
 }
 
