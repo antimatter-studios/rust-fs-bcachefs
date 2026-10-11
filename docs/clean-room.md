@@ -792,9 +792,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     it back, but the reference mount's daemon died reading it
     (`bcachefs: fatal SIGSEGV` in `fuse_read`, same run). Whether the
     stream differs from what the reference writes, or its userspace gzip
-    path fails on any stream, is open. Until the reference kernel module
-    judges such an extent, data on a gzip filesystem is written as
-    incompressible.
+    path fails on any stream, was open. **Answered by the reference
+    kernel module (#141):** the module stores gzip as a raw deflate
+    stream too (the kernel image's `opts/compression-gzip`, first bytes
+    `ed ca c1 09`), and a gzip file this writer made, on a filesystem the
+    module had mounted, reads back through the module byte for byte and
+    passes the reference checker (`kernel-written.img`). Data on a gzip
+    filesystem is written gzip-compressed; where the reference mount's
+    daemon still cannot read it, the module's read is the judge.
 
 ### Reflinks -- read
 
