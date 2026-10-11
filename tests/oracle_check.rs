@@ -117,3 +117,27 @@ fn a_superblock_with_no_readable_copy_is_reported() {
     });
     assert_eq!(kinds(&p), vec!["superblock"], "{p:?}");
 }
+
+/// Every image the reference kernel module wrote, and the reference checker
+/// then passed, is clean here too (#139): a subvolume and its snapshot,
+/// reflinked files, reused buckets, and a root subvolume that was
+/// snapshotted. A key in a snapshot is judged by what that snapshot sees,
+/// and a reflink by the indirect extent it points into, not named and
+/// passed over.
+#[test]
+fn every_image_the_reference_kernel_module_made_is_clean() {
+    let rec = common::read_text("kernel.txt");
+    for (img, fsck) in [
+        ("kernel", "fsck"),
+        ("kernel-reuse", "reuse-fsck"),
+        ("kernel-rootsnap", "rootsnap-fsck"),
+    ] {
+        assert!(
+            rec.lines().any(|l| l == format!("{fsck}: clean")),
+            "the reference checker did not pass {img}.img, so this proves nothing:\n{rec}"
+        );
+        let r = check(&FileDevice::open(fixture(&format!("{img}.img"))).unwrap())
+            .unwrap_or_else(|e| panic!("{img}: {e}"));
+        assert!(r.clean(), "{img}: {:?}", r.problems);
+    }
+}
