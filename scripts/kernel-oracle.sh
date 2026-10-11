@@ -20,7 +20,8 @@
 # link, a reflink (scripts/ficlone.c) and a subvolume with a snapshot of it
 # (the reference tool, run in the VM), prints the manifest as the mount
 # reports it, unmounts and powers off; on a second image it writes and
-# removes 16M files until buckets are reused (#94). Its console becomes
+# removes 16M files until buckets are reused (#94); on a third it snapshots
+# the root subvolume itself (#138). Its console becomes
 # kernel.txt and kernel.json; the reference checker judges both images. A
 # stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing.
@@ -107,6 +108,8 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     bcachefs format -q /work/kernel.img
     truncate -s 64M /work/kernel-reuse.img
     bcachefs format -q /work/kernel-reuse.img
+    truncate -s 64M /work/kernel-rootsnap.img
+    bcachefs format -q /work/kernel-rootsnap.img
     chmod -R a+rwX /work
 '
 docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools >/dev/null
@@ -122,6 +125,7 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
     -append "console=ttyS0,115200 panic=-1 rdinit=/init" \
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-reuse.img,if=virtio,format=raw" \
+    -drive "file=$work/kernel-rootsnap.img,if=virtio,format=raw" \
     -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
     -no-reboot ||
     echo "kernel-oracle: qemu exited $?" >&2
@@ -165,6 +169,15 @@ else
     record reuse-fsck "errors (kernel-reuse.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
+# The snapshotted root (#138): judged by the reference checker like the
+# others.
+if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+    bcachefs fsck -n /work/kernel-rootsnap.img >"$OUT/kernel-rootsnap.fsck.txt" 2>&1; then
+    record rootsnap-fsck clean
+else
+    record rootsnap-fsck "errors (kernel-rootsnap.fsck.txt)"
+fi
+cp --sparse=always "$work/kernel-rootsnap.img" "$OUT/kernel-rootsnap.img"
 # Per-file options (#81): what the reference tool read back from each file,
 # and its help for the commands that set and read them.
 sed -n 's/\r$//; s/^.*ORACLE O\t//p' "$work/oracle.log" >"$OUT/kernel.options.txt"

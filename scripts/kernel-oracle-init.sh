@@ -134,6 +134,24 @@ if [ -b /dev/vdb ] && mount -t bcachefs -o noatime /dev/vdb /reuse 2>/tmp/reuse.
 else
     say "reuse: mount failed ($(head -c 200 /tmp/reuse.err))"
 fi
+# A SNAPSHOTTED ROOT (#138), on the third disk: a file written, the root
+# subvolume snapshotted into /snap, then the file changed and another added,
+# so the root and its snapshot each hold keys the other does not see.
+mkdir -p /rootsnap
+if [ -b /dev/vdc ] && mount -t bcachefs -o noatime /dev/vdc /rootsnap 2>/tmp/rootsnap.err; then
+    echo "before the snapshot" >/rootsnap/kept.txt
+    sync
+    if bcachefs subvolume snapshot /rootsnap /rootsnap/snap 2>/tmp/rootsnap.err; then
+        echo "after the snapshot" >/rootsnap/kept.txt
+        echo "new" >/rootsnap/new.txt
+        say "rootsnap: ok"
+    else
+        say "rootsnap: failed ($(head -c 200 /tmp/rootsnap.err))"
+    fi
+    umount /rootsnap || say "rootsnap: unmount failed"
+else
+    say "rootsnap: mount failed ($(head -c 200 /tmp/rootsnap.err))"
+fi
 say "done: yes"
 sync
 poweroff -f

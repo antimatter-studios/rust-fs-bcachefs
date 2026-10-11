@@ -97,7 +97,9 @@ reads back byte for byte through the reference implementation's mount
 | Data on every data checksum, and compressed with lz4 or zstd as the filesystem asks (stored as incompressible when that saves no block, and on gzip filesystems) | Experimental | Unreleased (#122) | gzip extents: open question 20 | `oracle_write_local.rs`, `write_oracle.rs` |
 | Per-inode options | Not written: new inodes carry none, and data is written as the filesystem's options say | | #81 | |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
-| Encrypted, multi-device, snapshotted filesystems | Refused | | | |
+| Encrypted, multi-device filesystems | Refused | | | |
+| A filesystem whose root subvolume is snapshotted | Refused | Unreleased (#143) | #138; writing at the root's own snapshot is not implemented | `oracle_write_local.rs` |
+| Files inside another subvolume or a snapshot | Not written: the writer's keys are at the root subvolume's snapshot only | | #138 | |
 
 ## Oracles
 
