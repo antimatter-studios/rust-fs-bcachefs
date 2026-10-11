@@ -21,7 +21,9 @@
 # (the reference tool, run in the VM), prints the manifest as the mount
 # reports it, unmounts and powers off; on a second image it writes and
 # removes 16M files until buckets are reused (#94); on a third it snapshots
-# the root subvolume itself (#138). Its console becomes
+# the root subvolume itself (#138); a fourth, a gzip filesystem, it mounts
+# and leaves for this crate's tools to write into, then boots again to read
+# that back (#141). Its console becomes
 # kernel.txt and kernel.json; the reference checker judges both images. A
 # stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing.
@@ -110,6 +112,14 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     bcachefs format -q /work/kernel-reuse.img
     truncate -s 64M /work/kernel-rootsnap.img
     bcachefs format -q /work/kernel-rootsnap.img
+    truncate -s 64M /work/kernel-written.img
+    if bcachefs format -q --compression=gzip /work/kernel-written.img \
+        >/work/written.format.txt 2>&1; then
+        echo ok >/work/written.format.status
+    else
+        echo "failed ($(head -c 200 /work/written.format.txt | tr "\n" " "))" \
+            >/work/written.format.status
+    fi
     chmod -R a+rwX /work
 '
 docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools >/dev/null
@@ -126,13 +136,47 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-reuse.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-rootsnap.img,if=virtio,format=raw" \
+    -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
     -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
     -no-reboot ||
     echo "kernel-oracle: qemu exited $?" >&2
 
+# THIS CRATE'S WRITES, JUDGED BY THE MODULE (#141). The fourth image is a
+# gzip filesystem the module mounted once, leaving a seed file and the
+# state a mounted filesystem has; this crate's tools (chore cli:install)
+# now write a compressible file into it, and a second boot, which does
+# nothing else, reads it back through the module.
+record written-format "$(cat "$work/written.format.status" 2>/dev/null || echo missing)"
+writer="${KERNEL_ORACLE_WRITER:-$here/tmp/cli/bin/rust-fs-bcachefs}"
+if [ -x "$writer" ]; then
+    ln -sf "$writer" "$work/fs.bcachefs"
+    # 4096 numbered lines of text, compressible, made without `yes | head`,
+    # which pipefail reads as a failure (yes dies of SIGPIPE).
+    python3 -c 'print("\n".join(f"a line of text the writer stores compressed with gzip, {i:05d}" for i in range(4096)))' \
+        >"$work/written.txt"
+    record written-sha256 "$(sha256sum "$work/written.txt" | cut -d' ' -f1)"
+    if "$work/fs.bcachefs" "$work/kernel-written.img" put /written.txt \
+        --from "$work/written.txt" >/dev/null 2>"$work/written.err"; then
+        record written ok
+    else
+        record written "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))"
+    fi
+else
+    record written "no writer at $writer: build it with chore cli:install"
+fi
+echo "kernel-oracle: booting it again to read what this crate wrote"
+timeout 120 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 1G -smp 1 \
+    -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
+    -append "console=ttyS0,115200 panic=-1 rdinit=/init oracle=judge" \
+    -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
+    -display none -serial "file:$work/judge-console.log" -serial "file:$work/judge.log" \
+    -no-reboot ||
+    echo "kernel-oracle: qemu exited $? (judge)" >&2
+
 # The init's lines carry `ORACLE `, on the second serial port (#134); a
 # manifest line carries `ORACLE M`.
 sed -n 's/\r$//; s/^.*ORACLE \([a-z][a-z0-9_.=-]*\): /\1: /p' "$work/oracle.log" >>"$OUT/kernel.txt"
+sed -n 's/\r$//; s/^.*ORACLE \(judge\.[a-z0-9_.=-]*\): /\1: /p' "$work/judge.log" >>"$OUT/kernel.txt" 2>/dev/null || true
 grep -q '^kernel: ' "$OUT/kernel.txt" || {
     record kernel "the VM printed nothing of the oracle's (kernel.console.txt)"
 }
@@ -178,6 +222,14 @@ else
     record rootsnap-fsck "errors (kernel-rootsnap.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-rootsnap.img" "$OUT/kernel-rootsnap.img"
+# What this crate wrote (#141): judged by the reference checker too.
+if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+    bcachefs fsck -n /work/kernel-written.img >"$OUT/kernel-written.fsck.txt" 2>&1; then
+    record written-fsck clean
+else
+    record written-fsck "errors (kernel-written.fsck.txt)"
+fi
+cp --sparse=always "$work/kernel-written.img" "$OUT/kernel-written.img"
 # Per-file options (#81): what the reference tool read back from each file,
 # and its help for the commands that set and read them.
 sed -n 's/\r$//; s/^.*ORACLE O\t//p' "$work/oracle.log" >"$OUT/kernel.options.txt"

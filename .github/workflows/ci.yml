@@ -179,6 +179,12 @@ jobs:
         with:
           path: ~/.vagrant.d/boxes
           key: ${{ steps.vm-host.outputs.box-cache-key }}
+      # This crate's tools write a file the reference kernel module then
+      # reads back (#141), so the fixture build compiles them.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
       - name: chore fixtures
         run: chore fixtures
       - name: chore vm:status (the VM is down again)

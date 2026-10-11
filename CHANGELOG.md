@@ -145,6 +145,11 @@ API, a patch never does.
 
 ### Fixed
 
+- **Data on a gzip filesystem is written gzip-compressed** (#141): as a
+  raw deflate stream, the framing the reference kernel module uses. The
+  kernel oracle has this crate's tools write a gzip file, and the module
+  reads it back byte for byte; it was stored as incompressible since open
+  question 20.
 - **The writer frees reflinked data** (#140): unlinking or truncating a
   file drops one reference from each indirect extent its `reflink_p`
   covers, and the last reference deletes the indirect extent and frees its

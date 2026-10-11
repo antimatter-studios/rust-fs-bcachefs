@@ -95,7 +95,7 @@ reads back byte for byte through the reference implementation's mount
 | A new btree root, any btree id | Experimental: no write needs an id of 16 and above yet | Unreleased (#92) | #80 | `oracle_node_flags.rs` |
 | A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Writes on 4096-byte blocks with 32 KiB nodes, and on nodes smaller than their buckets (one node per bucket) | Experimental | Unreleased (#124) | how the reference shares a bucket between nodes is recorded, not copied (#109) | `oracle_write_local.rs`, `write_oracle.rs` |
-| Data on every data checksum, and compressed with lz4 or zstd as the filesystem asks (stored as incompressible when that saves no block, and on gzip filesystems) | Experimental | Unreleased (#122) | gzip extents: open question 20 | `oracle_write_local.rs`, `write_oracle.rs` |
+| Data on every data checksum, and compressed with lz4, gzip or zstd as the filesystem asks (stored as incompressible when that saves no block) | Experimental | Unreleased (#122, #146) | gzip extents are judged by the reference kernel module (#141) | `oracle_write_local.rs`, `write_oracle.rs`, `oracle_kernel.rs` |
 | Per-inode options | Not written: new inodes carry none, and data is written as the filesystem's options say | | #81 | |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device filesystems | Refused | | | |

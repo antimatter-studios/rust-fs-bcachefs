@@ -238,3 +238,66 @@ fn every_file_option_is_what_the_kernel_wrote_its_data_with() {
         );
     }
 }
+
+/// Data this crate wrote on a gzip filesystem, judged by the reference
+/// kernel module (#141): its tools put a compressible file on a gzip
+/// filesystem the module had mounted, and a second boot of the module read
+/// it back. The file is stored gzip-compressed, the module reads the bytes
+/// that were written, and the reference checker passes the image.
+#[test]
+fn a_file_this_crate_compressed_with_gzip_reads_back_through_the_kernel() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::{compression, DataExtent};
+    use fs_bcachefs::superblock::Superblock;
+    let r = record();
+    let text = read_text("kernel.txt");
+    assert_eq!(
+        r.get("written-format").map(String::as_str),
+        Some("ok"),
+        "{text}"
+    );
+    assert_eq!(
+        r.get("written-seed").map(String::as_str),
+        Some("ok"),
+        "{text}"
+    );
+    assert_eq!(r.get("written").map(String::as_str), Some("ok"), "{text}");
+    assert_eq!(
+        r.get("written-fsck").map(String::as_str),
+        Some("clean"),
+        "{text}"
+    );
+    let want = r
+        .get("written-sha256")
+        .expect("the record names no written-sha256");
+    assert_eq!(
+        r.get("judge.read"),
+        Some(want),
+        "the module read back other bytes than were written:\n{text}"
+    );
+    let img = fixture("kernel-written.img");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let ino = fs.lookup("/written.txt").unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs.read(ino).unwrap())),
+        *want
+    );
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let kinds: Vec<Option<u8>> = btree::walk(&dev, &sb, btree_id::EXTENTS)
+        .unwrap()
+        .iter()
+        .filter(|k| k.pos.inode == ino && k.key_type == fs_bcachefs::bkey::key_type::EXTENT)
+        .map(|k| {
+            DataExtent::from_key(k)
+                .unwrap()
+                .crc
+                .map(|c| c.compression_type)
+        })
+        .collect();
+    assert!(!kinds.is_empty(), "/written.txt has no data extents");
+    assert!(
+        kinds.iter().all(|&c| c == Some(compression::GZIP)),
+        "/written.txt is not stored gzip-compressed: {kinds:?}"
+    );
+}

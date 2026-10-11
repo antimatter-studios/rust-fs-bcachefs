@@ -31,6 +31,19 @@ else
 fi
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/vda ] && break; sleep 1; done
 
+# THE JUDGE BOOT (#141): the only disk is the gzip filesystem this crate
+# wrote into after the first boot; read its file back and stop.
+if grep -qw oracle=judge /proc/cmdline; then
+    if mount -t bcachefs -o ro,noatime /dev/vda /mnt 2>/tmp/judge.err; then
+        say "judge.read: $(sha256sum /mnt/written.txt 2>&1 | cut -d' ' -f1)"
+        umount /mnt
+    else
+        say "judge.read: mount failed ($(head -c 200 /tmp/judge.err))"
+    fi
+    sync
+    poweroff -f
+fi
+
 if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
     say "mount: ok"
     cp -a /tree/. /mnt/
@@ -151,6 +164,15 @@ if [ -b /dev/vdc ] && mount -t bcachefs -o noatime /dev/vdc /rootsnap 2>/tmp/roo
     umount /rootsnap || say "rootsnap: unmount failed"
 else
     say "rootsnap: mount failed ($(head -c 200 /tmp/rootsnap.err))"
+fi
+# A GZIP FILESYSTEM FOR THIS CRATE TO WRITE INTO (#141), on the fourth
+# disk: mounted once, a seed file written, and unmounted cleanly.
+mkdir -p /written
+if [ -b /dev/vdd ] && mount -t bcachefs -o noatime /dev/vdd /written 2>/tmp/written.err; then
+    echo "seed" >/written/seed.txt
+    if umount /written; then say "written-seed: ok"; else say "written-seed: unmount failed"; fi
+else
+    say "written-seed: mount failed ($(head -c 200 /tmp/written.err))"
 fi
 say "done: yes"
 sync
