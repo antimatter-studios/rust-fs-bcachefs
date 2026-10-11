@@ -1243,3 +1243,68 @@ fn reflinked_files_are_freed_one_reference_at_a_time() {
     clean(&img, "unlinking the original");
     assert_eq!(indirect(&img), 0, "shared data no file references is kept");
 }
+
+/// Data is written as the file's options say, not only the filesystem's
+/// (#142): on a copy of the kernel image, whose filesystem compresses
+/// nothing, a rewrite of opts/compression-lz4 is stored lz4-compressed, and
+/// a file created in opts/dir, whose compression is zstd, inherits that
+/// option as the module's own file there did and is stored zstd-compressed.
+#[test]
+fn data_is_written_as_the_files_options_say() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::{compression, DataExtent};
+    use fs_bcachefs::superblock::Superblock;
+    let img = scratch("kernel.img", "file-options");
+    let text: Vec<u8> = (0..2000)
+        .flat_map(|i| format!("a line of text in a file with options, {i:05}\n").into_bytes())
+        .collect();
+    let (lz4, dir, theirs) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let theirs = fs.inode(fs.lookup("/opts/dir/inherited").unwrap()).unwrap();
+        (
+            fs.lookup("/opts/compression-lz4").unwrap(),
+            fs.lookup("/opts/dir").unwrap(),
+            theirs,
+        )
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.write_file(lz4, &text).unwrap();
+    let ours = w.create_file(dir, b"ours", &text, 0o644).unwrap();
+    drop(w);
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let mine = fs.inode(ours).unwrap();
+    assert_eq!(mine.options, theirs.options, "the inherited options");
+    assert_eq!(
+        mine.flags & (1 << 12),
+        theirs.flags & (1 << 12),
+        "the has-options flag"
+    );
+    assert!(fs.read(ours).unwrap() == text);
+    assert!(fs.read(lz4).unwrap() == text);
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let codecs = |ino: u64| -> Vec<u8> {
+        btree::walk(&dev, &sb, btree_id::EXTENTS)
+            .unwrap()
+            .iter()
+            .filter(|k| k.pos.inode == ino && k.key_type == fs_bcachefs::bkey::key_type::EXTENT)
+            .map(|k| {
+                DataExtent::from_key(k)
+                    .unwrap()
+                    .crc
+                    .map_or(0, |c| c.compression_type)
+            })
+            .collect()
+    };
+    let (a, b) = (codecs(lz4), codecs(ours));
+    assert!(
+        !a.is_empty() && a.iter().all(|&c| c == compression::LZ4),
+        "lz4 file: {a:?}"
+    );
+    assert!(
+        !b.is_empty() && b.iter().all(|&c| c == compression::ZSTD),
+        "new file: {b:?}"
+    );
+    let r = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(r.clean(), "{:?}", r.problems);
+}

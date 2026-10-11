@@ -301,3 +301,103 @@ fn a_file_this_crate_compressed_with_gzip_reads_back_through_the_kernel() {
         "/written.txt is not stored gzip-compressed: {kinds:?}"
     );
 }
+
+/// A file this crate writes in a directory with options takes them as the
+/// module's own file there did (#142). The reference tool set
+/// `compression=zstd` and `data_checksum=xxhash` on the directory, the module
+/// wrote a file in it, and this crate's tools wrote one beside it: the
+/// reference lister shows the same option fields and flags on both inodes,
+/// this crate's data is stored as those options say, and the module reads
+/// it back.
+#[test]
+fn a_file_written_in_a_directory_with_options_takes_them_as_the_kernels_does() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::{compression, DataExtent};
+    use fs_bcachefs::superblock::Superblock;
+    let r = record();
+    let text = read_text("kernel.txt");
+    for k in [
+        "written-option.compression=zstd",
+        "written-option.data_checksum=xxhash",
+        "written-opt",
+    ] {
+        assert_eq!(r.get(k).map(String::as_str), Some("ok"), "{k}:\n{text}");
+    }
+    assert_eq!(
+        r.get("judge.optread"),
+        r.get("written-sha256"),
+        "the module read back other bytes than were written:\n{text}"
+    );
+    assert_eq!(
+        r.get("written-fsck").map(String::as_str),
+        Some("clean"),
+        "{text}"
+    );
+
+    // The lister's inodes, by number: `name=value` lines under each key.
+    let listed = read_text("kernel-written.inodes.txt");
+    let mut inodes: std::collections::BTreeMap<u64, Vec<(String, String)>> = Default::default();
+    let mut at = None;
+    for line in listed.lines() {
+        if let Some(rest) = line.split(" type inode_v3 0:").nth(1) {
+            at = rest.split(':').next().and_then(|n| n.parse().ok());
+            continue;
+        }
+        if let (Some(ino), Some((k, v))) = (at, line.trim().split_once('=')) {
+            inodes
+                .entry(ino)
+                .or_default()
+                .push((k.to_string(), v.to_string()));
+        }
+    }
+    let img = fixture("kernel-written.img");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let theirs = fs.lookup("/optdir/kernel.txt").unwrap();
+    let ours = fs.lookup("/optdir/ours.txt").unwrap();
+    let options = |ino: u64| -> Vec<(String, String)> {
+        inodes
+            .get(&ino)
+            .unwrap_or_else(|| panic!("the lister shows no inode {ino}:\n{listed}"))
+            .iter()
+            .filter(|(k, _)| {
+                k == "flags"
+                    || [
+                        "bi_data_checksum",
+                        "bi_compression",
+                        "bi_background_compression",
+                        "bi_data_replicas",
+                        "bi_promote_target",
+                        "bi_foreground_target",
+                        "bi_background_target",
+                        "bi_erasure_code",
+                        "bi_fields_set",
+                    ]
+                    .contains(&k.as_str())
+            })
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        options(ours),
+        options(theirs),
+        "this crate's file (left) and the module's (right) differ in their options"
+    );
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let entries: Vec<(u8, u8)> = btree::walk(&dev, &sb, btree_id::EXTENTS)
+        .unwrap()
+        .iter()
+        .filter(|k| k.pos.inode == ours && k.key_type == fs_bcachefs::bkey::key_type::EXTENT)
+        .map(|k| {
+            let c = DataExtent::from_key(k).unwrap().crc.expect("a crc entry");
+            (c.compression_type, c.csum_type)
+        })
+        .collect();
+    assert!(!entries.is_empty(), "/optdir/ours.txt has no data extents");
+    // xxhash data carries checksum type 7 (src/write_alloc.rs, #105).
+    assert!(
+        entries.iter().all(|&e| e == (compression::ZSTD, 7)),
+        "/optdir/ours.txt is not stored as zstd with xxhash: {entries:?}"
+    );
+}

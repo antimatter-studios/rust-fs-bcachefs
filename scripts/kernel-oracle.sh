@@ -161,6 +161,14 @@ if [ -x "$writer" ]; then
     else
         record written "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))"
     fi
+    # A file in the directory with options (#142): it takes them, as the
+    # module's own file there did.
+    if "$work/fs.bcachefs" "$work/kernel-written.img" put /optdir/ours.txt \
+        --from "$work/written.txt" >/dev/null 2>"$work/written.err"; then
+        record written-opt ok
+    else
+        record written-opt "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))"
+    fi
 else
     record written "no writer at $writer: build it with chore cli:install"
 fi
@@ -230,6 +238,10 @@ else
     record written-fsck "errors (kernel-written.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-written.img" "$OUT/kernel-written.img"
+# The lister's view of its inodes (#142): this crate's file beside the
+# module's, in a directory with options.
+docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+    bcachefs list -b inodes /work/kernel-written.img >"$OUT/kernel-written.inodes.txt" 2>&1 || true
 # Per-file options (#81): what the reference tool read back from each file,
 # and its help for the commands that set and read them.
 sed -n 's/\r$//; s/^.*ORACLE O\t//p' "$work/oracle.log" >"$OUT/kernel.options.txt"

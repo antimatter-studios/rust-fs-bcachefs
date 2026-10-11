@@ -36,6 +36,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/vda ] && break; sleep 1; done
 if grep -qw oracle=judge /proc/cmdline; then
     if mount -t bcachefs -o ro,noatime /dev/vda /mnt 2>/tmp/judge.err; then
         say "judge.read: $(sha256sum /mnt/written.txt 2>&1 | cut -d' ' -f1)"
+        say "judge.optread: $(sha256sum /mnt/optdir/ours.txt 2>&1 | cut -d' ' -f1)"
         umount /mnt
     else
         say "judge.read: mount failed ($(head -c 200 /tmp/judge.err))"
@@ -170,6 +171,18 @@ fi
 mkdir -p /written
 if [ -b /dev/vdd ] && mount -t bcachefs -o noatime /dev/vdd /written 2>/tmp/written.err; then
     echo "seed" >/written/seed.txt
+    # A directory with options set by the reference tool, and a file the
+    # module wrote in it, which inherits them (#142): this crate's tools
+    # write a file beside it, and the lister shows both inodes.
+    mkdir /written/optdir
+    for spec in compression=zstd data_checksum=xxhash; do
+        if bcachefs set-file-option "--$spec" /written/optdir 2>/tmp/opt.err; then
+            say "written-option.$spec: ok"
+        else
+            say "written-option.$spec: failed ($(head -c 200 /tmp/opt.err | tr '\n' ' '))"
+        fi
+    done
+    yes "a line the module writes in a directory with options" | head -c 131072 >/written/optdir/kernel.txt
     if umount /written; then say "written-seed: ok"; else say "written-seed: unmount failed"; fi
 else
     say "written-seed: mount failed ($(head -c 200 /tmp/written.err))"
