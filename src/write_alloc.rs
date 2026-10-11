@@ -12,6 +12,10 @@ use fs_core::BlockDevice;
 
 /// Btrees and key types allocation touches (S1's orders; checked against
 /// the reference lister on the write study's images).
+/// The reflink btree (S1 11.3): indirect extents, at inode 0 and the end
+/// of their range.
+const REFLINK: u8 = crate::btree::btree_id::REFLINK;
+
 pub(super) mod aids {
     pub const ALLOC: u8 = 4;
     pub const LRU: u8 = 10;
@@ -633,28 +637,52 @@ impl<D: BlockDevice> Writer<D> {
     pub(super) fn free_extents(&mut self, ino: u64, extents: &[Bkey], t: &mut Txn) -> Result<()> {
         let bucket = self.bucket_sectors()?;
         let mut freed: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
-        let mut nr = 0i64;
+        // Extents, and sectors, by the inode their accounting is under:
+        // the file's own, or inode 0 for shared data the reflink btree held
+        // (S8: the kernel image's 96 indirect extents, 6144 sectors, are
+        // counted at inode 0, and its reflinked files count none).
+        let mut per_inode: std::collections::BTreeMap<u64, (i64, i64)> = Default::default();
+        // What this file's data is: its own extents, and the indirect
+        // extents its reflink pointers drop the last reference to (#140).
+        let mut data: Vec<(Bkey, bool)> = Vec::new();
+        // Refcounts already lowered in this call, by indirect extent.
+        let mut lowered: std::collections::BTreeMap<Bpos, Bkey> = Default::default();
         for k in extents {
             t.delete(ids::EXTENTS, k);
-            if k.key_type == key_type::INLINE_DATA {
-                continue;
+            match k.key_type {
+                key_type::INLINE_DATA => {}
+                key_type::EXTENT => data.push((k.clone(), false)),
+                // A reflink pointer is one reference to each indirect
+                // extent it covers (S1 9.1.6.2); the last one frees it.
+                key_type::REFLINK_P => {
+                    for v in self.unreference(ino, k, &mut lowered)? {
+                        data.push((v, true));
+                    }
+                }
+                t => {
+                    return Err(Error::Unsupported(format!(
+                        "freeing an extent of key type {t}"
+                    )))
+                }
             }
-            // Deleting a reflink pointer must also drop a reference to the
-            // shared extent it points to (S1 9.1.6.2), which this writer
-            // cannot find: the pointer's layout is unknown (#7).
-            if k.key_type == key_type::REFLINK_P {
-                return Err(Error::Unsupported(format!(
-                    "inode {ino}: freeing reflinked data (a `reflink_p`) is not implemented: the \
-                     shared extent's refcount would be left behind (#7)"
-                )));
+        }
+        for v in lowered.into_values() {
+            if v.key_type == key_type::DELETED {
+                t.delete_uncounted(REFLINK, v.pos);
+            } else {
+                t.put_uncounted(REFLINK, v);
             }
-            if k.key_type != key_type::EXTENT {
-                return Err(Error::Unsupported(format!(
-                    "freeing an extent of key type {}",
-                    k.key_type
-                )));
-            }
-            let e = crate::extent::DataExtent::from_key(k)?;
+        }
+        for (k, shared) in &data {
+            let e = if *shared {
+                crate::extent::DataExtent::from_key(&Bkey {
+                    key_type: key_type::EXTENT,
+                    value: k.value[8..].to_vec(),
+                    ..k.clone()
+                })?
+            } else {
+                crate::extent::DataExtent::from_key(k)?
+            };
             if e.ptr.dev != 0 {
                 return Err(Error::Unsupported("extents on another device".into()));
             }
@@ -684,13 +712,20 @@ impl<D: BlockDevice> Writer<D> {
                 t.count(at, 3, 1, -i64::from(c.uncompressed_size));
                 t.count(at, 3, 2, -i64::from(c.compressed_size));
             }
-            t.count(
-                super::btree_counter_pos(ids::EXTENTS),
-                3,
-                2,
-                -(sectors as i64),
-            );
-            nr += 1;
+            // The extents btree counts the sectors of its own extents; the
+            // reflink btree has no such counter (S8: none in the kernel
+            // image's accounting).
+            if !*shared {
+                t.count(
+                    super::btree_counter_pos(ids::EXTENTS),
+                    3,
+                    2,
+                    -(sectors as i64),
+                );
+            }
+            let owner = per_inode.entry(if *shared { 0 } else { ino }).or_default();
+            owner.0 += 1;
+            owner.1 += sectors as i64;
         }
         if freed.is_empty() {
             return Ok(());
@@ -789,11 +824,82 @@ impl<D: BlockDevice> Writer<D> {
         t.count(user, 3, 1, -(total as i64));
         t.count(user, 3, 2, frag_delta);
         t.count(acct_dev_data_type(0, DATA_NEED_DISCARD), 3, 0, n_emptied);
-        let inum = acct_inum(ino);
-        t.count(inum, 3, 0, -nr);
-        t.count(inum, 3, 1, -(total as i64));
-        t.count(inum, 3, 2, -(total as i64));
+        for (owner, (nr, sectors)) in per_inode {
+            let inum = acct_inum(owner);
+            t.count(inum, 3, 0, -nr);
+            t.count(inum, 3, 1, -sectors);
+            t.count(inum, 3, 2, -sectors);
+        }
         Ok(())
+    }
+
+    /// Drop the reference the reflink pointer `p` of inode `ino` holds on
+    /// each indirect extent it covers: each one's refcount, the first word
+    /// of its value (S8: 2 for each of the kernel image's clone pair), goes
+    /// down by one in `lowered`, and one that reaches 0 is marked deleted
+    /// there and returned, its data to be freed.
+    fn unreference(
+        &self,
+        ino: u64,
+        p: &Bkey,
+        lowered: &mut std::collections::BTreeMap<Bpos, Bkey>,
+    ) -> Result<Vec<Bkey>> {
+        let idx = crate::extent::reflink_p_idx(&p.value)?;
+        let end = idx + u64::from(p.size);
+        let missing = |at: u64| {
+            Error::Corrupt(format!(
+                "inode {ino}: the reflink btree has nothing at sector {at}, which the \
+                 `reflink_p` at {} points into",
+                p.pos
+            ))
+        };
+        let mut out = Vec::new();
+        let mut at = idx;
+        for v in self.keys_from(
+            REFLINK,
+            Bpos {
+                inode: 0,
+                offset: idx + 1,
+                snapshot: 0,
+            },
+        )? {
+            if at >= end || v.start_offset() > at {
+                break;
+            }
+            if v.key_type != key_type::REFLINK_V || v.value.len() < 8 {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: reflinked data in a key of type {} at {}",
+                    v.key_type, v.pos
+                )));
+            }
+            // A pointer that covers part of an indirect extent would split
+            // it, which no image has shown yet.
+            if v.start_offset() < idx || v.pos.offset > end {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: the `reflink_p` at {} covers part of the indirect extent at {}",
+                    p.pos, v.pos
+                )));
+            }
+            at = v.pos.offset;
+            let mut v = lowered.remove(&v.pos).unwrap_or(v);
+            let count = le64(&v.value, 0);
+            if count == 0 || v.key_type == key_type::DELETED {
+                return Err(Error::Corrupt(format!(
+                    "inode {ino}: the indirect extent at {} has no reference left to drop",
+                    v.pos
+                )));
+            }
+            v.value[..8].copy_from_slice(&(count - 1).to_le_bytes());
+            if count == 1 {
+                out.push(v.clone());
+                v.key_type = key_type::DELETED;
+            }
+            lowered.insert(v.pos, v);
+        }
+        if at < end {
+            return Err(missing(at));
+        }
+        Ok(out)
     }
 }
 

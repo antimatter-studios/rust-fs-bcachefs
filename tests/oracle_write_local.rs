@@ -1199,3 +1199,52 @@ fn a_write_into_a_snapshotted_root_leaves_the_snapshot_as_it_was() {
         "the snapshot's kept.txt after a write into the root"
     );
 }
+
+/// Reflinked files removed (#140), judged here: unlinking the clone of
+/// big/random.bin leaves the original reading as it did and this checker
+/// clean, the shared data one reference fewer; unlinking the original too
+/// frees the shared data, and the checker is still clean.
+#[test]
+fn reflinked_files_are_freed_one_reference_at_a_time() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    let img = scratch("kernel.img", "reflink-free");
+    let indirect = |img: &std::path::Path| {
+        let dev = FileDevice::open(img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::REFLINK)
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.key_type == fs_bcachefs::bkey::key_type::REFLINK_V)
+            .count()
+    };
+    let shared = indirect(&img);
+    assert!(shared > 0, "the kernel image holds no shared data");
+    let (big, original) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let big = fs.lookup("/big").unwrap();
+        (big, fs.read(fs.lookup("/big/random.bin").unwrap()).unwrap())
+    };
+    let clean = |img: &std::path::Path, after: &str| {
+        let r = fs_bcachefs::check::check(&FileDevice::open(img).unwrap()).unwrap();
+        assert!(r.clean(), "after {after}: {:?}", r.problems);
+    };
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.unlink(big, b"random-clone.bin")
+        .unwrap_or_else(|e| panic!("unlinking the clone: {e}"));
+    drop(w);
+    clean(&img, "unlinking the clone");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.lookup("/big/random-clone.bin").is_err());
+    assert!(fs.read(fs.lookup("/big/random.bin").unwrap()).unwrap() == original);
+    drop(fs);
+    assert_eq!(indirect(&img), shared, "shared data freed while referenced");
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.unlink(big, b"random.bin")
+        .unwrap_or_else(|e| panic!("unlinking the original: {e}"));
+    drop(w);
+    clean(&img, "unlinking the original");
+    assert_eq!(indirect(&img), 0, "shared data no file references is kept");
+}
