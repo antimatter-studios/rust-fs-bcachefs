@@ -145,6 +145,11 @@ API, a patch never does.
 
 ### Fixed
 
+- **The writer honours per-file options** (#142): data is checksummed and
+  compressed as the file's `data_checksum` and `compression` say, the
+  filesystem's where the file has none, and a new inode takes its
+  directory's options, stored but not marked set, with the has-options
+  flag, as the reference kernel module's own file there does.
 - **Data on a gzip filesystem is written gzip-compressed** (#141): as a
   raw deflate stream, the framing the reference kernel module uses. The
   kernel oracle has this crate's tools write a gzip file, and the module

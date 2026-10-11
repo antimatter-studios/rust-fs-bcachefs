@@ -96,7 +96,7 @@ reads back byte for byte through the reference implementation's mount
 | A full btree node, rewritten or split; a root grows a level | Experimental | Unreleased (#45) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Writes on 4096-byte blocks with 32 KiB nodes, and on nodes smaller than their buckets (one node per bucket) | Experimental | Unreleased (#124) | how the reference shares a bucket between nodes is recorded, not copied (#109) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data on every data checksum, and compressed with lz4, gzip or zstd as the filesystem asks (stored as incompressible when that saves no block) | Experimental | Unreleased (#122, #146) | gzip extents are judged by the reference kernel module (#141) | `oracle_write_local.rs`, `write_oracle.rs`, `oracle_kernel.rs` |
-| Per-inode options | Not written: new inodes carry none, and data is written as the filesystem's options say | | #81 | |
+| Per-inode options: a new inode takes its directory's, and data is checksummed and compressed as the file's options say (the filesystem's where it has none) | Experimental | Unreleased (#147) | #81, #142; more than one replica is refused (one device) | `oracle_write_local.rs`, `oracle_kernel.rs` |
 | Names in casefolded directories | Refused | Unreleased (#98) | | `oracle_casefold.rs` |
 | Encrypted, multi-device filesystems | Refused | | | |
 | A filesystem whose root subvolume is snapshotted | Refused | Unreleased (#143) | #138; writing at the root's own snapshot is not implemented | `oracle_write_local.rs` |

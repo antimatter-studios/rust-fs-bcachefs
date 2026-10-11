@@ -194,7 +194,15 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Write `data` for inode `ino` into fresh buckets and add every key
     /// that goes with it to `t`. Returns the sectors allocated.
-    pub(super) fn allocate_data(&mut self, ino: u64, data: &[u8], t: &mut Txn) -> Result<u64> {
+    /// `opts` is the file's data checksum and compression as superblock
+    /// option numbers ([`super::data_options`]).
+    pub(super) fn allocate_data(
+        &mut self,
+        ino: u64,
+        opts: (u64, u64),
+        data: &[u8],
+        t: &mut Txn,
+    ) -> Result<u64> {
         let bucket = self.bucket_sectors()?;
         if bucket == 0 {
             return Err(Error::Corrupt("bucket size 0".into()));
@@ -205,7 +213,7 @@ impl<D: BlockDevice> Writer<D> {
         // crc64 entry of type 6 and 7, the whole 64-bit checksum in its
         // second word; none, no entry, only the pointer. Type 6 for crc64
         // data is INFERRED (5 is crc32c's data-side type; csum.rs).
-        let csum_type = match self.sb.data_checksum_opt() {
+        let csum_type = match opts.0 {
             0 => 0u8,
             1 => 5,
             2 => 6,
@@ -223,7 +231,7 @@ impl<D: BlockDevice> Writer<D> {
         // incompressible, as the reference stores data it cannot compress
         // (S3: the lz4 fixture's random file).
         use crate::extent::compression;
-        let codec = match self.sb.compression_opt() {
+        let codec = match opts.1 {
             0 => None,
             1 => Some(compression::LZ4),
             // gzip as a raw deflate stream, as the reference kernel module
