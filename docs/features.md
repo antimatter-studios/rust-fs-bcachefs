@@ -53,8 +53,8 @@ States:
 | Encrypted filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | Unreleased (#19) | | `oracle_refused.rs` |
 | A key at a snapshot the snapshots btree does not have, overlapping extents, unknown checksum types | Refused | Unreleased (#65) | | `oracle_refused_local.rs` |
-| Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | Unreleased (#129) | #12; the writer and the checker read the root subvolume only | `oracle_kernel.rs` |
-| Reflinked extents (`reflink_p` into the reflink btree): read; the checker names one, the writer will not free one | Partial | Unreleased (#128) | #7; checking and freeing reflinks are not implemented | `oracle_kernel.rs`, `oracle_refused_local.rs` |
+| Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | Unreleased (#129) | #12; the writer writes the root subvolume only (#138) | `oracle_kernel.rs` |
+| Reflinked extents (`reflink_p` into the reflink btree): read, and checked; the writer will not free one | Partial | Unreleased (#128, #144) | #7; freeing reflinks is not implemented (#140) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | Unreleased (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
 | Per-inode options: data_checksum, compression, background_compression and data_replicas read as the reference tool reports them, inherited ones included (`Inode::option`) | Supported (read) | Unreleased (#127) | #81; the other option fields are read raw, no image sets them | `oracle_kernel.rs`, `oracle_inode_fields.rs` |
 
@@ -64,6 +64,7 @@ States:
 |---|---|---|---|---|
 | `fsck.bcachefs`, check-only: nodes, key order, dirents, link counts, extents, data checksums; fsck(8) exit status | Supported | Unreleased (#39) | | `check_oracle.rs`, `oracle_check.rs` |
 | Damaged superblock copies reported | Supported | Unreleased (#66) | | `tests/cli/test-fsck.sh` |
+| `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | Unreleased (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)
