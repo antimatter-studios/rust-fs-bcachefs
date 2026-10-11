@@ -17,6 +17,10 @@ harness="$here/../fs-linux-test-harness"
 [ -n "${KEEP_VM:-}" ] || source "$harness/scripts/vm-session.sh"
 "$harness/scripts/vm.sh" run "bash /repo/scripts/guest-build-fixtures.sh"
 share="$("$harness/scripts/vm.sh" share)"
+# This crate's tools, whose writes the module judges (#141). Without them
+# the oracle records that, and tests/oracle_kernel.rs fails naming them.
+bash "$here/scripts/cli-install.sh" ||
+    echo "build-fixtures: chore cli:install failed; the module judges no write of ours" >&2
 # The reference kernel module, in a VM of its own on this host (#110).
 bash "$here/scripts/kernel-oracle.sh" "$share/fixtures"
 n="$(find "$share/fixtures" -name '*.img' | wc -l | tr -d ' ')"
