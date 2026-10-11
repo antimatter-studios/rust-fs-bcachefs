@@ -113,7 +113,13 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     truncate -s 64M /work/kernel-rootsnap.img
     bcachefs format -q /work/kernel-rootsnap.img
     truncate -s 64M /work/kernel-written.img
-    bcachefs format -q --compression=gzip /work/kernel-written.img
+    if bcachefs format -q --compression=gzip /work/kernel-written.img \
+        >/work/written.format.txt 2>&1; then
+        echo ok >/work/written.format.status
+    else
+        echo "failed ($(head -c 200 /work/written.format.txt | tr "\n" " "))" \
+            >/work/written.format.status
+    fi
     chmod -R a+rwX /work
 '
 docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools >/dev/null
@@ -140,10 +146,14 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
 # state a mounted filesystem has; this crate's tools (chore cli:install)
 # now write a compressible file into it, and a second boot, which does
 # nothing else, reads it back through the module.
+record written-format "$(cat "$work/written.format.status" 2>/dev/null || echo missing)"
 writer="${KERNEL_ORACLE_WRITER:-$here/tmp/cli/bin/rust-fs-bcachefs}"
 if [ -x "$writer" ]; then
     ln -sf "$writer" "$work/fs.bcachefs"
-    yes "a line of text the writer stores compressed with gzip" | head -c 262144 >"$work/written.txt"
+    # 4096 numbered lines of text, compressible, made without `yes | head`,
+    # which pipefail reads as a failure (yes dies of SIGPIPE).
+    python3 -c 'print("\n".join(f"a line of text the writer stores compressed with gzip, {i:05d}" for i in range(4096)))' \
+        >"$work/written.txt"
     record written-sha256 "$(sha256sum "$work/written.txt" | cut -d' ' -f1)"
     if "$work/fs.bcachefs" "$work/kernel-written.img" put /written.txt \
         --from "$work/written.txt" >/dev/null 2>"$work/written.err"; then
