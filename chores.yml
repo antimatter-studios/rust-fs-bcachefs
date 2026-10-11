@@ -186,6 +186,7 @@ tasks:
     desc: Formatting, clippy, the family's structural checks and the licence gate, exactly as CI runs them
     cmds:
       - bash ../rust-fs-core/scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/changelog-check.sh
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
