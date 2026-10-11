@@ -324,8 +324,8 @@ fn a_reflink_pointer_to_nothing_is_an_error_and_the_checker_and_the_writer_refus
     drop(fs);
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(
-        report.problems.iter().any(|p| p.kind == "reflink"),
-        "the checker did not name the reflink: {:?}",
+        report.problems.iter().any(|p| p.kind == "reflink_missing"),
+        "the checker did not name the pointer to nothing: {:?}",
         report.problems
     );
     // Freeing it as data would leave the shared extent's refcount behind.
@@ -334,4 +334,50 @@ fn a_reflink_pointer_to_nothing_is_an_error_and_the_checker_and_the_writer_refus
         Err(Error::Unsupported(m)) if m.contains("reflink_p") => {}
         other => panic!("the writer freed a reflink_p as if it were data: {other:?}"),
     }
+}
+
+/// The kernel image's reflinks, damaged two ways (#139): an indirect
+/// extent whose refcount is one too many, and a pointer moved past
+/// everything the reflink btree holds. The checker names each; on the
+/// image as the kernel left it, it names neither (tests/oracle_check.rs).
+#[test]
+fn a_wrong_refcount_and_a_dangling_reflink_pointer_are_named_by_the_checker() {
+    let kinds = |img: &std::path::Path| -> Vec<&'static str> {
+        check::check(&FileDevice::open(img).unwrap())
+            .unwrap()
+            .problems
+            .iter()
+            .map(|p| p.kind)
+            .collect()
+    };
+
+    let img = scratch("kernel.img", "reflink-refcount");
+    let mut v = keys(&img, btree_id::REFLINK)
+        .into_iter()
+        .find(|k| k.key_type == key_type::REFLINK_V)
+        .expect("an indirect extent in the kernel image");
+    let count = u64::from_le_bytes(v.value[..8].try_into().unwrap());
+    v.value[..8].copy_from_slice(&(count + 1).to_le_bytes());
+    insert(&img, btree_id::REFLINK, v);
+    let found = kinds(&img);
+    assert!(found.contains(&"reflink_refcount"), "{found:?}");
+
+    let img = scratch("kernel.img", "reflink-dangling");
+    let end = keys(&img, btree_id::REFLINK)
+        .iter()
+        .map(|k| k.pos.offset)
+        .max()
+        .expect("the reflink btree's last key");
+    let mut p = keys(&img, btree_id::EXTENTS)
+        .into_iter()
+        .find(|k| k.key_type == key_type::REFLINK_P)
+        .expect("a reflink pointer in the kernel image");
+    // The index is the low 56 bits of the first word (docs/clean-room.md,
+    // "Reflinks"); past the last indirect extent, nothing is there.
+    let word = u64::from_le_bytes(p.value[..8].try_into().unwrap());
+    let moved = (word & !((1u64 << 56) - 1)) | (end + 1024);
+    p.value[..8].copy_from_slice(&moved.to_le_bytes());
+    insert(&img, btree_id::EXTENTS, p);
+    let found = kinds(&img);
+    assert!(found.contains(&"reflink_missing"), "{found:?}");
 }

@@ -145,6 +145,13 @@ API, a patch never does.
 
 ### Fixed
 
+- **The checker judges snapshots and follows reflinks** (#139): entries,
+  inodes and link counts are checked as each subvolume sees them through
+  its snapshot's chain, an entry naming a subvolume is checked against the
+  subvolumes btree, and every `reflink_p` against the reflink btree: its
+  range is covered, each indirect extent's refcount matches the pointers
+  into it, and its data is checked. Every image the reference kernel module
+  made is clean to it, as it is to the reference checker.
 - **The writer refuses a filesystem whose root subvolume is snapshotted**
   (#138): its keys are at snapshot u32::MAX, which such a root shares with
   its snapshot, so a write there changed the snapshot too. The kernel
