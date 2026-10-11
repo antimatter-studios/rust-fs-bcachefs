@@ -425,6 +425,47 @@ pub fn pos(inode: u64, offset: u64) -> Bpos {
     }
 }
 
+/// The options a new inode takes from its directory (#142): the ones the
+/// reference tool sets per file (`set-file-option`), and the targets and
+/// erasure coding it lists with them. `project` is a quota, not one of them.
+const INHERITED_OPTIONS: [&str; 8] = [
+    "data_checksum",
+    "compression",
+    "background_compression",
+    "data_replicas",
+    "promote_target",
+    "foreground_target",
+    "background_target",
+    "erasure_code",
+];
+
+/// The inode flag set on an inode with options, set on it or inherited
+/// (S3 + S4: bit 12 of bi_flags, on every inode of the kernel image that
+/// carries one and on none that does not).
+const INODE_HAS_OPTIONS: u64 = 1 << 12;
+
+/// The data checksum and compression a file's data is written with, as
+/// superblock option numbers (crc32c 1, ...; lz4 1, gzip 2, zstd 3): the
+/// inode's own, stored plus one, or the filesystem's where it has none
+/// (#142). More than one replica, which one device cannot hold, is refused.
+pub(crate) fn data_options(sb: &Superblock, raw: &crate::inode::InodeV3Raw) -> Result<(u64, u64)> {
+    let f = |name: &str| raw.field(name).unwrap_or(0);
+    if f("data_replicas") > 2 {
+        return Err(Error::Unsupported(format!(
+            "the inode asks for {} replicas of its data, on one device",
+            f("data_replicas") - 1
+        )));
+    }
+    let pick = |name: &str, fs: u64| match f(name) {
+        0 => fs,
+        v => v - 1,
+    };
+    Ok((
+        pick("data_checksum", u64::from(sb.data_checksum_opt())),
+        pick("compression", u64::from(sb.compression_opt())),
+    ))
+}
+
 /// The btrees and key types the file operations touch.
 mod ids {
     pub const EXTENTS: u8 = 0;
@@ -873,7 +914,23 @@ impl<D: BlockDevice> Writer<D> {
         if is_dir {
             varints[field::DEPTH] = parent.raw.varints.get(field::DEPTH).copied().unwrap_or(0) + 1;
         }
-        let inherited = parent.raw.flags & (0xf << 20 | 0xf << 32);
+        let mut inherited = parent.raw.flags & (0xf << 20 | 0xf << 32);
+        // A new inode takes its directory's options, its own and the ones
+        // it inherited, as values only: none is marked set on it, and it
+        // carries the flag an inode with options has (S3 + S4: the kernel
+        // image's opts/dir/inherited, under a directory with compression
+        // set: the same stored value, fields_set 0, flag bit 12; #142).
+        for name in INHERITED_OPTIONS {
+            let at = crate::inode::FIELD_NAMES
+                .iter()
+                .position(|n| n == &name)
+                .expect("an inode field")
+                + 8;
+            if let (Some(slot), Some(&v)) = (varints.get_mut(at), parent.raw.varints.get(at)) {
+                *slot = v;
+            }
+        }
+        inherited |= parent.raw.flags & INODE_HAS_OPTIONS;
         let raw = crate::inode::InodeV3Raw {
             journal_seq: self.journal_seq,
             hash_seed: crate::siphash::siphash24(now, ino, name),
@@ -915,11 +972,18 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Put `data` for inode `ino` into `t` as [`Self::layout`] says.
     /// Returns the sectors it covers, the inode's `bi_sectors`.
-    fn put_data(&mut self, ino: u64, data: &[u8], t: &mut Txn) -> Result<u64> {
+    fn put_data(
+        &mut self,
+        ino: u64,
+        raw: &crate::inode::InodeV3Raw,
+        data: &[u8],
+        t: &mut Txn,
+    ) -> Result<u64> {
         let (extents, inline) = self.layout(data.len());
         let mut sectors = 0;
         if extents > 0 {
-            sectors = self.allocate_data(ino, &data[..extents], t)?;
+            let opts = data_options(&self.sb, raw)?;
+            sectors = self.allocate_data(ino, opts, &data[..extents], t)?;
         }
         if inline > 0 {
             let block_sectors = u64::from(self.sb.block_size).max(1);
@@ -1009,8 +1073,8 @@ impl<D: BlockDevice> Writer<D> {
         t.inodes(1);
         let mut new = self.new_inode(ino, &p, at.offset, mode, kind, data.len() as u64, now, name);
         if !data.is_empty() {
-            let sectors = self.put_data(ino, data, &mut t)?;
             let mut raw = crate::inode::InodeV3Raw::parse(&new.value)?;
+            let sectors = self.put_data(ino, &raw, data, &mut t)?;
             raw.sectors = sectors;
             new.value = raw.encode();
         }
@@ -1296,7 +1360,7 @@ impl<D: BlockDevice> Writer<D> {
         let mut t = Txn::default();
         let old_extents = self.extents_of(ino)?;
         self.free_extents(ino, &old_extents, &mut t)?;
-        let sectors = self.put_data(ino, data, &mut t)?;
+        let sectors = self.put_data(ino, &i.raw, data, &mut t)?;
         let old = i.key.clone();
         i.raw.size = data.len() as u64;
         i.raw.sectors = sectors;
