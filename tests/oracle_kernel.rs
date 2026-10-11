@@ -252,6 +252,11 @@ fn a_file_this_crate_compressed_with_gzip_reads_back_through_the_kernel() {
     let r = record();
     let text = read_text("kernel.txt");
     assert_eq!(
+        r.get("written-format").map(String::as_str),
+        Some("ok"),
+        "{text}"
+    );
+    assert_eq!(
         r.get("written-seed").map(String::as_str),
         Some("ok"),
         "{text}"
