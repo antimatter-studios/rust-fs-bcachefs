@@ -1087,3 +1087,33 @@ fn writes_through_the_c_abi_are_read_by_the_reference() {
         );
     });
 }
+
+/// Reflinked files removed (#140): on a copy of the kernel image, the clone
+/// of big/random.bin is unlinked, then the original. After the first, the
+/// shared data stays, one reference fewer; after the second, it is freed.
+/// The reference checker passes the image both times, and its mount reads
+/// the original back after the clone is gone.
+#[test]
+fn reflinked_files_removed_here_pass_the_reference() {
+    let img = scratch("kernel.img", "reflink-free");
+    let (big, original) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let big = fs.lookup("/big").unwrap();
+        let original = fs.read(fs.lookup("/big/random.bin").unwrap()).unwrap();
+        (big, original)
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.unlink(big, b"random-clone.bin")
+        .unwrap_or_else(|e| panic!("unlinking the clone: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        assert!(!m.join("big/random-clone.bin").exists());
+        assert!(std::fs::read(m.join("big/random.bin")).unwrap() == original);
+    });
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.unlink(big, b"random.bin")
+        .unwrap_or_else(|e| panic!("unlinking the original: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+}
