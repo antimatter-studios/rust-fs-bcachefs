@@ -115,14 +115,23 @@ fn an_uncompressed_extent_of_2_to_the_31_sectors_is_refused_without_aborting() {
         let img = scratch("nocsum.img", "extent-2-31");
         // One with no checksum entry at all: an extent that has one is read
         // by its entry's sizes, which are bounded; one without is read by
-        // the key's own size, which is what is stretched here.
-        let k = keys(&img, btree_id::EXTENTS)
-            .into_iter()
+        // the key's own size, which is what is stretched here. And its
+        // file's last: keys sort by their end, so a stretched extent with
+        // others after it is never reached by a read of its own start.
+        let all = keys(&img, btree_id::EXTENTS);
+        let k = all
+            .iter()
             .find(|k| {
                 k.key_type == key_type::EXTENT
                     && DataExtent::from_key(k).is_ok_and(|e| e.crc.is_none())
+                    && !all.iter().any(|o| {
+                        o.pos.inode == k.pos.inode
+                            && o.key_type == key_type::EXTENT
+                            && o.pos.offset > k.pos.offset
+                    })
             })
-            .expect("nocsum has a data extent with no checksum entry");
+            .cloned()
+            .expect("nocsum has a file whose last extent has no checksum entry");
         let ino = k.pos.inode;
         let at = k.start_offset() * 512;
         // The same extent, from the same start, claiming 2^31 sectors: the
