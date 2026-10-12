@@ -9,7 +9,7 @@ vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_bcachefs
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.3.8
+  FS_CORE_REF: v0.3.11
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.4.1
 
@@ -186,6 +186,7 @@ tasks:
     desc: Formatting, clippy, the family's structural checks and the licence gate, exactly as CI runs them
     cmds:
       - bash ../rust-fs-core/scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/changelog-check.sh
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
