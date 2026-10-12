@@ -72,6 +72,14 @@ tasks:
   # and never down. FLOORS RAISED 2026-10-08 (#83) to the counts CI run
   # 37689702536 on main (dbeced4, 2026-10-07) executed: unit 34, oracle 62,
   # vm 105, coverage 81.
+  # BUDGETS SIZED FOR A MERGE QUEUE GROUP (#130): a group runs several pull
+  # requests' tests in one tier, so each growing tier is about 30% over its
+  # largest measurement, from CI run 38162167866 on main (2026-10-11):
+  # oracle 321 lines / 14,724 bytes -> 420 / 20,000; vm 551 / 26,765 ->
+  # 720 / 35,000; cli 21 / 842 -> 28 / 1,100; coverage 355 / 19,785 ->
+  # 470 / 40,000. unit (76 / 4,147) and scripts (4 / 260) were already
+  # well inside theirs. Raise a row with a measurement, never per pull
+  # request: two pull requests editing one budget line conflict in the queue.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
@@ -99,7 +107,7 @@ tasks:
       # passing (#131), and a merge queue group that moves the lockfile would
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 400 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 420 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
   test:scripts:
@@ -144,7 +152,7 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 640 32000 -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 720 35000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 105'
@@ -164,7 +172,7 @@ tasks:
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 24 1000 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 28 1100 -- scripts/test-cli.sh'
       - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3090'
 
   test:
@@ -227,7 +235,7 @@ tasks:
     cmds:
       # Raised with the oracle tier's budget (2026-10-07): the same nine new
       # test binaries print here too.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 450 40000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 470 40000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 81'
 
   check:semver:
