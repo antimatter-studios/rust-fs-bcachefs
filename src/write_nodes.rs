@@ -86,7 +86,8 @@ impl<D: BlockDevice> Writer<D> {
         let csum_type = (crate::util::le32(&tmpl, 136 + 16) & 0xf) as u8;
         let version = crate::util::le16(&tmpl, 136 + 20);
 
-        let bucket = self.take_buckets(1, t)?[0];
+        // A node may use the buckets data leaves free for it (NODE_RESERVE).
+        let bucket = self.take_buckets(1, 0, t)?[0];
         let gen = u64::from(self.bucket_gen(bucket)?);
         let seq =
             crate::siphash::siphash24(self.journal_seq, bucket, &min.offset.to_le_bytes()) | 1;

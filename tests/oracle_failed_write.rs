@@ -40,7 +40,12 @@ fn a_write_refused_for_space_leaves_the_file_unchanged() {
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     let mut made = 0;
     while w
-        .create_file(ROOT_INO, format!("fill-{made}").as_bytes(), &[7u8; 9000], 0o644)
+        .create_file(
+            ROOT_INO,
+            format!("fill-{made}").as_bytes(),
+            &[7u8; 9000],
+            0o644,
+        )
         .is_ok()
     {
         made += 1;
@@ -71,7 +76,10 @@ fn a_write_refused_for_space_leaves_the_file_unchanged() {
             let mut want = before.clone();
             want.truncate(before.len() - 1);
             want.extend_from_slice(&[0xAB; 11]);
-            assert_eq!(after, want, "the write succeeded but did not write what it was given");
+            assert_eq!(
+                after, want,
+                "the write succeeded but did not write what it was given"
+            );
         }
     }
 }

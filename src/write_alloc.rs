@@ -82,6 +82,15 @@ pub(super) struct Planned {
     pub gen: u8,
 }
 
+/// Buckets data may not take: they are kept for the btree nodes a commit
+/// writes (#168). A commit writes each btree's change to disk as it goes, so
+/// a node split that finds no bucket after the extents btree has been written
+/// left a write that returned an error but had changed the file. A data write
+/// that would leave fewer is refused before anything is written. 32 is about
+/// 1.6% of every fixture's 2048 buckets, and more than the nodes of every
+/// btree one transaction touches splitting at once.
+pub(super) const NODE_RESERVE: u64 = 32;
+
 impl<D: BlockDevice> Writer<D> {
     pub(super) fn bucket_sectors(&self) -> Result<u64> {
         let members = self.sb.members()?;
@@ -92,14 +101,32 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     /// Take `n` whole free buckets, lowest first, from the freespace btree's
-    /// runs (keys of type `set` at `dev:end`, `size` buckets long, S8).
-    /// Returns the buckets and the keys that shrink the runs.
-    pub(super) fn take_buckets(&mut self, n: u64, t: &mut Txn) -> Result<Vec<u64>> {
+    /// runs (keys of type `set` at `dev:end`, `size` buckets long, S8),
+    /// leaving at least `keep` free after them. Returns the buckets and the
+    /// keys that shrink the runs. A shortfall is refused before anything is
+    /// recorded in `t`.
+    pub(super) fn take_buckets(&mut self, n: u64, keep: u64, t: &mut Txn) -> Result<Vec<u64>> {
         let runs: Vec<Bkey> = self
             .keys(aids::FREESPACE)?
             .into_iter()
             .filter(|k| k.key_type == aids::SET && k.pos.inode == 0)
             .collect();
+        let mut free = 0u64;
+        for run in &runs {
+            let end = run.pos.offset;
+            let start = end.saturating_sub(u64::from(run.size));
+            free += (start..end).filter(|b| !self.reserved.contains(b)).count() as u64;
+        }
+        if free < n.saturating_add(keep) {
+            return Err(Error::Unsupported(if keep == 0 {
+                format!("{n} free buckets are needed and only {free} are free")
+            } else {
+                format!(
+                    "{n} free buckets are needed and only {free} are free, of which {keep} \
+                     are kept for btree nodes"
+                )
+            }));
+        }
         // Buckets with an alloc key of any data type but free (byte 6 of
         // the second word, 0) are not free, whatever freespace says.
         let used: std::collections::BTreeSet<u64> = self
@@ -326,7 +353,9 @@ impl<D: BlockDevice> Writer<D> {
         if !disk_sectors.is_multiple_of(bucket) && self.root(aids::LRU).is_err() {
             self.create_root(aids::LRU, t)?;
         }
-        let buckets = self.take_buckets(data_buckets, t)?;
+        // Data leaves NODE_RESERVE buckets free, so the btree nodes this
+        // transaction rewrites always have room (#168).
+        let buckets = self.take_buckets(data_buckets, NODE_RESERVE, t)?;
         let clock = self.write_clock()?;
         let mut plan = Vec::new();
         for (p, &(i, off)) in pieces.iter().zip(&layout) {
