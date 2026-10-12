@@ -12,6 +12,7 @@ mod common;
 use common::fixture;
 use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
 use fs_bcachefs::btree::{self, btree_id};
+use fs_bcachefs::extent::DataExtent;
 use fs_bcachefs::inode::{InodeV3Raw, ROOT_INO};
 use fs_bcachefs::superblock::Superblock;
 use fs_bcachefs::write::Writer;
@@ -112,10 +113,16 @@ fn an_uncompressed_extent_of_2_to_the_31_sectors_is_refused_without_aborting() {
         // nocsum's extents carry no checksum entry, so a read takes the
         // extent's own size as the number of sectors to read.
         let img = scratch("nocsum.img", "extent-2-31");
+        // One with no checksum entry at all: an extent that has one is read
+        // by its entry's sizes, which are bounded; one without is read by
+        // the key's own size, which is what is stretched here.
         let k = keys(&img, btree_id::EXTENTS)
             .into_iter()
-            .find(|k| k.key_type == key_type::EXTENT)
-            .expect("nocsum has a data extent");
+            .find(|k| {
+                k.key_type == key_type::EXTENT
+                    && DataExtent::from_key(k).is_ok_and(|e| e.crc.is_none())
+            })
+            .expect("nocsum has a data extent with no checksum entry");
         let ino = k.pos.inode;
         let at = k.start_offset() * 512;
         // The same extent, from the same start, claiming 2^31 sectors: the
