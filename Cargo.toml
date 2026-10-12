@@ -58,6 +58,9 @@ clap = { version = "4.5", optional = true, default-features = false, features = 
 # Test-only: file contents are compared with the SHA-256 the reference
 # tools' guest computed. MIT OR Apache-2.0.
 sha2 = "0.10"
+# Test-only: the platform's errno numbers, which the C ABI's refusals are
+# compared with. MIT OR Apache-2.0.
+libc = "0.2"
 
 [profile.release]
 lto = true

@@ -1,6 +1,7 @@
 //! The C ABI's writes (#103), called as a C caller would: every operation
 //! on a copy of the write study's base image, read back here; and the
-//! refusals, each with its errno. The reference checker's and mount's
+//! refusals, each with its errno: the platform's own number for it, which
+//! is what a C caller compares with. The reference checker's and mount's
 //! verdict on the same calls is in tests/write_oracle.rs.
 #![cfg(feature = "write")]
 
@@ -144,19 +145,27 @@ fn refusals_come_back_as_negative_errnos() {
     unsafe {
         assert_eq!(
             fs_bcachefs_unlink(fs, c("/d/nothing-here").as_ptr()),
-            -2,
+            -libc::ENOENT,
             "ENOENT"
         );
         assert_eq!(
             fs_bcachefs_mkdir(fs, c("/no/such/dir").as_ptr(), 0o755),
-            -2,
+            -libc::ENOENT,
             "ENOENT"
         );
-        assert_eq!(fs_bcachefs_rmdir(fs, c("/d").as_ptr()), -39, "ENOTEMPTY");
-        assert_eq!(fs_bcachefs_unlink(fs, std::ptr::null()), -22, "EINVAL");
+        assert_eq!(
+            fs_bcachefs_rmdir(fs, c("/d").as_ptr()),
+            -libc::ENOTEMPTY,
+            "ENOTEMPTY"
+        );
+        assert_eq!(
+            fs_bcachefs_unlink(fs, std::ptr::null()),
+            -libc::EINVAL,
+            "EINVAL"
+        );
         assert_eq!(
             fs_bcachefs_mkdir(std::ptr::null_mut(), c("/x").as_ptr(), 0o755),
-            -22,
+            -libc::EINVAL,
             "EINVAL"
         );
         fs_bcachefs_rw_close(fs);
