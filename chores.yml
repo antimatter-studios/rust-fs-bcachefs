@@ -199,6 +199,8 @@ tasks:
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
       - cargo clippy --locked --all-targets --features cli,write -- -D warnings
+      # Every crate the shipped artifacts link has its notice (#155).
+      - python3 scripts/third-party-notices.py check
       # The licence gate: every crate in the graph is permissive (deny.toml).
       - scripts/licenses.sh
       # The fuzz workspace builds from its own lockfile (#148). It depends on
