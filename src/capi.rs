@@ -1,6 +1,7 @@
 //! The C ABI: mount an image read-only, stat a path, list a directory,
 //! read a file. Every entry point catches panics; a failure returns -1 (or
-//! NULL) and leaves its reason in `fs_core_last_error_message()`.
+//! NULL) and leaves its reason in `fs_core_last_error_message()` and its
+//! errno, the platform's number, in `fs_bcachefs_last_errno()`.
 //! `include/fs_bcachefs.h` is the contract.
 
 use std::ffi::{c_char, c_int, c_void, CStr};
@@ -9,7 +10,71 @@ use std::sync::Arc;
 use fs_core::ffi::{ffi_guard_or, set_last_error, FsCoreDevice};
 use fs_core::{BlockDevice, FileDevice};
 
-use crate::Filesystem;
+use crate::{Error, Filesystem};
+
+thread_local! {
+    /// The errno of this thread's most recent failure.
+    static LAST_ERRNO: std::cell::Cell<c_int> = const { std::cell::Cell::new(0) };
+}
+
+/// The errno a missing extended attribute is: ENOATTR where the platform
+/// has one (macOS), ENODATA where that is its name (Linux).
+#[cfg(target_vendor = "apple")]
+pub(crate) const ENOATTR: c_int = libc::ENOATTR;
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) const ENOATTR: c_int = libc::ENODATA;
+
+/// Record a failure: `msg` for `fs_bcachefs_last_error`, `errno` for
+/// `fs_bcachefs_last_errno`.
+pub(crate) fn fail_with(errno: c_int, msg: impl Into<String>) {
+    set_last_error(msg);
+    LAST_ERRNO.with(|e| e.set(errno));
+}
+
+/// The errno a reader's error is: ENOENT for a path or key that is not
+/// there, ENOTSUP for something this driver does not read, EIO for the
+/// rest (a device failure, a bad checksum, a corrupt structure).
+pub(crate) fn read_errno(e: &Error) -> c_int {
+    match e {
+        Error::NotFound(_) => libc::ENOENT,
+        Error::Unsupported(_) => libc::ENOTSUP,
+        _ => libc::EIO,
+    }
+}
+
+/// Record a reader's error.
+fn fail(e: &Error) {
+    fail_with(read_errno(e), e.to_string());
+}
+
+/// Record a device's error: the operating system's own errno where it
+/// gave one (ENOENT for an image that is not there), EIO otherwise.
+pub(crate) fn fail_device(e: &fs_core::Error) {
+    let errno = match e {
+        fs_core::Error::Io(io) => io.raw_os_error().unwrap_or(libc::EIO),
+        _ => libc::EIO,
+    };
+    fail_with(errno, e.to_string());
+}
+
+/// `ffi_guard_or`, with the errno set to EIO before `f` runs: a failure
+/// that names no errno of its own, a caught panic among them, reads as an
+/// I/O error rather than as whatever an earlier call left.
+pub(crate) fn guard<T>(default: T, f: impl FnOnce() -> T) -> T {
+    ffi_guard_or(default, || {
+        LAST_ERRNO.with(|e| e.set(libc::EIO));
+        f()
+    })
+}
+
+/// The errno of this thread's most recent failed call, read or write, as
+/// the platform numbers it: ENOENT, ENOTDIR, EINVAL, ENOTSUP, ENOSPC,
+/// ENOTEMPTY, EEXIST, ERANGE, ENOATTR (ENODATA on Linux) or EIO. Only
+/// meaningful after a call has failed.
+#[no_mangle]
+pub extern "C" fn fs_bcachefs_last_errno() -> c_int {
+    LAST_ERRNO.with(|e| e.get())
+}
 
 /// An open, read-only filesystem.
 pub struct fs_bcachefs_fs {
@@ -46,13 +111,13 @@ pub type fs_bcachefs_dirent_cb = Option<
 
 unsafe fn cstr<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
     if p.is_null() {
-        set_last_error(format!("{what} is NULL"));
+        fail_with(libc::EINVAL, format!("{what} is NULL"));
         return None;
     }
     match unsafe { CStr::from_ptr(p) }.to_str() {
         Ok(s) => Some(s),
         Err(_) => {
-            set_last_error(format!("{what} is not UTF-8"));
+            fail_with(libc::EINVAL, format!("{what} is not UTF-8"));
             None
         }
     }
@@ -64,14 +129,14 @@ unsafe fn cstr<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
 /// `path` must be NULL or a NUL-terminated string.
 #[no_mangle]
 pub unsafe extern "C" fn fs_bcachefs_mount(path: *const c_char) -> *mut fs_bcachefs_fs {
-    ffi_guard_or(std::ptr::null_mut(), || {
+    guard(std::ptr::null_mut(), || {
         let Some(path) = (unsafe { cstr(path, "path") }) else {
             return std::ptr::null_mut();
         };
         let dev = match FileDevice::open(path) {
             Ok(d) => d,
             Err(e) => {
-                set_last_error(e.to_string());
+                fail_device(&e);
                 return std::ptr::null_mut();
             }
         };
@@ -80,7 +145,7 @@ pub unsafe extern "C" fn fs_bcachefs_mount(path: *const c_char) -> *mut fs_bcach
                 fs: std::panic::AssertUnwindSafe(fs),
             })),
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 std::ptr::null_mut()
             }
         }
@@ -109,9 +174,9 @@ pub unsafe extern "C" fn fs_bcachefs_stat(
     path: *const c_char,
     out: *mut fs_bcachefs_attr_t,
 ) -> c_int {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() || out.is_null() {
-            set_last_error("fs or out is NULL");
+            fail_with(libc::EINVAL, "fs or out is NULL");
             return -1;
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -134,7 +199,7 @@ pub unsafe extern "C" fn fs_bcachefs_stat(
                 0
             }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -153,9 +218,9 @@ pub unsafe extern "C" fn fs_bcachefs_readdir(
     cb: fs_bcachefs_dirent_cb,
     ctx: *mut c_void,
 ) -> c_int {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         let (false, Some(cb)) = (fs.is_null(), cb) else {
-            set_last_error("fs or cb is NULL");
+            fail_with(libc::EINVAL, "fs or cb is NULL");
             return -1;
         };
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -172,7 +237,7 @@ pub unsafe extern "C" fn fs_bcachefs_readdir(
                 0
             }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -195,9 +260,9 @@ pub unsafe extern "C" fn fs_bcachefs_read_file(
     offset: u64,
     length: u64,
 ) -> i64 {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() || buf.is_null() {
-            set_last_error("fs or buf is NULL");
+            fail_with(libc::EINVAL, "fs or buf is NULL");
             return -1;
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -216,7 +281,7 @@ pub unsafe extern "C" fn fs_bcachefs_read_file(
                 data.len() as i64
             }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -245,9 +310,9 @@ pub extern "C" fn fs_bcachefs_last_error() -> *const c_char {
 pub unsafe extern "C" fn fs_bcachefs_mount_with_fs_core_device(
     dev: *const FsCoreDevice,
 ) -> *mut fs_bcachefs_fs {
-    ffi_guard_or(std::ptr::null_mut(), || {
+    guard(std::ptr::null_mut(), || {
         if dev.is_null() {
-            set_last_error("dev is NULL");
+            fail_with(libc::EINVAL, "dev is NULL");
             return std::ptr::null_mut();
         }
         let inner = Arc::clone(unsafe { &*dev }.inner());
@@ -256,7 +321,7 @@ pub unsafe extern "C" fn fs_bcachefs_mount_with_fs_core_device(
                 fs: std::panic::AssertUnwindSafe(fs),
             })),
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 std::ptr::null_mut()
             }
         }
@@ -305,9 +370,9 @@ pub unsafe extern "C" fn fs_bcachefs_get_volume_info(
     fs: *mut fs_bcachefs_fs,
     out: *mut fs_bcachefs_volume_info_t,
 ) -> c_int {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() || out.is_null() {
-            set_last_error("fs or out is NULL");
+            fail_with(libc::EINVAL, "fs or out is NULL");
             return -1;
         }
         let sb = unsafe { &*fs }.fs.superblock();
@@ -326,6 +391,125 @@ pub unsafe extern "C" fn fs_bcachefs_get_volume_info(
         }
         unsafe { *out = v };
         0
+    })
+}
+
+/// What `fs_bcachefs_stat_times` reports: each time as seconds and
+/// nanoseconds since the epoch.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct fs_bcachefs_times_t {
+    pub atime_sec: i64,
+    pub atime_nsec: u32,
+    pub mtime_sec: i64,
+    pub mtime_nsec: u32,
+    pub ctime_sec: i64,
+    pub ctime_nsec: u32,
+}
+
+/// An inode time as seconds and nanoseconds since the epoch: the stored
+/// value counts units of the superblock's time precision (nanoseconds)
+/// from its time base (`time_base_lo`, nanoseconds since the epoch):
+/// docs/clean-room.md, "Creating a file".
+fn epoch_time(sb: &crate::superblock::Superblock, raw: u64) -> (i64, u32) {
+    let ns = u128::from(sb.time_base_lo) + u128::from(raw) * u128::from(sb.time_precision.max(1));
+    let sec = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
+    (sec, (ns % 1_000_000_000) as u32)
+}
+
+/// Fill `out` with the access, modification and change times of the path
+/// (a symlink is not followed). 0 or -1.
+///
+/// # Safety
+/// `fs` a live handle or NULL; `path` NUL-terminated or NULL; `out`
+/// writable or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn fs_bcachefs_stat_times(
+    fs: *mut fs_bcachefs_fs,
+    path: *const c_char,
+    out: *mut fs_bcachefs_times_t,
+) -> c_int {
+    guard(-1, || {
+        if fs.is_null() || out.is_null() {
+            fail_with(libc::EINVAL, "fs or out is NULL");
+            return -1;
+        }
+        let Some(path) = (unsafe { cstr(path, "path") }) else {
+            return -1;
+        };
+        let fs = &unsafe { &*fs }.fs;
+        match fs.lookup(path).and_then(|ino| fs.inode(ino)) {
+            Ok(i) => {
+                let sb = fs.superblock();
+                let (atime_sec, atime_nsec) = epoch_time(sb, i.atime);
+                let (mtime_sec, mtime_nsec) = epoch_time(sb, i.mtime);
+                let (ctime_sec, ctime_nsec) = epoch_time(sb, i.ctime);
+                unsafe {
+                    *out = fs_bcachefs_times_t {
+                        atime_sec,
+                        atime_nsec,
+                        mtime_sec,
+                        mtime_nsec,
+                        ctime_sec,
+                        ctime_nsec,
+                    }
+                };
+                0
+            }
+            Err(e) => {
+                fail(&e);
+                -1
+            }
+        }
+    })
+}
+
+/// What `fs_bcachefs_statfs` reports.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct fs_bcachefs_statfs_t {
+    /// The filesystem's block size, in bytes.
+    pub block_size: u32,
+    /// The allocation unit, in bytes: space is taken a bucket at a time.
+    pub bucket_size: u32,
+    /// The device's buckets from its first usable one on, in bytes.
+    pub total_bytes: u64,
+    /// The buckets the freespace btree holds, in bytes.
+    pub free_bytes: u64,
+}
+
+/// Fill `out` with the volume's capacity and free space. 0 or -1.
+///
+/// # Safety
+/// `fs` a live handle or NULL; `out` writable or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn fs_bcachefs_statfs(
+    fs: *mut fs_bcachefs_fs,
+    out: *mut fs_bcachefs_statfs_t,
+) -> c_int {
+    guard(-1, || {
+        if fs.is_null() || out.is_null() {
+            fail_with(libc::EINVAL, "fs or out is NULL");
+            return -1;
+        }
+        let fs = &unsafe { &*fs }.fs;
+        match fs.usage() {
+            Ok(u) => {
+                unsafe {
+                    *out = fs_bcachefs_statfs_t {
+                        block_size: u32::from(fs.superblock().block_size) * 512,
+                        bucket_size: u32::try_from(u.bucket_bytes).unwrap_or(u32::MAX),
+                        total_bytes: u.total_bytes,
+                        free_bytes: u.free_bytes,
+                    }
+                };
+                0
+            }
+            Err(e) => {
+                fail(&e);
+                -1
+            }
+        }
     })
 }
 
@@ -351,9 +535,9 @@ pub unsafe extern "C" fn fs_bcachefs_stat_ino(
     ino: u64,
     out: *mut fs_bcachefs_attr_t,
 ) -> c_int {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() || out.is_null() {
-            set_last_error("fs or out is NULL");
+            fail_with(libc::EINVAL, "fs or out is NULL");
             return -1;
         }
         match unsafe { &*fs }.fs.inode(ino) {
@@ -362,7 +546,7 @@ pub unsafe extern "C" fn fs_bcachefs_stat_ino(
                 0
             }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -398,9 +582,9 @@ pub unsafe extern "C" fn fs_bcachefs_dir_open(
     fs: *mut fs_bcachefs_fs,
     path: *const c_char,
 ) -> *mut fs_bcachefs_dir_iter {
-    ffi_guard_or(std::ptr::null_mut(), || {
+    guard(std::ptr::null_mut(), || {
         if fs.is_null() {
-            set_last_error("fs is NULL");
+            fail_with(libc::EINVAL, "fs is NULL");
             return std::ptr::null_mut();
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -419,7 +603,7 @@ pub unsafe extern "C" fn fs_bcachefs_dir_open(
                 },
             })),
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 std::ptr::null_mut()
             }
         }
@@ -434,7 +618,7 @@ pub unsafe extern "C" fn fs_bcachefs_dir_open(
 pub unsafe extern "C" fn fs_bcachefs_dir_next(
     it: *mut fs_bcachefs_dir_iter,
 ) -> *const fs_bcachefs_dirent_t {
-    ffi_guard_or(std::ptr::null(), || {
+    guard(std::ptr::null(), || {
         if it.is_null() {
             return std::ptr::null();
         }
@@ -473,10 +657,10 @@ unsafe fn copy_out(src: &[u8], buf: *mut c_void, len: u64) -> i64 {
         return src.len() as i64;
     }
     if (len as usize) < src.len() {
-        set_last_error(format!(
-            "the buffer holds {len} bytes; {} are needed",
-            src.len()
-        ));
+        fail_with(
+            libc::ERANGE,
+            format!("the buffer holds {len} bytes; {} are needed", src.len()),
+        );
         return -1;
     }
     unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), buf.cast::<u8>(), src.len()) };
@@ -496,9 +680,9 @@ pub unsafe extern "C" fn fs_bcachefs_readlink(
     buf: *mut c_void,
     len: u64,
 ) -> i64 {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() {
-            set_last_error("fs is NULL");
+            fail_with(libc::EINVAL, "fs is NULL");
             return -1;
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -507,14 +691,19 @@ pub unsafe extern "C" fn fs_bcachefs_readlink(
         let fs = &unsafe { &*fs }.fs;
         let target = fs.lookup(path).and_then(|ino| {
             if !fs.inode(ino)?.is_symlink() {
-                return Err(crate::Error::Corrupt(format!("{path} is not a symlink")));
+                return Ok(None);
             }
-            fs.read(ino)
+            fs.read(ino).map(Some)
         });
         match target {
-            Ok(t) => unsafe { copy_out(&t, buf, len) },
+            Ok(Some(t)) => unsafe { copy_out(&t, buf, len) },
+            // readlink(2)'s answer for a path that is not a symlink.
+            Ok(None) => {
+                fail_with(libc::EINVAL, format!("{path} is not a symlink"));
+                -1
+            }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -535,9 +724,9 @@ pub unsafe extern "C" fn fs_bcachefs_listxattr(
     buf: *mut c_void,
     len: u64,
 ) -> i64 {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() {
-            set_last_error("fs is NULL");
+            fail_with(libc::EINVAL, "fs is NULL");
             return -1;
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -554,7 +743,7 @@ pub unsafe extern "C" fn fs_bcachefs_listxattr(
                 unsafe { copy_out(&names, buf, len) }
             }
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }
@@ -576,9 +765,9 @@ pub unsafe extern "C" fn fs_bcachefs_getxattr(
     buf: *mut c_void,
     len: u64,
 ) -> i64 {
-    ffi_guard_or(-1, || {
+    guard(-1, || {
         if fs.is_null() || name.is_null() {
-            set_last_error("fs or name is NULL");
+            fail_with(libc::EINVAL, "fs or name is NULL");
             return -1;
         }
         let Some(path) = (unsafe { cstr(path, "path") }) else {
@@ -590,15 +779,15 @@ pub unsafe extern "C" fn fs_bcachefs_getxattr(
             Ok(list) => match list.iter().find(|x| x.name == want) {
                 Some(x) => unsafe { copy_out(&x.value, buf, len) },
                 None => {
-                    set_last_error(format!(
-                        "{path} has no attribute {}",
-                        String::from_utf8_lossy(want)
-                    ));
+                    fail_with(
+                        ENOATTR,
+                        format!("{path} has no attribute {}", String::from_utf8_lossy(want)),
+                    );
                     -1
                 }
             },
             Err(e) => {
-                set_last_error(e.to_string());
+                fail(&e);
                 -1
             }
         }

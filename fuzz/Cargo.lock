@@ -128,6 +128,7 @@ version = "0.4.0"
 dependencies = [
  "caseless",
  "crc32c",
+ "libc",
  "lz4_flex",
  "miniz_oxide",
  "rust-fs-core",

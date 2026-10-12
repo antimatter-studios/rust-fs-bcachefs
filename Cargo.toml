@@ -51,6 +51,10 @@ caseless = "0.2"
 unicode-normalization = "0.1"
 # Writing lz4-compressed extents (#105): an LZ4 block encoder. MIT.
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode"] }
+# The platform's errno numbers, which the C ABI reports failures with: a C
+# caller compares them with its own constants, and Linux's and macOS's
+# differ (ENOTEMPTY is 39 on one, 66 on the other). MIT OR Apache-2.0.
+libc = "0.2"
 # The command-line tools' argument parser, behind `cli`. MIT OR Apache-2.0.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 
