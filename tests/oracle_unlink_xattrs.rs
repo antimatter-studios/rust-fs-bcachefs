@@ -56,7 +56,10 @@ fn unlinking_a_file_removes_its_extended_attributes() {
     assert!(fs.lookup("/with-xattrs").is_err(), "the file is gone");
     let left: Vec<_> = xattrs_of(&img, ino)
         .into_iter()
-        .filter(|k| k.key_type != fs_bcachefs::bkey::key_type::DELETED && k.key_type != fs_bcachefs::bkey::key_type::WHITEOUT)
+        .filter(|k| {
+            k.key_type != fs_bcachefs::bkey::key_type::DELETED
+                && k.key_type != fs_bcachefs::bkey::key_type::WHITEOUT
+        })
         .collect();
     assert!(
         left.is_empty(),

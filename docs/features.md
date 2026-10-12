@@ -77,7 +77,7 @@ reads back byte for byte through the reference implementation's mount
 |---|---|---|---|---|
 | Create a file in an existing directory | Experimental | Unreleased (#29) | | `write_oracle.rs` |
 | A create while the inode cursor's next number is in use: the next free number is taken | Experimental | Unreleased (#117) | how the reference picks one is unobserved (#107) | `oracle_write_local.rs`, `write_oracle.rs` |
-| mkdir, unlink, rmdir, rename | Experimental | Unreleased (#30) | | `write_oracle.rs` |
+| mkdir, unlink, rmdir, rename; the last link's removal takes the file's extended attributes with it | Experimental | Unreleased (#30, #178) | #161 | `write_oracle.rs`, `oracle_unlink_xattrs.rs` |
 | rename over an existing file, and a directory moved to another directory | Experimental | Unreleased (#118) | renaming over a directory is refused (#104) | `oracle_write_local.rs`, `write_oracle.rs` |
 | File data inline or in extents, as the reference lays it out | Experimental | Unreleased (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
 | Writing at an offset, appending, truncating to any size (the file is rewritten whole) | Experimental | Unreleased (#120) | | `oracle_write_local.rs`, `write_oracle.rs` |
