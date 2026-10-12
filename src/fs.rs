@@ -532,6 +532,17 @@ impl<D: BlockRead> Filesystem<D> {
     /// The whole contents of a file as its snapshot sees it.
     pub fn read_at(&self, n: Node) -> Result<Vec<u8>> {
         let size = self.inode_at(n)?.size;
+        // Read whole, a file is held whole. One larger than its device can
+        // only be mostly holes, so reading it whole is holding zeros, and a
+        // crafted size makes it up to 2^64 bytes. Refusing the allocation
+        // is not enough: Linux and macOS overcommit, and a process is killed
+        // when the zeros are written (#149). Such a file is read in ranges.
+        if size > self.dev.size_bytes() {
+            return Err(Error::Unsupported(format!(
+                "inode {}: {size} bytes is more than the device holds; read it with read_range",
+                n.ino
+            )));
+        }
         let len = usize::try_from(size)
             .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
         self.read_range_at(n, 0, len)
@@ -558,7 +569,9 @@ impl<D: BlockRead> Filesystem<D> {
             return Ok(Vec::new());
         }
         let end = size.min(offset.saturating_add(len as u64));
-        let mut out = vec![0u8; (end - offset) as usize];
+        let n = usize::try_from(end - offset)
+            .map_err(|_| Error::Unsupported(format!("inode {ino}: file larger than memory")))?;
+        let mut out = crate::util::zeroed(n, format_args!("inode {ino}"))?;
         // An extent key sits at its END (S1 11.4), so the first key that can
         // cover byte `offset` is the first whose position is past its sector.
         let mut c = self.cursor(btree_id::EXTENTS)?;

@@ -1302,9 +1302,17 @@ impl<D: BlockDevice> Writer<D> {
     /// decompressed as the reader does (`fs::extent_bytes`). Holes and
     /// reservations read as zeros.
     fn contents(&self, ino: u64) -> Result<Vec<u8>> {
-        let size = usize::try_from(self.inode(ino)?.raw.size)
+        let claimed = self.inode(ino)?.raw.size;
+        // The whole file is held to be rewritten; one larger than the device
+        // is refused, as `Filesystem::read_at` refuses it (#149).
+        if claimed > self.dev.size_bytes() {
+            return Err(Error::Unsupported(format!(
+                "inode {ino}: {claimed} bytes is more than the device holds"
+            )));
+        }
+        let size = usize::try_from(claimed)
             .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
-        let mut out = vec![0u8; size];
+        let mut out = crate::util::zeroed(size, format_args!("inode {ino}"))?;
         for k in self.extents_of(ino)? {
             let start = k.start_offset().saturating_mul(512);
             match k.key_type {
