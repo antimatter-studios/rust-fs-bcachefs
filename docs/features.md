@@ -64,6 +64,7 @@ States:
 |---|---|---|---|---|
 | `fsck.bcachefs`, check-only: nodes, key order, dirents, link counts, extents, data checksums; fsck(8) exit status | Supported | Unreleased (#39) | | `check_oracle.rs`, `oracle_check.rs` |
 | Damaged superblock copies reported | Supported | Unreleased (#66) | | `tests/cli/test-fsck.sh` |
+| An extent or a size near the top of its range judged without overflowing: an extent far past the end of its file is reported | Supported | Unreleased (#175) | #150 | `oracle_check_overflow.rs` |
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | Unreleased (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | Repair | Not supported | | | |
 

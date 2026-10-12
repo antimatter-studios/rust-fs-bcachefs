@@ -444,7 +444,9 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             r.add("extent_without_inode", format!("extent {}", k.pos));
             continue;
         };
-        if k.start_offset() * 512 >= i.size.div_ceil(512) * 512 {
+        // In sectors: in bytes an extent starting 2^55 sectors in overflows
+        // (#150), and a wrapped product would judge it inside its file.
+        if k.start_offset() >= i.size.div_ceil(512) {
             r.add(
                 "extent_past_end_of_inode",
                 format!("extent {} of inode {} (size {})", k.pos, i.ino, i.size),
