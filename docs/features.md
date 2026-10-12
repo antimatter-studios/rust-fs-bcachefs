@@ -53,6 +53,7 @@ States:
 | Encrypted filesystems | Refused | 0.4.0 (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | 0.4.0 (#19) | | `oracle_refused.rs` |
 | A key at a snapshot the snapshots btree does not have, overlapping extents, unknown checksum types | Refused | 0.4.0 (#65) | | `oracle_refused_local.rs` |
+| A file whose inode claims more than memory can hold, refused with an error rather than a panic or an abort; a symlink target over 4096 bytes | Refused | Unreleased (#176) | #149 | `oracle_crafted_inode_size.rs` |
 | Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | 0.4.0 (#129) | #12; the writer writes the root subvolume only (#138) | `oracle_kernel.rs` |
 | Reflinked extents (`reflink_p` into the reflink btree): read, checked, and freed by the writer one reference at a time | Supported | 0.4.0 (#128, #144, #145) | #7, #140; a pointer covering part of an indirect extent is refused (none seen) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs`, `oracle_write_local.rs`, `write_oracle.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | 0.4.0 (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |

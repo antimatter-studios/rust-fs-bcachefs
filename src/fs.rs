@@ -558,7 +558,9 @@ impl<D: BlockRead> Filesystem<D> {
             return Ok(Vec::new());
         }
         let end = size.min(offset.saturating_add(len as u64));
-        let mut out = vec![0u8; (end - offset) as usize];
+        let n = usize::try_from(end - offset)
+            .map_err(|_| Error::Unsupported(format!("inode {ino}: file larger than memory")))?;
+        let mut out = crate::util::zeroed(n, format_args!("inode {ino}"))?;
         // An extent key sits at its END (S1 11.4), so the first key that can
         // cover byte `offset` is the first whose position is past its sector.
         let mut c = self.cursor(btree_id::EXTENTS)?;

@@ -690,8 +690,17 @@ pub unsafe extern "C" fn fs_bcachefs_readlink(
         };
         let fs = &unsafe { &*fs }.fs;
         let target = fs.lookup(path).and_then(|ino| {
-            if !fs.inode(ino)?.is_symlink() {
+            let i = fs.inode(ino)?;
+            if !i.is_symlink() {
                 return Ok(None);
+            }
+            // A target is a path, at most a page; a larger size is damage,
+            // and reading it whole would size a buffer from it (#149).
+            if i.size > 4096 {
+                return Err(crate::Error::Corrupt(format!(
+                    "{path}: a symlink target of {} bytes",
+                    i.size
+                )));
             }
             fs.read(ino).map(Some)
         });

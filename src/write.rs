@@ -1304,7 +1304,7 @@ impl<D: BlockDevice> Writer<D> {
     fn contents(&self, ino: u64) -> Result<Vec<u8>> {
         let size = usize::try_from(self.inode(ino)?.raw.size)
             .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
-        let mut out = vec![0u8; size];
+        let mut out = crate::util::zeroed(size, format_args!("inode {ino}"))?;
         for k in self.extents_of(ino)? {
             let start = k.start_offset().saturating_mul(512);
             match k.key_type {
