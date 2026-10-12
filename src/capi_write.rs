@@ -37,9 +37,10 @@ use libc::{EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTEMPTY, ENOTSUP};
 /// An image open for writing.
 pub struct fs_bcachefs_rw {
     /// The device the writer writes to, which each lookup reads afresh.
-    dev: Arc<dyn BlockDevice>,
     /// An fs_core trait object does not promise unwind safety; every entry
-    /// point catches panics, as the read handle's do.
+    /// point catches panics and leaves the handle usable, so the handle
+    /// keeps promising it, as it did over a concrete file device.
+    dev: std::panic::AssertUnwindSafe<Arc<dyn BlockDevice>>,
     w: std::panic::AssertUnwindSafe<Writer<Arc<dyn BlockDevice>>>,
 }
 
@@ -83,7 +84,7 @@ unsafe fn bytes<'a>(p: *const c_void, len: u64) -> Result<&'a [u8], c_int> {
 impl fs_bcachefs_rw {
     /// The inode at an absolute path, as the device holds it now.
     fn lookup(&self, path: &str) -> Result<u64, c_int> {
-        Filesystem::open(Arc::clone(&self.dev))
+        Filesystem::open(Arc::clone(&*self.dev))
             .and_then(|fs| fs.lookup(path))
             .map_err(fail)
     }
@@ -131,7 +132,7 @@ fn open_rw(dev: Arc<dyn BlockDevice>) -> *mut fs_bcachefs_rw {
     }
     match Writer::open(Arc::clone(&dev)) {
         Ok(w) => Box::into_raw(Box::new(fs_bcachefs_rw {
-            dev,
+            dev: std::panic::AssertUnwindSafe(dev),
             w: std::panic::AssertUnwindSafe(w),
         })),
         Err(e) => {
@@ -438,5 +439,18 @@ pub unsafe extern "C" fn fs_bcachefs_removexattr(
             let ino = fs.lookup(path)?;
             fs.w.remove_xattr(ino, name.as_bytes()).map_err(fail)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The handle promises what it promised over a concrete file device:
+    /// a C caller's handle may cross a catch_unwind, and threads.
+    #[test]
+    fn the_write_handle_keeps_its_auto_traits() {
+        fn unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+        fn send_sync<T: Send + Sync>() {}
+        unwind_safe::<super::fs_bcachefs_rw>();
+        send_sync::<super::fs_bcachefs_rw>();
     }
 }
