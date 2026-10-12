@@ -201,6 +201,10 @@ tasks:
       - cargo clippy --locked --all-targets --features cli,write -- -D warnings
       # The licence gate: every crate in the graph is permissive (deny.toml).
       - scripts/licenses.sh
+      # The fuzz workspace builds from its own lockfile (#148). It depends on
+      # this crate by path, so a dependency added here changes it, and only the
+      # nightly fuzz run read it: two nights failed before anyone saw.
+      - 'cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml >/dev/null'
 
   staticlib:
     desc: Build the static library and its headers into this crate's dist/
