@@ -700,6 +700,26 @@ impl<D: BlockDevice> Writer<D> {
         Ok(out)
     }
 
+    /// Delete every key of inode `ino`'s xattr hash table, for an inode
+    /// that is going (#161): left behind, the reference checker reports each
+    /// as `key_in_missing_inode`. Whiteouts go too, and none is written,
+    /// since no entry of the table is left for a lookup to probe past.
+    fn drop_xattrs(&self, ino: u64, t: &mut Txn) -> Result<()> {
+        for k in self.keys_from(
+            XATTRS,
+            Bpos {
+                inode: ino,
+                offset: 0,
+                snapshot: 0,
+            },
+        )? {
+            if k.key_type == key_type::XATTR || k.key_type == key_type::HASH_WHITEOUT {
+                t.delete(XATTRS, &k);
+            }
+        }
+        Ok(())
+    }
+
     fn key_at(&self, id: u8, pos: Bpos) -> Result<Option<Bkey>> {
         let mut c = match self.cursor(id) {
             // A btree with no root yet holds nothing.
@@ -1155,6 +1175,7 @@ impl<D: BlockDevice> Writer<D> {
         } else {
             let extents = self.extents_of(target)?;
             self.free_extents(target, &extents, &mut t)?;
+            self.drop_xattrs(target, &mut t)?;
             t.delete(ids::INODES, &i.key);
             t.inodes(-1);
         }
@@ -1242,6 +1263,7 @@ impl<D: BlockDevice> Writer<D> {
             } else {
                 let extents = self.extents_of(ri.key.pos.offset)?;
                 self.free_extents(ri.key.pos.offset, &extents, &mut t)?;
+                self.drop_xattrs(ri.key.pos.offset, &mut t)?;
                 t.delete(ids::INODES, &ri.key);
                 t.inodes(-1);
             }
