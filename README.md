@@ -66,8 +66,11 @@ chore cli:install  # the tools, staged in tmp/cli
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).
 
-There is no release yet. What the first one will carry is under
-[Unreleased](CHANGELOG.md#unreleased) in CHANGELOG.md.
+- **[0.4.0](CHANGELOG.md#040--2026-10-12)** (2026-10-12): the first
+  release. Reads single-device, unencrypted filesystems, clean or not, with
+  their subvolumes, snapshots and reflinks; `fsck.bcachefs` checks without
+  repairing; writing, through the Rust API, the tools and the C ABI over a
+  path or an fs_core device, is experimental behind the `write` feature.
 
 ## Licence
 
