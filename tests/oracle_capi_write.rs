@@ -10,6 +10,7 @@ mod common;
 use std::ffi::{c_void, CString};
 
 use common::fixture;
+use fs_bcachefs::capi::fs_bcachefs_last_errno;
 use fs_bcachefs::capi_write::*;
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
@@ -171,5 +172,84 @@ fn refusals_come_back_as_negative_errnos() {
         fs_bcachefs_rw_close(fs);
         assert!(fs_bcachefs_mount_rw(c("/no/such/image").as_ptr()).is_null());
         fs_bcachefs_rw_close(std::ptr::null_mut());
+    }
+}
+
+/// A handle opened through an fs_core device writes as one opened by path
+/// does: the same calls read back the same, and a refusal is the same
+/// negative errno, which `fs_bcachefs_last_errno` repeats.
+#[test]
+fn a_device_handle_writes_as_a_path_handle_does() {
+    let img = scratch("device");
+    let path = c(img.to_str().unwrap());
+    let dev = unsafe { fs_core::ffi::fs_core_file_open(path.as_ptr(), true) };
+    assert!(!dev.is_null());
+    let fs = unsafe { fs_bcachefs_mount_rw_with_fs_core_device(dev) };
+    assert!(!fs.is_null());
+    let data = b"written through an fs_core device\n";
+    unsafe {
+        assert_eq!(
+            fs_bcachefs_create(
+                fs,
+                c("/d/dev-file").as_ptr(),
+                data.as_ptr() as *const c_void,
+                data.len() as u64,
+                0o644,
+            ),
+            0,
+            "create"
+        );
+        assert_eq!(
+            fs_bcachefs_mkdir(fs, c("/d/dev-dir").as_ptr(), 0o755),
+            0,
+            "mkdir"
+        );
+        assert_eq!(
+            fs_bcachefs_write_file(
+                fs,
+                c("/d/existing").as_ptr(),
+                b"rewritten\n".as_ptr() as *const c_void,
+                10,
+            ),
+            0,
+            "write_file"
+        );
+        assert_eq!(
+            fs_bcachefs_rmdir(fs, c("/d").as_ptr()),
+            -libc::ENOTEMPTY,
+            "rmdir of a directory that is not empty"
+        );
+        assert_eq!(fs_bcachefs_last_errno(), libc::ENOTEMPTY);
+        assert_eq!(
+            fs_bcachefs_unlink(fs, c("/d/nothing-here").as_ptr()),
+            -libc::ENOENT
+        );
+        assert_eq!(fs_bcachefs_last_errno(), libc::ENOENT);
+        fs_bcachefs_rw_close(fs);
+        fs_core::ffi::fs_core_device_close(dev);
+    }
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.read(fs.lookup("/d/dev-file").unwrap()).unwrap(), data);
+    assert!(fs.inode(fs.lookup("/d/dev-dir").unwrap()).unwrap().is_dir());
+    assert_eq!(
+        fs.read(fs.lookup("/d/existing").unwrap()).unwrap(),
+        b"rewritten\n"
+    );
+}
+
+/// A device that cannot be written is refused at open, with EROFS, and a
+/// NULL device with EINVAL.
+#[test]
+fn a_read_only_device_is_refused_at_open() {
+    let img = scratch("device-ro");
+    let path = c(img.to_str().unwrap());
+    let dev = unsafe { fs_core::ffi::fs_core_file_open(path.as_ptr(), false) };
+    assert!(!dev.is_null());
+    unsafe {
+        assert!(fs_bcachefs_mount_rw_with_fs_core_device(dev).is_null());
+        assert_eq!(fs_bcachefs_last_errno(), libc::EROFS);
+        fs_core::ffi::fs_core_device_close(dev);
+        assert!(fs_bcachefs_mount_rw_with_fs_core_device(std::ptr::null()).is_null());
+        assert_eq!(fs_bcachefs_last_errno(), libc::EINVAL);
     }
 }

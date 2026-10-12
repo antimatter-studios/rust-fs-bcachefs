@@ -42,6 +42,21 @@ const KEY_SNAPSHOT: u8 = 22;
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
 const MAX_SNAPSHOT_DEPTH: usize = 1024;
+/// The freespace btree (id 11) and the key type of its runs of free
+/// buckets (`set`, 25): docs/clean-room.md, "Allocating space" (S8).
+const FREESPACE: u8 = 11;
+const KEY_SET: u8 = 25;
+
+/// A device's capacity and free space, from [`Filesystem::usage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    /// The size of one bucket, the unit space is allocated in.
+    pub bucket_bytes: u64,
+    /// Every bucket from the member's first usable one on.
+    pub total_bytes: u64,
+    /// The buckets the freespace btree holds.
+    pub free_bytes: u64,
+}
 
 pub struct Filesystem<D: BlockRead> {
     dev: D,
@@ -228,6 +243,50 @@ impl<D: BlockRead> Filesystem<D> {
 
     pub fn superblock(&self) -> &Superblock {
         &self.sb
+    }
+
+    /// The device's capacity and free space, in bytes. Capacity is the
+    /// member's buckets from its first usable one on (S3: show-super's
+    /// `Buckets` and `First bucket`); free space is the buckets the
+    /// freespace btree holds, its runs being keys of type `set` at
+    /// `dev:end`, `size` buckets long, as the writer takes them. A
+    /// filesystem with no freespace btree has none free.
+    pub fn usage(&self) -> Result<Usage> {
+        let member = self
+            .sb
+            .members()?
+            .into_iter()
+            .nth(self.dev_idx as usize)
+            .ok_or_else(|| Error::Corrupt("no member entry for this device".into()))?;
+        let bucket_bytes = u64::from(member.bucket_size) * 512;
+        let buckets = member
+            .nbuckets
+            .saturating_sub(u64::from(member.first_bucket));
+        let mut free_buckets: u64 = 0;
+        match self.cursor(FREESPACE) {
+            Err(Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+            Ok(mut c) => {
+                c.seek(Bpos {
+                    inode: u64::from(self.dev_idx),
+                    offset: 0,
+                    snapshot: 0,
+                })?;
+                while let Some(k) = c.next_key()? {
+                    if k.pos.inode != u64::from(self.dev_idx) {
+                        break;
+                    }
+                    if k.key_type == KEY_SET {
+                        free_buckets = free_buckets.saturating_add(u64::from(k.size));
+                    }
+                }
+            }
+        }
+        Ok(Usage {
+            bucket_bytes,
+            total_bytes: buckets.saturating_mul(bucket_bytes),
+            free_bytes: free_buckets.min(buckets).saturating_mul(bucket_bytes),
+        })
     }
 
     fn cursor(&self, id: u8) -> Result<Cursor<'_>> {

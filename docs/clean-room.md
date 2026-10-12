@@ -378,6 +378,11 @@ by operation (positions `inode:offset:snapshot`):
   nanoseconds since the epoch; precision 1) -- the reference's create was
   5.1e9 units after the base's, five seconds later (S8); the reference
   mount reports the mtime this writer sets (checked).
+  `fs_bcachefs_stat_times` turns them into seconds since the epoch the
+  same way (`time_base_lo` plus the stored count times the precision);
+  the reference mount's own stat of a file this crate wrote agrees
+  (tests/write_oracle.rs), and every time of a fixture falls before the
+  superblock's "Time of last write" (S3, tests/oracle_capi.rs).
 - The next inode number is the `inode_alloc_cursor` key (type 35) in
   logged_ops at 1:1:0, value `(u64 0, u64 next)`; the reference advanced it
   by one per create (S8).
@@ -413,6 +418,10 @@ checker judged each attempt and named what was missing until nothing was.
 - Free space: the freespace btree (id 11) holds `set` keys (type 25) at
   `dev:end`, `size` buckets long, one per run of free buckets (S8: 0:2016
   len 1924 = buckets 92..2016). A bucket taken shrinks or removes its run.
+  `Filesystem::usage` reports these runs' total as the free space and the
+  member's buckets from `First bucket` on as the capacity; both are
+  checked against show-super and the lister's freespace listing (S3,
+  tests/oracle_capi.rs).
 - alloc_v4 (type 27, alloc btree id 4) per bucket: word 0 journal seq when
   it became non-empty, word 1 flags in byte 0 (0x23 on every bucket in use;
   bit 0 need_discard, bit 1 need_inc_gen), gen byte 4, oldest_gen byte 5,

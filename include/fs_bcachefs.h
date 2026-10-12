@@ -1,9 +1,11 @@
 /*
- * fs_bcachefs.h -- read-only C ABI of rust-fs-bcachefs (MIT).
+ * fs_bcachefs.h -- C ABI of rust-fs-bcachefs (MIT).
  *
- * Every function catches failures: one returning int or int64_t returns -1,
- * one returning a pointer returns NULL, and fs_core_last_error_message()
- * (fs_core.h) says why. Nothing here writes to the filesystem.
+ * Every function catches failures: one returning int or int64_t returns -1
+ * (the writes below: a negative errno), one returning a pointer returns
+ * NULL; fs_core_last_error_message() (fs_core.h) says why, and
+ * fs_bcachefs_last_errno() gives the errno. Nothing above the WRITING
+ * section writes to the filesystem.
  */
 #ifndef FS_BCACHEFS_H
 #define FS_BCACHEFS_H
@@ -50,6 +52,14 @@ int64_t fs_bcachefs_read_file(fs_bcachefs_fs *fs, const char *path, void *buf,
 /* The last failure on this thread, as fs_core_last_error_message(). Never NULL. */
 const char *fs_bcachefs_last_error(void);
 
+/* The errno of this thread's most recent failed call, read or write, as the
+ * platform numbers it: ENOENT (no such path), ENOTDIR, EINVAL (a NULL or
+ * malformed argument; readlink of what is not a symlink), ENOTSUP (not
+ * something this driver does), ENOSPC, ENOTEMPTY, EEXIST, EROFS (a device
+ * that cannot be written), ERANGE (a buffer too small), ENOATTR (ENODATA on Linux: no such extended attribute) or
+ * EIO (anything else). Only meaningful after a call has failed. */
+int fs_bcachefs_last_errno(void);
+
 /* Mount through an fs_core device handle (fs_core_file_open,
  * fs_core_device_from_callbacks, a slice). The handle stays the caller's to
  * close; the filesystem keeps its own reference. NULL on failure. */
@@ -68,6 +78,29 @@ typedef struct {
 
 /* The volume's identity and geometry. 0 or -1. */
 int fs_bcachefs_get_volume_info(fs_bcachefs_fs *fs, fs_bcachefs_volume_info_t *out);
+
+typedef struct {
+    uint32_t block_size;      /* bytes */
+    uint32_t bucket_size;     /* bytes: space is allocated a bucket at a time */
+    uint64_t total_bytes;     /* the device's buckets from its first usable one */
+    uint64_t free_bytes;      /* the buckets the freespace btree holds */
+} fs_bcachefs_statfs_t;
+
+/* The volume's capacity and free space. 0 or -1. */
+int fs_bcachefs_statfs(fs_bcachefs_fs *fs, fs_bcachefs_statfs_t *out);
+
+typedef struct {
+    int64_t  atime_sec;
+    uint32_t atime_nsec;
+    int64_t  mtime_sec;
+    uint32_t mtime_nsec;
+    int64_t  ctime_sec;
+    uint32_t ctime_nsec;
+} fs_bcachefs_times_t;
+
+/* The access, modification and change times of a path, as seconds and
+ * nanoseconds since the epoch (a final symlink is not followed). 0 or -1. */
+int fs_bcachefs_stat_times(fs_bcachefs_fs *fs, const char *path, fs_bcachefs_times_t *out);
 
 /* Stat an inode by number. 0 or -1. */
 int fs_bcachefs_stat_ino(fs_bcachefs_fs *fs, uint64_t ino, fs_bcachefs_attr_t *out);
@@ -88,7 +121,7 @@ const fs_bcachefs_dirent_t *fs_bcachefs_dir_next(fs_bcachefs_dir_iter *it);
 void fs_bcachefs_dir_close(fs_bcachefs_dir_iter *it);
 
 /* A symlink's target (not NUL-terminated). With len 0, its length. Returns
- * the length, or -1 (not a symlink, or buf too small). */
+ * the length, or -1 (not a symlink: EINVAL; buf too small: ERANGE). */
 int64_t fs_bcachefs_readlink(fs_bcachefs_fs *fs, const char *path, void *buf, uint64_t len);
 
 /* Extended attributes, as listxattr(2)/getxattr(2) lay them out: names are
@@ -99,17 +132,25 @@ int64_t fs_bcachefs_getxattr(fs_bcachefs_fs *fs, const char *path, const char *n
                              void *buf, uint64_t len);
 
 /* WRITING (#103): only in a library built with the `write` feature.
- * Experimental. An image opened with fs_bcachefs_mount_rw is changed in
+ * Experimental. An image opened with fs_bcachefs_mount_rw (or a device
+ * opened with fs_bcachefs_mount_rw_with_fs_core_device) is changed in
  * place, one transaction per call: when a call returns 0 the image holds
  * its result, and fs_bcachefs_rw_close has nothing left to write. A
  * filesystem that was not cleanly unmounted is refused at open. Paths are
- * absolute. Every call returns 0 or a negative errno: -ENOENT (no such
- * path), -ENOTSUP (not something the writer does), -ENOSPC (no free
- * space), -ENOTEMPTY, -EEXIST, -EINVAL (a NULL or malformed argument),
- * -EIO (anything else); the reason is in fs_bcachefs_last_error(). */
+ * absolute. Every call returns 0 or a negative errno, the platform's
+ * number: -ENOENT (no such path), -ENOTSUP (not something the writer
+ * does), -ENOSPC (no free space), -ENOTEMPTY, -EEXIST, -EINVAL (a NULL or
+ * malformed argument), -EIO (anything else); the reason is in
+ * fs_bcachefs_last_error(), the errno again in fs_bcachefs_last_errno().
+ * A read handle opened before a write does not see it: open another. */
 typedef struct fs_bcachefs_rw fs_bcachefs_rw;
 
 fs_bcachefs_rw *fs_bcachefs_mount_rw(const char *path);
+/* Write through an fs_core device handle (a file, a slice, host callbacks
+ * with a write callback). The handle stays the caller's to close; the
+ * writer keeps its own reference. NULL on failure; EROFS when the device
+ * cannot be written. */
+fs_bcachefs_rw *fs_bcachefs_mount_rw_with_fs_core_device(const struct FsCoreDevice *dev);
 void fs_bcachefs_rw_close(fs_bcachefs_rw *fs);
 
 int fs_bcachefs_create(fs_bcachefs_rw *fs, const char *path, const void *data, uint64_t len,

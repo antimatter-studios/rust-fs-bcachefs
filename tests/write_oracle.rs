@@ -1132,6 +1132,90 @@ fn writes_through_the_c_abi_are_read_by_the_reference() {
     });
 }
 
+/// The same calls through a handle opened on an fs_core device rather than
+/// a path: the reference checker passes the image, and its mount reads the
+/// file, the directory and the symlink back.
+#[test]
+fn writes_through_an_fs_core_device_are_read_by_the_reference() {
+    use fs_bcachefs::capi_write::*;
+    use std::ffi::{c_void, CString};
+    let img = scratch("write-study/base.img", "capi-device-write");
+    let c = |s: &str| CString::new(s).unwrap();
+    let data = b"written through an fs_core device\n";
+    unsafe {
+        let dev = fs_core::ffi::fs_core_file_open(c(img.to_str().unwrap()).as_ptr(), true);
+        assert!(!dev.is_null());
+        let fs = fs_bcachefs_mount_rw_with_fs_core_device(dev);
+        assert!(!fs.is_null());
+        for (r, what) in [
+            (
+                fs_bcachefs_create(
+                    fs,
+                    c("/d/new").as_ptr(),
+                    data.as_ptr() as *const c_void,
+                    data.len() as u64,
+                    0o640,
+                ),
+                "create",
+            ),
+            (fs_bcachefs_mkdir(fs, c("/d/sub").as_ptr(), 0o750), "mkdir"),
+            (
+                fs_bcachefs_rename(fs, c("/d/new").as_ptr(), c("/d/sub/moved").as_ptr()),
+                "rename",
+            ),
+            (
+                fs_bcachefs_symlink(fs, c("/d/link").as_ptr(), c("sub/moved").as_ptr()),
+                "symlink",
+            ),
+            (
+                fs_bcachefs_write_file(
+                    fs,
+                    c("/d/existing").as_ptr(),
+                    data.as_ptr() as *const c_void,
+                    data.len() as u64,
+                ),
+                "write_file",
+            ),
+        ] {
+            assert_eq!(r, 0, "{what}");
+        }
+        fs_bcachefs_rw_close(fs);
+        fs_core::ffi::fs_core_device_close(dev);
+    }
+    assert_fsck_clean(&img);
+    // The times this crate reads back, before the reference mounts it.
+    let ours = unsafe {
+        use fs_bcachefs::capi::*;
+        let fs = fs_bcachefs_mount(c(img.to_str().unwrap()).as_ptr());
+        assert!(!fs.is_null());
+        let mut t = fs_bcachefs_times_t::default();
+        assert_eq!(
+            fs_bcachefs_stat_times(fs, c("/d/existing").as_ptr(), &mut t),
+            0
+        );
+        fs_bcachefs_umount(fs);
+        t
+    };
+    with_reference_mount(&img, |m| {
+        assert_eq!(std::fs::read(m.join("d/sub/moved")).unwrap(), data);
+        assert_eq!(std::fs::read(m.join("d/existing")).unwrap(), data);
+        assert_eq!(
+            std::fs::read_link(m.join("d/link")).unwrap(),
+            std::path::Path::new("sub/moved")
+        );
+        // The reference mount's mtime of the file rewritten here is the
+        // one fs_bcachefs_stat_times reads, to the second.
+        let mtime = std::fs::symlink_metadata(m.join("d/existing"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(ours.mtime_sec, mtime, "mtime");
+    });
+}
+
 /// Reflinked files removed (#140): on a copy of the kernel image, the clone
 /// of big/random.bin is unlinked, then the original. After the first, the
 /// shared data stays, one reference fewer; after the second, it is freed.
