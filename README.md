@@ -66,6 +66,12 @@ chore cli:install  # the tools, staged in tmp/cli
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).
 
+### v0.4.1 — 2026-10-12
+
+- A file whose inode claims an impossible size is refused with an error instead of aborting the reading process, and a symlink target over 4096 bytes is refused as damage.
+- A write refused for space leaves the file as it was: data leaves buckets for the btree nodes a commit rewrites.
+- The first release published through crates.io trusted publishing.
+
 ### v0.4.0 — 2026-10-12
 
 - The first release.
