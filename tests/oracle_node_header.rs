@@ -113,25 +113,18 @@ fn a_key_format_whose_field_overflows_is_refused() {
 #[test]
 fn keys_out_of_order_in_a_bset_are_refused() {
     // The first bset's keys start at 136 + 24 = 160, its length in u64s at
-    // 136 + 22. Two neighbours of the same length are swapped.
+    // 136 + 22. Its first two keys are swapped, whatever their lengths: the
+    // fixtures are rebuilt on every run, and one build's dirents root held
+    // no two neighbours of one length.
     let img = damaged("key-order", |b| {
         let end = 160 + usize::from(u16::from_le_bytes([b[158], b[159]])) * 8;
-        let mut p = 160;
-        loop {
-            let n = usize::from(b[p]) * 8;
-            let q = p + n;
-            assert!(
-                q < end,
-                "no two neighbouring keys of one length in the first bset"
-            );
-            if usize::from(b[q]) * 8 == n {
-                let first = b[p..q].to_vec();
-                b.copy_within(q..q + n, p);
-                b[p + n..q + n].copy_from_slice(&first);
-                return;
-            }
-            p = q;
-        }
+        let p = 160;
+        let q = p + usize::from(b[p]) * 8;
+        assert!(q < end, "the first bset holds fewer than two keys");
+        let r = q + usize::from(b[q]) * 8;
+        let (first, second) = (b[p..q].to_vec(), b[q..r].to_vec());
+        b[p..p + second.len()].copy_from_slice(&second);
+        b[p + second.len()..r].copy_from_slice(&first);
     });
     refused(&img, "two keys out of order in a bset");
 }
