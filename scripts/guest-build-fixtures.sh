@@ -693,8 +693,9 @@ PY
 } > "$out/probe.txt" 2>&1
 bcachefs-ref fsck -y "$probe_img" > "$out/probe.replay.txt" 2>&1 || true
 # SNAPSHOTS BY THE REFERENCE'S OWN EDITOR (#12). The mount cannot make a
-# subvolume or a snapshot, but the reference tool's `kvdb` reads and writes
-# btree keys by field name, through the normal transactional path, and by
+# subvolume or a snapshot, but the reference tool's `kvdb` can show a btree
+# key and change it one named field at a time, through the normal
+# transactional path, and by
 # its own help anticipates fabricated snapshots. First its read-only view
 # (the default open, which by its help never writes) of the subvolume,
 # snapshot and snapshot-tree keys every image holds: the field names a

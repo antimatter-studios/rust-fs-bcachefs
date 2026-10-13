@@ -262,8 +262,8 @@ cp --sparse=always "$ROOT$img" "$out/options.img"
 # PER-INODE OPTIONS, OFFLINE (#81). The mount refuses the bcachefs.*
 # xattrs above; the reference tool's offline key editor (`kvdb`, S1 6.12)
 # is the other way S1 names to set an inode's fields by name. The pinned
-# one refuses them too: varint-packed values are editable only up to
-# their fixed header, and `update inodes <pos> bi_compression=2` answers
+# one refuses them too: of a varint-packed value, only the fields of its
+# fixed header can be edited, and `update inodes <pos> bi_compression=2` answers
 # "bch_inode_v3 has no field 'bi_compression'" (CI run 37807307021). So
 # one file is made through the mount and settled, kvdb prints its inode
 # (how it names the fixed header's fields and flag bits) and is asked for

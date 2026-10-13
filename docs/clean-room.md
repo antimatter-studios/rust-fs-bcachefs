@@ -607,17 +607,17 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
 4. **Unclean filesystems**: SETTLED for single-device images (see Journal
    above), and the superblock's `journal_seq_blacklist` (type 8) is
    SETTLED too: pairs of u64 `(start, end)` with the end EXCLUSIVE. S1
-   (1.3, 9.7.5): bsets referencing a blacklisted sequence "are ignored
-   until the btree node is next rewritten", and after an unclean shutdown
-   64 sequence numbers past the last journal entry read are blacklisted
-   too, so a clean image can hold such bsets. Observed (S3, S4): the aged
-   image's field reads 307..4403 after the reference replayed entries
-   304-306; no bset of its nodes has a journal sequence inside the range,
-   two have exactly 4403, and the lister reads their keys -- so 4403 is
-   live and the end is exclusive. The reader ignores bsets in
-   `start <= seq < end` (`Node::parse_filtered`). Still open: the journal's
-   own `blacklist` and `blacklist_v2` entries (types 3, 4) -- none in any
-   fixture's journal; a replay window holding one is refused.
+   (1.3, 9.7.5): a reader skips a bset whose journal sequence is
+   blacklisted, and the bset stays on disk until its node is rewritten;
+   an unclean shutdown blacklists the next 64 sequences beyond the newest
+   journal entry found, so a clean image can hold such bsets. Observed
+   (S3, S4): the aged image's field reads 307..4403 after the reference
+   replayed entries 304-306; no bset of its nodes has a journal sequence
+   inside the range, two have exactly 4403, and the lister reads their
+   keys -- so 4403 is live and the end is exclusive. The reader ignores
+   bsets in `start <= seq < end` (`Node::parse_filtered`). Still open: the
+   journal's own `blacklist` and `blacklist_v2` entries (types 3, 4) --
+   none in any fixture's journal; a replay window holding one is refused.
 5. **Snapshots and subvolumes** (#12) are answered for reading; see
    "Snapshots and subvolumes" below. No route through the reference FUSE
    mount makes one, and the reference key editor fabricates snapshot keys

@@ -149,8 +149,9 @@ pub mod key_type {
     /// The v2 inode encoding (0.18 to 0.22, S1 11.6); not decoded here.
     pub const INODE_V2: u8 = 23;
     pub const INODE_V3: u8 = 29;
-    /// A whiteout "specific to the extents btree, blocking visibility of
-    /// ancestor snapshot extent versions" (S1 11.5; 1.29).
+    /// The extents btree's own kind of whiteout: it hides, from a
+    /// snapshot, what an ancestor snapshot's extents hold over the same
+    /// range (S1 11.5; 1.29).
     pub const EXTENT_WHITEOUT: u8 = 36;
 }
 
