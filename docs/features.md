@@ -53,7 +53,7 @@ States:
 | Encrypted filesystems | Refused | 0.4.0 (#19) | | `oracle_refused.rs` |
 | Multi-device filesystems | Refused | 0.4.0 (#19) | | `oracle_refused.rs` |
 | A key at a snapshot the snapshots btree does not have, overlapping extents, unknown checksum types | Refused | 0.4.0 (#65) | | `oracle_refused_local.rs` |
-| A whole-file read of a file that claims more than its device holds (read it with `read_range`), and a size memory cannot hold, refused with an error rather than a panic or an abort; a symlink target over 4096 bytes | Refused | Unreleased (#176) | #149 | `oracle_crafted_inode_size.rs` |
+| A whole-file read of a file that claims more than its device holds (read it with `read_range`), and a size memory cannot hold, refused with an error rather than a panic or an abort; a symlink target over 4096 bytes | Refused | 0.4.1 (#176) | #149 | `oracle_crafted_inode_size.rs` |
 | Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | 0.4.0 (#129) | #12; the writer writes the root subvolume only (#138) | `oracle_kernel.rs` |
 | Reflinked extents (`reflink_p` into the reflink btree): read, checked, and freed by the writer one reference at a time | Supported | 0.4.0 (#128, #144, #145) | #7, #140; a pointer covering part of an indirect extent is refused (none seen) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs`, `oracle_write_local.rs`, `write_oracle.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | 0.4.0 (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
@@ -84,7 +84,7 @@ reads back byte for byte through the reference implementation's mount
 | File data inline or in extents, as the reference lays it out | Experimental | 0.4.0 (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
 | Writing at an offset, appending, truncating to any size (the file is rewritten whole) | Experimental | 0.4.0 (#120) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data in allocated buckets, freed on unlink and rewrite | Experimental | 0.4.0 (#35, #36) | | `write_oracle.rs` |
-| A write refused for space leaves the file as it was: data leaves 32 buckets for the btree nodes a commit rewrites | Experimental | Unreleased (#179) | #168 | `oracle_failed_write.rs` |
+| A write refused for space leaves the file as it was: data leaves 32 buckets for the btree nodes a commit rewrites | Experimental | 0.4.1 (#179) | #168 | `oracle_failed_write.rs` |
 | Buckets freed in a session used again by its later writes | Experimental | 0.4.0 (#133) | buckets of generation 16 or more wait (#132) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | 0.4.0 (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | Commits through the journal | Experimental | 0.4.0 (#37) | | `write_oracle.rs` |
