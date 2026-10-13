@@ -1046,6 +1046,53 @@ impl fs_core::BlockDevice for CountingRw {
     }
 }
 
+/// Removing the `large` image's directory of 30000 names is refused as not
+/// empty, and finding that out reads the leaf holding its first entry, not
+/// every leaf of the directory (#193): one live dirent is enough. The reads
+/// are bounded as a create's are: one node per level of the dirents btree,
+/// and one leaf more, for the lookup of the name in the root and for the
+/// directory's first entry.
+#[test]
+fn removing_a_full_directory_reads_its_first_entry_not_all_of_them() {
+    use fs_bcachefs::{btree, superblock::Superblock};
+    use std::collections::BTreeSet;
+    let img = scratch("large.img", "rmdir-full");
+    let dev = CountingRw::new(FileDevice::open(&img).unwrap());
+    let sb = Superblock::read(&dev).unwrap();
+    let root = sb
+        .btree_roots()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.btree_id == btree::btree_id::DIRENTS)
+        .unwrap();
+    let depth = usize::from(root.level) + 1;
+    let before = dev.offsets().len();
+    btree::walk(&dev, &sb, btree::btree_id::DIRENTS).unwrap();
+    let dirents: BTreeSet<u64> = dev.offsets()[before..].iter().copied().collect();
+    assert!(
+        dirents.len() > 3 * (depth + 1),
+        "only {} dirents nodes: the bound proves nothing",
+        dirents.len()
+    );
+    let mut w = Writer::open(CountingRw::new(FileDevice::open_rw(&img).unwrap())).unwrap();
+    let opened = w.device().offsets().len();
+    let err = w
+        .rmdir(fs_bcachefs::inode::ROOT_INO, b"wide")
+        .expect_err("/wide holds 30000 names");
+    assert!(err.to_string().contains("not empty"), "{err}");
+    let read = w.device().offsets()[opened..]
+        .iter()
+        .filter(|o| dirents.contains(o))
+        .collect::<BTreeSet<_>>()
+        .len();
+    assert!(
+        read <= 2 * (depth + 1),
+        "refusing to remove a full directory read {read} of the {} dirents nodes, in a btree \
+         of {depth} levels",
+        dirents.len()
+    );
+}
+
 /// A create in the `large` image's directory of 30000 names (#108) reads
 /// the dirents and inodes nodes on its keys' paths, not every node of those
 /// btrees. A lookup reads one node per level of its btree, and one leaf
