@@ -708,6 +708,54 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(None)
     }
 
+    /// The generation extent `e`'s pointer is checked against: the
+    /// bucket's alloc key's ([`Filesystem::bucket_gen`]). Allocation
+    /// information is derived data, rebuilt from the extents by the
+    /// reference checker (S1 1.3.1), and one damaged alloc node must not
+    /// make every file unreadable (#167): when the alloc btree cannot be
+    /// read, the bucket_gens btree's generation stands in for it, and when
+    /// that has none either, the extent's own data checksum does, by taking
+    /// the pointer's generation as it is. An extent with no checksum is
+    /// then refused with what the alloc btree said.
+    fn pointer_gen(&self, e: &DataExtent) -> Result<Option<u8>> {
+        let alloc = match self.bucket_gen(e.ptr.offset) {
+            Ok(g) => return Ok(g),
+            Err(err) => err,
+        };
+        if let Ok(Some(g)) = self.bucket_gens_gen(e.ptr.offset) {
+            return Ok(Some(g));
+        }
+        match e.crc {
+            Some(c) if c.csum_type != 0 => Ok(Some(e.ptr.gen)),
+            _ => Err(alloc),
+        }
+    }
+
+    /// The generation the bucket_gens btree records for the bucket holding
+    /// `sector`: byte `bucket % 256` of the key (type 30) at `dev:bucket /
+    /// 256`, which holds 256 one-byte generations (S3 + S4: the lister
+    /// prints them in order, and the alloc keys of reused buckets carry the
+    /// same), or `None` when there is no such key.
+    fn bucket_gens_gen(&self, sector: u64) -> Result<Option<u8>> {
+        const BUCKET_GENS: u8 = 14;
+        const BUCKET_GENS_KEY: u8 = 30;
+        let bucket = sector / self.bucket_size;
+        let at = Bpos {
+            inode: u64::from(self.dev_idx),
+            offset: bucket >> 8,
+            snapshot: 0,
+        };
+        let mut c = self.cursor(BUCKET_GENS)?;
+        c.seek(at)?;
+        Ok(c.next_key()?
+            .filter(|k| {
+                k.key_type == BUCKET_GENS_KEY
+                    && k.pos.inode == at.inode
+                    && k.pos.offset == at.offset
+            })
+            .and_then(|k| k.value.get((bucket & 0xff) as usize).copied()))
+    }
+
     /// The sectors `idx..idx + k.size` of the reflink btree, which the
     /// `reflink_p` `k` of inode `ino` shows at its own sectors, copied into
     /// the window `out` of the file's bytes `offset..end`. Each `reflink_v`
@@ -774,7 +822,7 @@ impl<D: BlockRead> Filesystem<D> {
 
     /// The `len` live sectors of one extent, decompressed and checked.
     fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
-        e.ptr.check(self.dev_idx, self.bucket_gen(e.ptr.offset)?)?;
+        e.ptr.check(self.dev_idx, self.pointer_gen(e)?)?;
         extent_bytes(e, |at, buf| Ok(self.dev.read_at(at, buf)?))
     }
 }

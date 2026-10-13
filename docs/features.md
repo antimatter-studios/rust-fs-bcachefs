@@ -43,6 +43,7 @@ States:
 | Compression: lz4, zstd, gzip | Supported | 0.4.0 (#1) | | `oracle_fs.rs` |
 | Background compression (`reconcile` extent entry) | Supported | 0.4.0 (#75) | | `oracle_bgcompress.rs` |
 | Extent pointers checked against the allocator's generations, a bucket reused by the reference kernel module among them | Supported | 0.4.0 (#69, #95) | | `oracle_pointers.rs` |
+| A damaged alloc node does not fail every file: a pointer's generation is checked against the bucket_gens btree when the alloc btree cannot be read, and the extent's own checksum stands in when neither can; an extent with no checksum is then refused | Supported | Unreleased (#186) | | `oracle_alloc_damage.rs` |
 | Error extents, extent whiteouts, older inode encodings | Supported | 0.4.0 (#68) | | `oracle_refused_local.rs` |
 | Extended attributes, user and trusted namespaces | Supported | 0.4.0 (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | 0.4.0 (#17) | | `oracle_journal.rs` |
