@@ -700,6 +700,31 @@ impl<D: BlockDevice> Writer<D> {
         Ok(out)
     }
 
+    /// Whether directory `dir` holds a live entry: its dirents are read
+    /// through a cursor up to the first, not all of them (#193); whiteouts
+    /// before it are passed over.
+    fn has_entries(&self, dir: u64) -> Result<bool> {
+        let mut c = match self.cursor(ids::DIRENTS) {
+            // A btree with no root yet holds nothing.
+            Err(Error::NotFound(_)) if self.root(ids::DIRENTS).is_err() => return Ok(false),
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: dir,
+            offset: 0,
+            snapshot: 0,
+        })?;
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != dir {
+                break;
+            }
+            if k.key_type == key_type::DIRENT {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// The keys of btree `id` in the run of consecutive offsets that starts
     /// at `from`, through a cursor: a hash table's probe. It stops at the
     /// first key that skips an offset, so a lookup reads the nodes its run
@@ -1171,21 +1196,8 @@ impl<D: BlockDevice> Writer<D> {
         }
         let now = self.now();
         let mut t = Txn::default();
-        if want_dir {
-            let has_entries = self
-                .keys_from(
-                    ids::DIRENTS,
-                    Bpos {
-                        inode: target,
-                        offset: 0,
-                        snapshot: 0,
-                    },
-                )?
-                .iter()
-                .any(|k| k.key_type == key_type::DIRENT);
-            if has_entries {
-                return Err(Error::Corrupt("the directory is not empty".into()));
-            }
+        if want_dir && self.has_entries(target)? {
+            return Err(Error::Corrupt("the directory is not empty".into()));
         }
         self.remove_dirent(&mut t, &dirent)?;
         if !want_dir && i.raw.varints[field::NLINK] > 0 {
