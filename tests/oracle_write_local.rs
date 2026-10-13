@@ -1257,6 +1257,18 @@ fn an_xattr_set_reads_its_run_not_the_rest_of_the_table() {
         "only {} xattrs nodes after {made} xattrs: the bound proves nothing",
         xattr_nodes.len()
     );
+    // The table as built reads back whole, so a loss after the set below
+    // is the set's.
+    let before = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .xattrs(ino)
+        .unwrap()
+        .len();
+    assert_eq!(
+        before,
+        made + 1,
+        "every xattr inserted reads back before the set"
+    );
 
     let name = (0..64)
         .map(|i| format!("new-xattr-{i:02}"))
