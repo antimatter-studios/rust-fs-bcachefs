@@ -37,6 +37,8 @@ rm -rf "$work"
 mkdir -p "$work/root" "$OUT"
 : >"$OUT/kernel.txt"
 record() { echo "$1: $2" >>"$OUT/kernel.txt"; }
+# shellcheck source=scripts/kernel-oracle-boot.sh
+source "$here/scripts/kernel-oracle-boot.sh"
 
 missing=
 [ -w /dev/kvm ] || missing="$missing /dev/kvm"
@@ -130,7 +132,8 @@ echo "kernel-oracle: kernel $kver; modules: $(tr '\n' ' ' <"$work/root/modules.o
 (cd "$work/root" && find . | cpio -o -H newc --quiet | gzip -1) >"$work/initrd.gz"
 
 echo "kernel-oracle: booting it"
-timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
+first=0
+boot 300 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
     -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
     -append "console=ttyS0,115200 panic=-1 rdinit=/init" \
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
@@ -138,8 +141,13 @@ timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2
     -drive "file=$work/kernel-rootsnap.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
     -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
-    -no-reboot ||
-    echo "kernel-oracle: qemu exited $?" >&2
+    -no-reboot || first=$?
+[ "$first" -eq 0 ] || echo "kernel-oracle: qemu exited $first" >&2
+# A guest stopped at its limit (124) or killed after it (137) hung (#194):
+# recorded, and the judge boot below is not run over what it left.
+case "$first" in
+    124 | 137) record boot "the first boot was stopped at its 300 s limit (kernel.console.txt)" ;;
+esac
 
 # THIS CRATE'S WRITES, JUDGED BY THE MODULE (#141). The fourth image is a
 # gzip filesystem the module mounted once, leaving a seed file and the
@@ -172,14 +180,21 @@ if [ -x "$writer" ]; then
 else
     record written "no writer at $writer: build it with chore cli:install"
 fi
-echo "kernel-oracle: booting it again to read what this crate wrote"
-timeout 120 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 1G -smp 1 \
-    -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
-    -append "console=ttyS0,115200 panic=-1 rdinit=/init oracle=judge" \
-    -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
-    -display none -serial "file:$work/judge-console.log" -serial "file:$work/judge.log" \
-    -no-reboot ||
-    echo "kernel-oracle: qemu exited $? (judge)" >&2
+case "$first" in
+    124 | 137)
+        record judge "not booted: the first boot hung, so the image it left is not judged"
+        ;;
+    *)
+        echo "kernel-oracle: booting it again to read what this crate wrote"
+        boot 120 -enable-kvm -machine q35,accel=kvm -cpu host -m 1G -smp 1 \
+            -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
+            -append "console=ttyS0,115200 panic=-1 rdinit=/init oracle=judge" \
+            -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
+            -display none -serial "file:$work/judge-console.log" -serial "file:$work/judge.log" \
+            -no-reboot ||
+            echo "kernel-oracle: qemu exited $? (judge)" >&2
+        ;;
+esac
 
 # The init's lines carry `ORACLE `, on the second serial port (#134); a
 # manifest line carries `ORACLE M`.
@@ -189,6 +204,9 @@ grep -q '^kernel: ' "$OUT/kernel.txt" || {
     record kernel "the VM printed nothing of the oracle's (kernel.console.txt)"
 }
 tail -n 200 "$work/console.log" >"$OUT/kernel.console.txt"
+if [ -f "$work/judge-console.log" ]; then
+    tail -n 200 "$work/judge-console.log" >"$OUT/kernel.judge-console.txt"
+fi
 sed -n 's/\r$//; s/^.*ORACLE M\t//p' "$work/oracle.log" | python3 -c '
 import json, sys
 entries = []
