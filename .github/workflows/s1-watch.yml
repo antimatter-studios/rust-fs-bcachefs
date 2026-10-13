@@ -1,0 +1,47 @@
+name: S1 watch
+
+# S1, the Principles of Operation PDF, is regenerated from the tools
+# repository and changes under its URL: it went from 1.39.7+915c4e1 to
+# 1.39.7+efec39c between two readings, unnoticed (#157). Once a week this
+# compares the PDF's SHA-256 with the revision scripts/s1-overlap.py pins,
+# and a difference opens an issue (or comments on the open one): re-read the
+# new revision against docs/clean-room.md, rebuild the phrase hashes, move
+# the pin. Only the PDF's hash is computed; nothing of it is kept.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    name: S1 is the pinned revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare S1's PDF with the pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^PDF_SHA256 = "\([0-9a-f]\{64\}\)"$/\1/p' scripts/s1-overlap.py)"
+          [ -n "$pin" ] || { echo "s1-watch: no PDF_SHA256 pin in scripts/s1-overlap.py" >&2; exit 1; }
+          now="$(curl -fsSL --retry 3 https://bcachefs.org/bcachefs-principles-of-operation.pdf | sha256sum | cut -c1-64)"
+          if [ "$now" = "$pin" ]; then
+            echo "s1-watch: S1 is the pinned revision ($pin)"
+            exit 0
+          fi
+          title="S1 has a new revision"
+          body="The Principles of Operation PDF's SHA-256 is now \`$now\`, not the pinned \`$pin\`. Re-read it against docs/clean-room.md (\"S1's revisions\"), rebuild tests/data/s1-shingles.bin with \`scripts/s1-overlap.py build PDF\`, and move the pin there. Seen by $RUN_URL."
+          open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label documentation --title "$title" --body "$body"
+          fi

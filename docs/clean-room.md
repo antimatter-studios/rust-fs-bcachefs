@@ -26,7 +26,7 @@ be learned this way is an **open question**, not a guess.
 
 | # | Source | Kind | What it told us |
 |---|---|---|---|
-| S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (fetched 2026-10-06; title page "Revision 1.39.7+915c4e1" -- see "The specification's own licence" below) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a 44-bit sector offset and a generation; list of key types and metadata versions in order. |
+| S1 | "bcachefs: Principles of Operation", https://bcachefs.org/bcachefs-principles-of-operation.pdf (first read 2026-10-06 at title page "Revision 1.39.7+915c4e1"; re-read 2026-10-12 at "Revision 1.39.7+efec39c", the PDF with SHA-256 `50e95f298a3f877c39814fe71e14a7412c6a72d85f6e75cd78cf538767ad699e` -- see "The specification's own licence" and "S1's revisions" below) | prose documentation | Superblock at sector 8 (4 KiB), layout copy at 3584 bytes; superblock carries UUIDs, label (32 bytes), block size, btree node size, device count, version and minimum version, seq, typed variable-length fields (journal, members_v2, clean, ...); 28 btrees by name; `struct bpos {u64 inode; u64 offset; u32 snapshot}` and `struct bkey {u8 u64s; u8 format; u8 type; u8 pad; bversion; u32 size; bpos p}` as documented C declarations; packed keys use a per-node `bkey_format` with a base offset and bit width for six fields (inode, offset, snapshot, size, version_hi, version_lo) and keep a 3-byte header; extent key positions are the END of the extent; btree node = header (checksum, magic, seq, flags with btree id and level, min/max key, format, first bset) followed by `btree_node_entry` bsets; extent values are a list of entries whose type is the position of the first set bit of the first word; crc32/crc64/crc128 entry sizes (8/16/24 bytes); pointer has a device, a sector offset and a generation (the offset's 44 bits are S4's: efec39c no longer gives a width); list of key types and metadata versions in order. |
 | S2 | bcachefs-tools `INSTALL.md` at v1.39.7 (build instructions only) | prose documentation | The reference tools' build dependencies, minimum Rust and the `BCACHEFS_FUSE=1` switch for their FUSE mount, used only to build the oracle inside the VM. Contains no format information. |
 | S3 | Reference tools v1.39.7, run in the test VM | black-box oracle | `show-super`, `list`, `fsck` output for each fixture; recorded in `.vm-share/fixtures/*.json` and `*.txt` beside the images. |
 | S4 | Hexdumps of fixture images, and candidate computations over their bytes (checksum conventions) | black-box observation | See the per-structure notes below. |
@@ -71,6 +71,28 @@ This is the authors' understanding of the position, not legal advice.
 The *dependency graph* is held to the same standard mechanically:
 `chore lint` runs `cargo deny check licenses` against `deny.toml`, which
 allows MIT, Apache-2.0, BSD, ISC, Zlib and 0BSD and fails on anything else.
+
+## S1's revisions
+
+S1 is regenerated from the tools repository, so it changes under the URL.
+This record was written against revision 1.39.7+915c4e1 (2026-10-06) and
+re-checked against 1.39.7+efec39c (2026-10-12, #157):
+
+- Every section cited here exists in efec39c under the same number (1.3,
+  2.7, 5.5.5, 6.12, 7.1, 7.7, 9.1.2.1, 9.1.3, 9.1.3.1, 9.1.3.3, 9.1.6,
+  9.1.6.2, 9.1.7, 9.1.12, 9.5.1, 9.7, 9.7.2, 9.7.5, 9.8.5, 11.2 to 11.6).
+- Each fact taken from S1 still reads the same, with one exception: efec39c
+  says a pointer gives a device, an offset and a generation, but no longer
+  the offset's width. The 44 bits (`src/extent.rs`, bits 4..47) rest on S4,
+  checked against the lister for every pointer of every fixture.
+- New in efec39c, and bearing on open questions: the journal's blacklist
+  entries (question 4), the snapshot tree's skiplist and ancestor bitmap
+  (question 5), and encryption's key hierarchy and nonces (question 6, #159).
+
+`scripts/s1-overlap.py` pins efec39c by its SHA-256 (#154), and
+`.github/workflows/s1-watch.yml` fetches the PDF every week: when its
+SHA-256 differs from the pin, it opens an issue (or comments on the open
+one) to re-read the new revision against this record and move the pin.
 
 ## Per-structure notes
 
@@ -618,6 +640,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    bsets in `start <= seq < end` (`Node::parse_filtered`). Still open: the
    journal's own `blacklist` and `blacklist_v2` entries (types 3, 4) --
    none in any fixture's journal; a replay window holding one is refused.
+   S1 efec39c's journal entry list (11.2) names them: `blacklist` for a
+   single journal sequence number, `blacklist_v2` for a range. Their
+   layout is still to be observed, which needs a journal that holds one.
 5. **Snapshots and subvolumes** (#12) are answered for reading; see
    "Snapshots and subvolumes" below. No route through the reference FUSE
    mount makes one, and the reference key editor fabricates snapshot keys
@@ -625,7 +650,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    reference tool makes them in the kernel oracle's VM. Still open: what
    the low half of a snapshot key's first word and of a subvolume key's
    first word hold (2 and 0 seen; the lister prints `live` and, for a
-   snapshot of a subvolume, `snapshot`), and the skiplist's use.
+   snapshot of a subvolume, `snapshot`), and the skiplist's use. S1
+   efec39c (9.4.2, 9.4.3) says what a snapshot node holds: its parent, up
+   to two children, its depth, and a skiplist of three ancestor ids for
+   quick ancestor queries, with a 128-bit bitmap of near ancestors; trees
+   are grouped under `snapshot_tree` entries naming the root snapshot and
+   the master subvolume. Which words of the key hold which is still to be
+   observed.
 6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
    multiple devices and replicas**: not seen in any fixture read by this
    crate. (inline_data, xattrs and crc128: seen and read, see above.)
@@ -633,6 +664,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    the reference FUSE mount makes one (FICLONE, FICLONERANGE and
    FIDEDUPERANGE are refused before the daemon sees them;
    `copy_file_range` copies), so the reference kernel module makes it.
+   **Encryption**: S1 efec39c (9.1.4) now documents in prose the key
+   hierarchy (a scrypt-derived passphrase key unlocking a master key kept
+   in the superblock), each extent's nonce (from its version, compression
+   type and uncompressed size, with a per-CRC offset) and where the MAC
+   sits (the CRC entry; 80 bits for data by default, 128 for metadata). The
+   byte layouts are still to be learned by computation over known
+   plaintext: #159.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
