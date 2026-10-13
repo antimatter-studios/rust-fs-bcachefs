@@ -1200,7 +1200,11 @@ fn an_xattr_set_reads_its_run_not_the_rest_of_the_table() {
     };
     // A user xattr with a 1500-byte value, at its own slot.
     let xattr = |i: usize| {
-        let name = format!("filler-{i:05}");
+        // The slot hash leaves the last byte of this 14-byte message unhashed
+        // (`xattr::name_slot`), so the name ends in a constant byte and every
+        // digit is hashed: `filler-00000` to `filler-00009` would share one
+        // slot, and an insert keeps one key per position (#202).
+        let name = format!("filler-{i:05}.");
         let value = vec![b'v'; 1500];
         let mut v = vec![0u8, name.len() as u8];
         v.extend_from_slice(&(value.len() as u16).to_le_bytes());
@@ -1257,14 +1261,14 @@ fn an_xattr_set_reads_its_run_not_the_rest_of_the_table() {
         "only {} xattrs nodes after {made} xattrs: the bound proves nothing",
         xattr_nodes.len()
     );
-    // What reads back before the set. Not every inserted xattr does yet
-    // (#202), so the set is held to what it adds: one xattr, and nothing
-    // lost from the table it probed.
+    // Every inserted xattr reads back before the set, each at a slot of its
+    // own (#202).
     let before = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()
         .xattrs(ino)
         .unwrap()
         .len();
+    assert_eq!(before, made + 1, "the xattrs that read back before the set");
 
     let name = (0..64)
         .map(|i| format!("new-xattr-{i:02}"))
@@ -1296,7 +1300,7 @@ fn an_xattr_set_reads_its_run_not_the_rest_of_the_table() {
     assert_eq!(
         set.len(),
         before + 1,
-        "the set adds its xattr and loses none of the {before} before it ({made} inserted, #202)"
+        "the set adds its xattr and loses none of the {before} before it"
     );
 }
 
@@ -1521,6 +1525,8 @@ fn data_is_written_as_the_files_options_say() {
 /// the table spreads over many leaves (#202). Batches of 250 xattrs with
 /// 1,500-byte values, each at its own slot, fill and split the leaves; each
 /// batch is checked as it lands, so the first to lose keys is the one named.
+/// The keys the first version of these tests lost shared slots, and an
+/// insert keeps one key per position.
 #[test]
 fn every_xattr_a_run_of_batches_inserts_reads_back() {
     use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
@@ -1544,7 +1550,11 @@ fn every_xattr_a_run_of_batches_inserts_reads_back() {
             .snapshot
     };
     let xattr = |i: usize| {
-        let name = format!("filler-{i:05}");
+        // The slot hash leaves the last byte of this 14-byte message unhashed
+        // (`xattr::name_slot`), so the name ends in a constant byte and every
+        // digit is hashed: `filler-00000` to `filler-00009` would share one
+        // slot, and an insert keeps one key per position (#202).
+        let name = format!("filler-{i:05}.");
         let value = vec![b'v'; 1500];
         // Namespace 0, the user namespace in this format.
         let mut v = vec![0u8, name.len() as u8];
