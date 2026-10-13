@@ -1515,3 +1515,100 @@ fn data_is_written_as_the_files_options_say() {
     let r = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(r.clean(), "{:?}", r.problems);
 }
+
+/// Every xattr a run of `Writer::insert` batches puts in place reads back,
+/// through `Filesystem::xattrs` and through a walk of the btree alike, once
+/// the table spreads over many leaves (#202). Batches of 250 xattrs with
+/// 1,500-byte values, each at its own slot, fill and split the leaves; each
+/// batch is checked as it lands, so the first to lose keys is the one named.
+#[test]
+fn every_xattr_a_run_of_batches_inserts_reads_back() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    let img = scratch("default.img", "xattr-batches");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let ino = fs.lookup("/hello.txt").unwrap();
+    let inode = fs.inode(ino).unwrap();
+    let before = fs.xattrs(ino).unwrap().len();
+    drop(fs);
+    let snapshot = {
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::INODES)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.pos.inode == 0 && k.pos.offset == ino && k.key_type == key_type::INODE_V3)
+            .unwrap()
+            .pos
+            .snapshot
+    };
+    let xattr = |i: usize| {
+        let name = format!("filler-{i:05}");
+        let value = vec![b'v'; 1500];
+        // x_type 1, the user namespace.
+        let mut v = vec![1u8, name.len() as u8];
+        v.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        v.extend_from_slice(name.as_bytes());
+        v.extend_from_slice(&value);
+        v.resize(v.len().div_ceil(8) * 8, 0);
+        Bkey {
+            key_type: key_type::XATTR,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: Bpos {
+                inode: ino,
+                offset: fs_bcachefs::xattr::slot(
+                    inode.hash_type(),
+                    inode.hash_seed,
+                    1,
+                    name.as_bytes(),
+                )
+                .unwrap(),
+                snapshot,
+            },
+            value: v,
+        }
+    };
+    // One writer for every batch, as a caller filling a table would hold
+    // it; each batch is read back between them through a device of its own.
+    // The first xattr makes the btree's root, if it has none, through the
+    // writer's own path.
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.set_xattr(ino, b"user.first", b"1").unwrap();
+    let before = before + 1;
+    let mut made = 0;
+    for batch in 1..=5 {
+        w.insert(btree_id::XATTRS, (made..made + 250).map(xattr).collect())
+            .unwrap();
+        made += 250;
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let walked = btree::walk(&dev, &sb, btree_id::XATTRS)
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.pos.inode == ino && k.key_type == key_type::XATTR)
+            .count();
+        let read = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .xattrs(ino)
+            .unwrap()
+            .len();
+        let root = sb
+            .btree_roots()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.btree_id == btree_id::XATTRS)
+            .map(|r| r.level);
+        assert_eq!(
+            (read, walked),
+            (before + made, before + made),
+            "after batch {batch} ({made} xattrs inserted on {before}): Filesystem::xattrs reads \
+             {read} and a walk of the btree finds {walked}; the root is at level {root:?}"
+        );
+    }
+    drop(w);
+    let r = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(r.clean(), "{:?}", r.problems);
+}
