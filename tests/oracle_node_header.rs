@@ -112,19 +112,35 @@ fn a_key_format_whose_field_overflows_is_refused() {
 
 #[test]
 fn keys_out_of_order_in_a_bset_are_refused() {
-    // The first bset's keys start at 136 + 24 = 160, its length in u64s at
-    // 136 + 22. Its first two keys are swapped, whatever their lengths: the
-    // fixtures are rebuilt on every run, and one build's dirents root held
-    // no two neighbours of one length.
-    let img = damaged("key-order", |b| {
-        let end = 160 + usize::from(u16::from_le_bytes([b[158], b[159]])) * 8;
-        let p = 160;
-        let q = p + usize::from(b[p]) * 8;
-        assert!(q < end, "the first bset holds fewer than two keys");
-        let r = q + usize::from(b[q]) * 8;
-        let (first, second) = (b[p..q].to_vec(), b[q..r].to_vec());
-        b[p..p + second.len()].copy_from_slice(&second);
-        b[p + second.len()..r].copy_from_slice(&first);
+    // The bsets are walked as `Node::parse` walks them: the first one's
+    // header at 136, its keys 24 bytes on (its length in u64s at +22), each
+    // later one on a block boundary, 16 bytes in. The first two keys of the
+    // first bset holding two are swapped, whatever their lengths: the
+    // fixtures are rebuilt on every run, and how the dirents root's keys
+    // fall into bsets differs from one build to the next.
+    let block = {
+        let dev = FileDevice::open(fixture("default.img")).unwrap();
+        (usize::from(Superblock::read(&dev).unwrap().block_size) * 512).max(512)
+    };
+    let img = damaged("key-order", move |b| {
+        let seq = le64_at(b, 136);
+        let mut at = 136usize;
+        while at + 24 <= b.len() && le64_at(b, at) == seq {
+            let keys = at + 24;
+            let end = keys + usize::from(u16::from_le_bytes([b[at + 22], b[at + 23]])) * 8;
+            if keys < end && b[keys] > 0 {
+                let q = keys + usize::from(b[keys]) * 8;
+                if q < end && b[q] > 0 {
+                    let r = q + usize::from(b[q]) * 8;
+                    let (first, second) = (b[keys..q].to_vec(), b[q..r].to_vec());
+                    b[keys..keys + second.len()].copy_from_slice(&second);
+                    b[keys + second.len()..r].copy_from_slice(&first);
+                    return;
+                }
+            }
+            at = end.div_ceil(block) * block + 16;
+        }
+        panic!("no bset of the dirents root holds two keys");
     });
     refused(&img, "two keys out of order in a bset");
 }
