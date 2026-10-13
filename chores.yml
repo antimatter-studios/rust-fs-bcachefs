@@ -80,6 +80,9 @@ tasks:
   # 470 / 40,000. unit (76 / 4,147) and scripts (4 / 260) were already
   # well inside theirs. Raise a row with a measurement, never per pull
   # request: two pull requests editing one budget line conflict in the queue.
+  # ORACLE RAISED 2026-10-13: the merge-queue group for #201 on main after
+  # #200 (run 38430029009) printed 425 lines / 19,617 bytes; about 30% over
+  # that is 560 / 26,000.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
@@ -107,7 +110,7 @@ tasks:
       # passing (#131), and a merge queue group that moves the lockfile would
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 420 20000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 560 26000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
   test:scripts:

@@ -111,16 +111,16 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     if sb.nr_devices != 1 {
         return Err(Error::Unsupported(format!("{} devices", sb.nr_devices)));
     }
-    let replay = if sb.is_clean() {
-        None
-    } else {
-        r.replayed = true;
-        match journal::replay(dev, &sb) {
-            Ok(rp) => Some(rp),
-            Err(e) => {
-                r.add("journal", e.to_string());
-                return Ok(r);
-            }
+    // Through the journal after an unclean shutdown, and after a clean one
+    // whose superblock records a root that will not read (#166).
+    let replay = match btree::journal_for(dev, &sb) {
+        Ok(rp) => {
+            r.replayed = rp.is_some();
+            rp
+        }
+        Err(e) => {
+            r.add("journal", e.to_string());
+            return Ok(r);
         }
     };
 
