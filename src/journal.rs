@@ -134,8 +134,23 @@ fn bucket_ranges(sb: &Superblock) -> Result<Vec<(u64, u64)>> {
 
 /// Every valid entry in the journal, by sequence number. An entry whose
 /// magic or checksum does not hold ends the scan of its bucket; it is not
-/// an error, because a ring holds stale and torn writes by design.
+/// an error, because a ring holds stale and torn writes by design. One
+/// whose checksum holds but whose sub-entries do not parse is an error.
 pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
+    scan(dev, sb)?
+        .into_iter()
+        .map(|(j, damage)| match damage {
+            Some(e) => Err(e),
+            None => Ok(j),
+        })
+        .collect()
+}
+
+/// [`read_entries`], with the damage of an entry whose sub-entries do not
+/// parse beside its header (its `entries` empty) rather than as the error:
+/// whether that damage matters depends on where the entry is, which only
+/// the whole journal tells (#165).
+fn scan(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<(Jset, Option<Error>)>> {
     let members = sb.members()?;
     let m = members
         .get(sb.dev_idx as usize)
@@ -146,7 +161,7 @@ pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
     }
     let block = (sb.block_size as usize * 512).max(512);
     let magic = jset_magic(&sb.uuid);
-    let mut found: BTreeMap<u64, Jset> = BTreeMap::new();
+    let mut found: BTreeMap<u64, (Jset, Option<Error>)> = BTreeMap::new();
     for (start, nr) in bucket_ranges(sb)? {
         for bucket in start..start.saturating_add(nr) {
             let base = bucket
@@ -156,7 +171,7 @@ pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
             dev.read_at(base, &mut buf)?;
             let mut at = 0usize;
             while at + JSET_HEADER <= buf.len() {
-                let Some(j) = parse_jset(&buf[at..], magic)? else {
+                let Some((j, damage)) = parse_jset_checked(&buf[at..], magic)? else {
                     break;
                 };
                 let len = j.bytes.div_ceil(block) * block;
@@ -164,7 +179,7 @@ pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
                     sector: (base + at as u64) / 512,
                     ..j
                 };
-                found.entry(j.seq).or_insert(j);
+                found.entry(j.seq).or_insert((j, damage));
                 at += len;
             }
         }
@@ -175,6 +190,16 @@ pub fn read_entries(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<Jset>> {
 /// Parse one jset at the start of `b`; `None` when it is not one (wrong
 /// magic, impossible length or a checksum that does not hold).
 pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
+    match parse_jset_checked(b, magic)? {
+        None => Ok(None),
+        Some((_, Some(e))) => Err(e),
+        Some((j, None)) => Ok(Some(j)),
+    }
+}
+
+/// [`parse_jset`], with damage in the sub-entries of a jset whose checksum
+/// holds returned beside its header, whose `entries` are then empty.
+fn parse_jset_checked(b: &[u8], magic: u64) -> Result<Option<(Jset, Option<Error>)>> {
     if b.len() < JSET_HEADER || le64(b, 16) != magic {
         return Ok(None);
     }
@@ -201,6 +226,26 @@ pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
     if crate::csum::verify(csum_type, &b[16..end], stored).is_err() {
         return Ok(None);
     }
+    let (entries, damage) = match parse_entries(b, end) {
+        Ok(entries) => (entries, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    Ok(Some((
+        Jset {
+            seq: le64(b, 24),
+            last_seq: le64(b, 48),
+            flush: flags & FLAG_NO_FLUSH == 0,
+            version: le32(b, 32),
+            sector: 0,
+            bytes: end,
+            entries,
+        },
+        damage,
+    )))
+}
+
+/// The sub-entries of the jset at the start of `b`, which ends at `end`.
+fn parse_entries(b: &[u8], end: usize) -> Result<Vec<JsetEntry>> {
     let mut entries = Vec::new();
     let mut p = JSET_HEADER;
     while p + 8 <= end {
@@ -226,15 +271,7 @@ pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
         });
         p = body_end;
     }
-    Ok(Some(Jset {
-        seq: le64(b, 24),
-        last_seq: le64(b, 48),
-        flush: flags & FLAG_NO_FLUSH == 0,
-        version: le32(b, 32),
-        sector: 0,
-        bytes: end,
-        entries,
-    }))
+    Ok(entries)
 }
 
 /// The unpacked keys of a sub-entry body.
@@ -280,13 +317,28 @@ pub struct Replay {
 /// Collect what replaying the journal applies: the entries from the newest
 /// flush entry's `last_seq` to that entry, in order.
 pub fn replay(dev: &dyn BlockRead, sb: &Superblock) -> Result<Replay> {
-    let entries = read_entries(dev, sb)?;
-    let newest = entries
+    let scanned = scan(dev, sb)?;
+    let newest = scanned
         .iter()
+        .map(|(j, _)| j)
         .rev()
         .find(|j| j.flush)
         .ok_or_else(|| Error::Corrupt("the journal holds no flush entry".into()))?;
     let (from, to) = (newest.last_seq, newest.seq);
+    // Damage inside the window is damage to what recovery applies, and is
+    // refused. An entry older than the window is a stale write the ring has
+    // not overwritten yet, and one newer than its last flush was never
+    // committed: recovery reads neither, and the reference replays such a
+    // journal without looking inside them (#165).
+    let mut entries = Vec::with_capacity(scanned.len());
+    for (j, damage) in scanned {
+        if let Some(e) = damage {
+            if (from..=to).contains(&j.seq) {
+                return Err(e);
+            }
+        }
+        entries.push(j);
+    }
     // Every entry in the window must be there: a gap means lost updates.
     for seq in from..=to {
         if !entries.iter().any(|j| j.seq == seq) {
