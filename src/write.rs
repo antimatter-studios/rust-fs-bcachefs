@@ -425,24 +425,9 @@ pub fn pos(inode: u64, offset: u64) -> Bpos {
     }
 }
 
-/// The options a new inode takes from its directory (#142): the ones the
-/// reference tool sets per file (`set-file-option`), and the targets and
-/// erasure coding it lists with them. `project` is a quota, not one of them.
-const INHERITED_OPTIONS: [&str; 8] = [
-    "data_checksum",
-    "compression",
-    "background_compression",
-    "data_replicas",
-    "promote_target",
-    "foreground_target",
-    "background_target",
-    "erasure_code",
-];
-
-/// The inode flag set on an inode with options, set on it or inherited
-/// (S3 + S4: bit 12 of bi_flags, on every inode of the kernel image that
-/// carries one and on none that does not).
-const INODE_HAS_OPTIONS: u64 = 1 << 12;
+use crate::inode::INODE_HAS_OPTIONS;
+/// The options a new inode takes from its directory (#142).
+use crate::inode::OPTION_FIELDS as INHERITED_OPTIONS;
 
 /// The data checksum and compression a file's data is written with, as
 /// superblock option numbers (crc32c 1, ...; lz4 1, gzip 2, zstd 3): the
