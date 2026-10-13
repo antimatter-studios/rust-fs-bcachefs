@@ -1366,15 +1366,14 @@ impl<D: BlockDevice> Writer<D> {
     /// it out, so what the reference would store for those bytes is what
     /// is stored.
     pub fn write_at(&mut self, ino: u64, offset: u64, data: &[u8]) -> Result<()> {
-        let mut c = self.contents(ino)?;
-        let from = usize::try_from(offset)
-            .map_err(|_| Error::Unsupported("offset larger than memory".into()))?;
-        let to = from
-            .checked_add(data.len())
+        let end = offset
+            .checked_add(data.len() as u64)
             .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))?;
-        if to > c.len() {
-            c.resize(to, 0);
+        let mut c = self.contents(ino)?;
+        if end > c.len() as u64 {
+            self.grow(ino, &mut c, end)?;
         }
+        let (from, to) = (offset as usize, end as usize);
         c[from..to].copy_from_slice(data);
         self.write_file(ino, &c)
     }
@@ -1388,12 +1387,36 @@ impl<D: BlockDevice> Writer<D> {
     /// Set a file's size (#102): cut short, or grown with zeros.
     pub fn truncate(&mut self, ino: u64, size: u64) -> Result<()> {
         let mut c = self.contents(ino)?;
-        c.resize(
-            usize::try_from(size)
-                .map_err(|_| Error::Unsupported("size larger than memory".into()))?,
-            0,
-        );
+        if size > c.len() as u64 {
+            self.grow(ino, &mut c, size)?;
+        } else {
+            c.truncate(size as usize);
+        }
         self.write_file(ino, &c)
+    }
+
+    /// Grow the contents `c` of file `ino` to `size` bytes with zeros, for
+    /// a write or a truncate that ends past them. The file is written back
+    /// whole, its holes as allocated zeros, so a size larger than the device
+    /// can never be written: it is refused before anything is allocated,
+    /// where holding it in memory once aborted the process (#156). The rest
+    /// is reserved fallibly ([`crate::util::zeroed`]).
+    fn grow(&self, ino: u64, c: &mut Vec<u8>, size: u64) -> Result<()> {
+        let device = self.dev.size_bytes();
+        if size > device {
+            return Err(Error::Unsupported(format!(
+                "inode {ino}: a size of {size} bytes is more than the device holds \
+                 ({device} bytes), and this writer writes a file whole, holes included"
+            )));
+        }
+        let more = usize::try_from(size)
+            .map_err(|_| Error::Unsupported("size larger than memory".into()))?
+            - c.len();
+        c.try_reserve_exact(more).map_err(|_| {
+            Error::Unsupported(format!("inode {ino}: {size} bytes do not fit in memory"))
+        })?;
+        c.resize(c.len() + more, 0);
+        Ok(())
     }
 
     /// Replace a file's whole contents with `data`, laid out as the
