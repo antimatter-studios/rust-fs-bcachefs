@@ -1622,3 +1622,102 @@ fn every_xattr_a_run_of_batches_inserts_reads_back() {
     let r = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(r.clean(), "{:?}", r.problems);
 }
+
+/// Unlinking a reflinked file reads the reflink btree along its pointer's
+/// run of indirect extents, not every node after the run's start (#193).
+/// The kernel image's reflink btree is padded, in batches, with indirect
+/// extents past every real one until it spans many nodes; unlinking the
+/// clone of big/random.bin then reads the path to its run and the leaves the
+/// run is in. The padding is never read as data: it lies after the run.
+#[test]
+fn unlinking_a_reflinked_file_reads_its_run_not_the_rest_of_the_reflink_btree() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    use std::collections::BTreeSet;
+    let img = scratch("kernel.img", "reflink-run");
+    let big = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/big")
+        .unwrap();
+    let last = {
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::REFLINK)
+            .unwrap()
+            .iter()
+            .map(|k| k.pos.offset)
+            .max()
+            .expect("the kernel image holds shared data")
+    };
+    // An indirect extent of 8 sectors, one reference, with a kilobyte of
+    // value so a few hundred fill a node.
+    let pad = |i: u64| {
+        let mut value = vec![0u8; 1024];
+        value[..8].copy_from_slice(&1u64.to_le_bytes());
+        Bkey {
+            key_type: key_type::REFLINK_V,
+            size: 8,
+            version_hi: 0,
+            version_lo: 0,
+            pos: Bpos {
+                inode: 0,
+                offset: last + 1_000_000 + 8 * (i + 1),
+                snapshot: 0,
+            },
+            value,
+        }
+    };
+    let nodes = |img: &std::path::Path| {
+        let dev = CountingRw::new(FileDevice::open(img).unwrap());
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::REFLINK).unwrap();
+        let root = sb
+            .btree_roots()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.btree_id == btree_id::REFLINK)
+            .unwrap();
+        (
+            dev.offsets().into_iter().collect::<BTreeSet<u64>>(),
+            usize::from(root.level) + 1,
+        )
+    };
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let mut made = 0;
+    let (mut reflink_nodes, mut depth) = (BTreeSet::new(), 1);
+    for _ in 0..40 {
+        w.insert(btree_id::REFLINK, (made..made + 200).map(pad).collect())
+            .unwrap();
+        made += 200;
+        (reflink_nodes, depth) = nodes(&img);
+        if reflink_nodes.len() > 4 * (depth + 2) {
+            break;
+        }
+    }
+    drop(w);
+    assert!(
+        reflink_nodes.len() > 4 * (depth + 2),
+        "only {} reflink nodes after {made} padding extents: the bound proves nothing",
+        reflink_nodes.len()
+    );
+
+    let mut w = Writer::open(CountingRw::new(FileDevice::open_rw(&img).unwrap())).unwrap();
+    let opened = w.device().offsets().len();
+    w.unlink(big, b"random-clone.bin")
+        .unwrap_or_else(|e| panic!("unlinking the clone: {e}"));
+    let read = w.device().offsets()[opened..]
+        .iter()
+        .filter(|o| reflink_nodes.contains(o))
+        .collect::<BTreeSet<_>>()
+        .len();
+    drop(w);
+    assert!(
+        read <= depth + 2,
+        "unlinking the clone read {read} of the {} reflink nodes, in a btree of {depth} levels",
+        reflink_nodes.len()
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(fs.lookup("/big/random-clone.bin").is_err());
+    assert!(fs.lookup("/big/random.bin").is_ok());
+}
