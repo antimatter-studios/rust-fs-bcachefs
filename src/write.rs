@@ -1341,8 +1341,9 @@ impl<D: BlockDevice> Writer<D> {
             match k.key_type {
                 key_type::EXTENT => {
                     let e = crate::extent::DataExtent::from_key(&k)?;
-                    let data =
-                        crate::fs::extent_bytes(&e, |at, buf| Ok(self.dev.read_at(at, buf)?))?;
+                    let data = crate::fs::extent_bytes(&e, self.dev.size_bytes(), |at, buf| {
+                        Ok(self.dev.read_at(at, buf)?)
+                    })?;
                     crate::fs::copy_window(&mut out, 0, size as u64, e.file_start * 512, &data);
                 }
                 key_type::INLINE_DATA => {
