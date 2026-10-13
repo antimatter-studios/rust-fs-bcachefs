@@ -94,12 +94,9 @@ impl<D: BlockRead> Filesystem<D> {
         }
         // The roots in the superblock are as of the last clean shutdown;
         // after an unclean one everything since is in the journal, which
-        // is replayed here, in memory.
-        let replay = if sb.is_clean() {
-            None
-        } else {
-            Some(crate::journal::replay(&dev, &sb)?)
-        };
+        // is replayed here, in memory. So is a clean one whose superblock
+        // records a root that will not read (#166).
+        let replay = crate::btree::journal_for(&dev, &sb)?;
         // The root inode must be there: a filesystem without it is not
         // one to read. Its snapshot is the one every other key must carry.
         let member = sb

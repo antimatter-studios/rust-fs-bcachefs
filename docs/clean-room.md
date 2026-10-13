@@ -172,6 +172,15 @@ all eight fixture sets.
   (S4, 14 to 16 roots each): the rightmost node covers everything up to
   the end of the key space. The cursor records the root key's position as
   the btree's end rather than assuming it (`tests/oracle_cursor_end.rs`).
+- On every clean fixture the clean field and the journal's newest flush
+  entry record the same root for every btree (S4,
+  `tests/oracle_journal_roots.rs`, #166). The reference opened, and checked
+  clean, images whose clean-field root had been damaged (S8, the
+  differential run, #164), so the reader takes the journal's roots when a
+  clean-field root does not read: its key does not decode, its node does
+  not read, or the node is another btree's or level's. Which copy the
+  reference prefers when both read and disagree is not observed, and the
+  reader keeps the clean field's then.
 - A btree can have no root recorded at all: every formatter-made fixture
   records none for xattrs (3), and `aged`, which has xattrs, does (S4). The
   reference lister lists such a btree as empty, with no error

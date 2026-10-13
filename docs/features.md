@@ -47,6 +47,7 @@ States:
 | Error extents, extent whiteouts, older inode encodings | Supported | 0.4.0 (#68) | | `oracle_refused_local.rs` |
 | Extended attributes, user and trusted namespaces | Supported | 0.4.0 (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | 0.4.0 (#17) | | `oracle_journal.rs` |
+| A clean filesystem whose superblock records a root that will not read, through the journal's copy of the roots | Supported | Unreleased | #166 | `oracle_journal_roots.rs` |
 | A damaged journal entry older than the replay window, or newer than its last flush, is passed over as recovery passes over it; one inside the window is refused | Supported | Unreleased (#183) | `Writer::open_journalled` still refuses a journal holding any damaged entry | `oracle_journal_window.rs` |
 | Journal sequence blacklist | Supported | 0.4.0 (#67) | | `oracle_blacklist.rs` |
 | crc128 extent entries (extents over 512 sectors), partly overwritten ones too | Supported | 0.4.0 (#97) | | `oracle_extent_entries.rs` |

@@ -557,6 +557,57 @@ impl NodeCache {
     }
 }
 
+/// The journal a reader reads a filesystem through: its replay when the
+/// filesystem was not shut down cleanly, and also when it was but a root
+/// the superblock's clean section records will not read (#166). `None` when
+/// the clean section's roots all read.
+///
+/// The journal records every root again (S1's journal entries: `btree_root`,
+/// "Btree root pointers, recorded every journal write"), and on every clean
+/// fixture its newest flush entry records the same roots as the clean
+/// section (tests/oracle_journal_roots.rs). The reference opened, and
+/// checked clean, two images whose superblock root had been damaged (the
+/// differential run, #164), so it does not depend on the superblock's copy
+/// alone; which copy it prefers when both read and disagree is not observed,
+/// and this reader keeps the clean section's then.
+pub fn journal_for(dev: &dyn BlockRead, sb: &Superblock) -> Result<Option<crate::journal::Replay>> {
+    if !sb.is_clean() {
+        return crate::journal::replay(dev, sb).map(Some);
+    }
+    let Err(bad) = clean_roots_read(dev, sb) else {
+        return Ok(None);
+    };
+    crate::journal::replay(dev, sb).map(Some).map_err(|e| {
+        Error::Corrupt(format!(
+            "{bad}; and the journal, which records every root again, does not replay: {e}"
+        ))
+    })
+}
+
+/// Whether every root the clean section records reads: its key decodes,
+/// its node reads, and the node is of that btree and level.
+fn clean_roots_read(dev: &dyn BlockRead, sb: &Superblock) -> Result<()> {
+    let blacklist = sb.journal_seq_blacklist()?;
+    for root in sb.btree_roots()? {
+        let id = root.btree_id;
+        let checked = (|| {
+            let Some((level, key)) = root_of(sb, id, None)? else {
+                return Ok(());
+            };
+            let ptr = NodePtr::from_key(&key)?;
+            let node = read_node_upto(dev, sb, &ptr, u64::MAX, &blacklist)?;
+            check_header(&node, id, level, &ptr, key.pos)
+        })();
+        checked.map_err(|e| {
+            Error::Corrupt(format!(
+                "the superblock's root for btree {} does not read: {e}",
+                crate::journal::btree_name(id)
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// A btree's root: from the replay's newest flush entry, or the clean
 /// field. `None` when none is recorded, which is a btree holding nothing:
 /// the reference formatter records no xattrs root on a new filesystem, and
