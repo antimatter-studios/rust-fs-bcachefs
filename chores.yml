@@ -199,6 +199,8 @@ tasks:
       - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
       - cargo clippy --locked --all-targets --features cli,write -- -D warnings
+      # Every crate the shipped artifacts link has its notice (#155).
+      - python3 scripts/third-party-notices.py check
       # The licence gate: every crate in the graph is permissive (deny.toml).
       - scripts/licenses.sh
       # The fuzz workspace builds from its own lockfile (#148). It depends on
@@ -217,6 +219,8 @@ tasks:
       - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
       - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
       - 'cp "../rust-fs-core/include/fs_core.h" "{{.OUT}}/include/fs_core.h"'
+      # The library links its dependencies in, so their notices go with it (#155).
+      - 'cp LICENSE THIRD-PARTY-LICENSES.md "{{.OUT}}/"'
 
   artifact:
     desc: Print the absolute path of the directory holding the built outputs

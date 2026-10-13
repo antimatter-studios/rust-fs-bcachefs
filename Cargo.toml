@@ -12,7 +12,7 @@ exclude = ["fuzz"]
 # scripts/package-cli.sh (run in place as ../rust-fs-core/scripts/package-cli.sh).
 [package.metadata.package-cli]
 names = { "fs.bcachefs" = 1, "fsck.bcachefs" = 8 }
-licenses = ["LICENSE"]
+licenses = ["LICENSE", "THIRD-PARTY-LICENSES.md"]
 
 [lib]
 name = "fs_bcachefs"
