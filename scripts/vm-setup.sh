@@ -70,7 +70,13 @@ if [ "$(cat "$ROOT/.ref-version" 2>/dev/null || true)" != "$REF_BUILD" ]; then
         curl -fsSL -o tools.tar.gz https://github.com/koverstreet/bcachefs-tools/archive/refs/tags/v$REF_VERSION.tar.gz
         tar -xzf tools.tar.gz
         cd bcachefs-tools-$REF_VERSION
-        BCACHEFS_FUSE=1 make -j\$(nproc) bcachefs >/build/make.log 2>&1 || { tail -n 60 /build/make.log; exit 1; }
+        # A failed build reports its status, never its log: a compiler
+        # diagnostic quotes the source line it complains about, and the
+        # clean-room rule is never to read it (#153, docs/clean-room.md).
+        BCACHEFS_FUSE=1 make -j\$(nproc) bcachefs >/build/make.log 2>&1 || {
+            echo \"vm-setup: the reference tools did not build (make exited \$?); the log stays in the guest's chroot, unprinted\" >&2
+            exit 1
+        }
         install -m 0755 bcachefs /usr/local/sbin/bcachefs
         # The binary is all the oracle needs. The unpacked source tree goes
         # at once, so nobody working in this guest (where this crate is also
