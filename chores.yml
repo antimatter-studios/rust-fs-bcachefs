@@ -219,6 +219,8 @@ tasks:
       - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
       - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
       - 'cp "../rust-fs-core/include/fs_core.h" "{{.OUT}}/include/fs_core.h"'
+      # The library links its dependencies in, so their notices go with it (#155).
+      - 'cp LICENSE THIRD-PARTY-LICENSES.md "{{.OUT}}/"'
 
   artifact:
     desc: Print the absolute path of the directory holding the built outputs
