@@ -53,6 +53,26 @@ pub const HASH_TYPE_CRC32C: u8 = 0;
 /// entries in the casefolded layout and finds them by their folded name.
 pub const INODE_HAS_CASE_INSENSITIVE: u32 = 1 << 10;
 
+/// The inode flag set on an inode with options, set on it or inherited
+/// (S3 + S4: bit 12 of bi_flags, on every inode of the kernel image that
+/// carries one and on none that does not).
+pub const INODE_HAS_OPTIONS: u64 = 1 << 12;
+
+/// The option fields (of [`FIELD_NAMES`]) a new inode takes from its
+/// directory (#142): the ones the reference tool sets per file
+/// (`set-file-option`), and the targets and erasure coding it lists with
+/// them. `project` is a quota, not one of them.
+pub const OPTION_FIELDS: [&str; 8] = [
+    "data_checksum",
+    "compression",
+    "background_compression",
+    "data_replicas",
+    "promote_target",
+    "foreground_target",
+    "background_target",
+    "erasure_code",
+];
+
 /// Bit 7 of a dirent's type byte marks the casefolded layout. OBSERVED
 /// (S4): 0x88, 0x8a and 0x84 for a file, a symlink and a directory in the
 /// `casefold` set, against 8, 10 and 4 everywhere else.

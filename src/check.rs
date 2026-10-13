@@ -8,7 +8,10 @@
 //! link count against the entries that name it; every extent against its
 //! inode (it exists, the extent does not start past the end of the file,
 //! it does not overlap the extent before it); every data extent's checksum;
-//! that every key is at a snapshot the snapshots btree has. Entries, inodes
+//! that every key is at a snapshot the snapshots btree has; every xattr
+//! against its inode (it exists, the xattr is reachable from its name's
+//! hash slot); every inode's back-reference to the entry naming it; every
+//! inode's has-options flag against its option fields. Entries, inodes
 //! and link counts are judged as each subvolume sees them through its
 //! snapshot's chain, and an entry naming a subvolume against the
 //! subvolumes btree. Every reflinked extent is followed into the reflink
@@ -28,7 +31,7 @@ use crate::bkey::{key_type, Bkey, Bpos};
 use crate::btree::{self, btree_id};
 use crate::error::{Error, Result};
 use crate::extent::DataExtent;
-use crate::inode::{Dirent, Inode, ROOT_INO};
+use crate::inode::{Dirent, Inode, InodeV3Raw, INODE_HAS_OPTIONS, OPTION_FIELDS, ROOT_INO};
 use crate::journal::{self, Replay};
 use crate::superblock::Superblock;
 use crate::util::le64;
@@ -232,6 +235,17 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             .or_default()
             .push(k);
     }
+    let mut xattr_keys: BTreeMap<(u64, u64), Vec<&Bkey>> = BTreeMap::new();
+    for k in trees.get(&btree_id::XATTRS).into_iter().flatten() {
+        xattr_keys
+            .entry((k.pos.inode, k.pos.offset))
+            .or_default()
+            .push(k);
+    }
+    // A subvolume's root is named by an entry in its parent that names
+    // the subvolume, not the inode.
+    let subvolume_roots: std::collections::BTreeSet<u64> =
+        subvolumes.values().map(|(root, _)| *root).collect();
     // Every inode key decoded once; a key that does not decode is named.
     let mut decoded: BTreeMap<Bpos, Inode> = BTreeMap::new();
     for k in trees.get(&btree_id::INODES).into_iter().flatten() {
@@ -246,6 +260,31 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
     r.inodes = decoded.len() as u64;
+    // The has-options flag (#163): bit 12 of bi_flags is set exactly when
+    // the inode carries an option, set on it or inherited (S3 + S4, #142).
+    // A nocow inode may carry it with none of the option fields set.
+    for k in trees.get(&btree_id::INODES).into_iter().flatten() {
+        if k.key_type != key_type::INODE_V3 || !decoded.contains_key(&k.pos) {
+            continue;
+        }
+        let Ok(raw) = InodeV3Raw::parse(&k.value) else {
+            continue;
+        };
+        let has = OPTION_FIELDS.iter().any(|f| raw.field(f).unwrap_or(0) != 0);
+        let flagged = raw.flags & INODE_HAS_OPTIONS != 0;
+        let nocow = raw.field("nocow").unwrap_or(0) != 0;
+        if has != flagged && !(flagged && nocow) {
+            r.add(
+                "inode_has_inode_opts_flag_wrong",
+                format!(
+                    "inode {}: the has-options flag is {}, and it {} options",
+                    k.pos,
+                    if flagged { "set" } else { "clear" },
+                    if has { "has" } else { "has no" }
+                ),
+            );
+        }
+    }
     // The inode a snapshot sees at `ino`.
     let inode_seen = |chain: &[u32], ino: u64| -> Option<&Inode> {
         let k = nearest(chain, inode_keys.get(&ino)?)?;
@@ -361,6 +400,96 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 add(
                     "link_count",
                     format!("inode {ino} counts {} links; {want} found", i.link_count()),
+                );
+            }
+        }
+
+        // Back-references (#163): an inode one entry names says which, in
+        // bi_dir and bi_dir_offset, and that entry names it back. A file
+        // with several names, a subvolume's root and an inode with no
+        // back-reference at all are not judged.
+        for (ino, ks) in inode_keys.iter().filter(|_| both) {
+            if subvolume_roots.contains(ino) || roots.contains(ino) {
+                continue;
+            }
+            let Some(k) = nearest(&c, ks) else { continue };
+            let Some(i) = decoded.get(&k.pos) else {
+                continue;
+            };
+            if !i.is_dir() && i.link_count() != 1 {
+                continue;
+            }
+            let Ok(raw) = InodeV3Raw::parse(&k.value) else {
+                continue;
+            };
+            let dir = raw.field("dir").unwrap_or(0);
+            let off = raw.field("dir_offset").unwrap_or(0);
+            if dir == 0 {
+                continue;
+            }
+            let entry = dirent_keys
+                .get(&(dir, off))
+                .and_then(|ks| nearest(&c, ks))
+                .filter(|d| d.key_type == key_type::DIRENT)
+                .and_then(|d| Dirent::from_key(d).ok());
+            match entry {
+                None => add(
+                    "inode_points_to_missing_dirent",
+                    format!("inode {ino} names entry {off} of directory {dir}, which is not there"),
+                ),
+                Some(d) if d.d_type != DT_SUBVOL && d.inum != *ino => add(
+                    "inode_points_to_wrong_dirent",
+                    format!(
+                        "inode {ino} names entry {off} of directory {dir}, which names inode {}",
+                        d.inum
+                    ),
+                ),
+                Some(_) => {}
+            }
+        }
+
+        // Xattrs (#163): each one's inode is there, and the xattr is
+        // reachable from its name's hash slot along a run of taken slots,
+        // as a lookup walks it (S8, src/xattr.rs).
+        for ((owner_ino, off), ks) in &xattr_keys {
+            let Some(k) = nearest(&c, ks) else { continue };
+            if k.key_type != key_type::XATTR {
+                continue;
+            }
+            let Some(owner) = inode_seen(&c, *owner_ino) else {
+                add(
+                    "key_in_missing_inode",
+                    format!("xattr {} of inode {owner_ino}, which is not there", k.pos),
+                );
+                continue;
+            };
+            let v = &k.value;
+            if v.len() < 4 + v.get(1).copied().unwrap_or(0) as usize {
+                continue;
+            }
+            let short = &v[4..4 + v[1] as usize];
+            let Some(slot) = crate::xattr::slot(owner.hash_type(), owner.hash_seed, v[0], short)
+            else {
+                continue;
+            };
+            let taken = |o: u64| {
+                xattr_keys
+                    .get(&(*owner_ino, o))
+                    .and_then(|ks| nearest(&c, ks))
+                    .is_some_and(|k| {
+                        matches!(k.key_type, key_type::XATTR | key_type::HASH_WHITEOUT)
+                    })
+            };
+            let reachable =
+                slot <= *off && *off - slot <= xattr_keys.len() as u64 && (slot..*off).all(taken);
+            if !reachable {
+                add(
+                    "hash_table_key_wrong_offset",
+                    format!(
+                        "xattr {} is at offset {off}, and its name hashes to {slot} with an \
+                         empty slot between",
+                        k.pos
+                    ),
                 );
             }
         }
