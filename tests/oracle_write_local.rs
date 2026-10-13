@@ -1546,8 +1546,8 @@ fn every_xattr_a_run_of_batches_inserts_reads_back() {
     let xattr = |i: usize| {
         let name = format!("filler-{i:05}");
         let value = vec![b'v'; 1500];
-        // x_type 1, the user namespace.
-        let mut v = vec![1u8, name.len() as u8];
+        // Namespace 0, the user namespace in this format.
+        let mut v = vec![0u8, name.len() as u8];
         v.extend_from_slice(&(value.len() as u16).to_le_bytes());
         v.extend_from_slice(name.as_bytes());
         v.extend_from_slice(&value);
@@ -1562,7 +1562,7 @@ fn every_xattr_a_run_of_batches_inserts_reads_back() {
                 offset: fs_bcachefs::xattr::slot(
                     inode.hash_type(),
                     inode.hash_seed,
-                    1,
+                    0,
                     name.as_bytes(),
                 )
                 .unwrap(),
