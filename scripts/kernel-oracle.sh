@@ -23,7 +23,8 @@
 # removes 16M files until buckets are reused (#94); on a third it snapshots
 # the root subvolume itself (#138); a fourth, a gzip filesystem, it mounts
 # and leaves for this crate's tools to write into, then boots again to read
-# that back (#141). Its console becomes
+# that back (#141); on a fifth it preallocates a MiB in a nocow file and in
+# an ordinary one and writes 4 KiB into each (#158). Its console becomes
 # kernel.txt and kernel.json; the reference checker judges both images. A
 # stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing.
@@ -53,6 +54,7 @@ fi
 python3 "$here/scripts/fixture-tree.py" "$work/root/tree"
 cp "$here/scripts/kernel-oracle-init.sh" "$work/root/init"
 cp "$here/scripts/ficlone.c" "$work/ficlone.c"
+cp "$here/scripts/prealloc.c" "$work/prealloc.c"
 chmod 0755 "$work/root/init"
 
 echo "kernel-oracle: building the module in a Debian 13 container"
@@ -102,6 +104,7 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     done
     cp /bin/busybox /work/root/bin/busybox
     gcc -static -O2 -o /work/root/bin/ficlone /work/ficlone.c
+    gcc -static -O2 -o /work/root/bin/prealloc /work/prealloc.c
     # The reference tool, with the libraries it loads, for the subvolume
     # and the snapshot (#12): only it knows their ioctls.
     tool="$(command -v bcachefs)"
@@ -121,6 +124,8 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     bcachefs format -q /work/kernel-reuse.img
     truncate -s 64M /work/kernel-rootsnap.img
     bcachefs format -q /work/kernel-rootsnap.img
+    truncate -s 64M /work/kernel-prealloc.img
+    bcachefs format -q /work/kernel-prealloc.img
     truncate -s 64M /work/kernel-written.img
     if bcachefs format -q --compression=gzip /work/kernel-written.img \
         >/work/written.format.txt 2>&1; then
@@ -147,6 +152,7 @@ boot 300 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
     -drive "file=$work/kernel-reuse.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-rootsnap.img,if=virtio,format=raw" \
     -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
+    -drive "file=$work/kernel-prealloc.img,if=virtio,format=raw" \
     -display none -serial "file:$work/console.log" -serial "file:$work/oracle.log" \
     -no-reboot || first=$?
 [ "$first" -eq 0 ] || echo "kernel-oracle: qemu exited $first" >&2
@@ -263,6 +269,20 @@ else
     record written-fsck "errors (kernel-written.fsck.txt)"
 fi
 cp --sparse=always "$work/kernel-written.img" "$OUT/kernel-written.img"
+# The preallocated files (#158): judged by the reference checker, and the
+# lister's view of their extents, which says what kind of pointer the
+# module made for space a file holds but never wrote.
+if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+    bcachefs fsck -n /work/kernel-prealloc.img >"$OUT/kernel-prealloc.fsck.txt" 2>&1; then
+    record prealloc-fsck clean
+else
+    record prealloc-fsck "errors (kernel-prealloc.fsck.txt)"
+fi
+cp --sparse=always "$work/kernel-prealloc.img" "$OUT/kernel-prealloc.img"
+for b in extents inodes; do
+    docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
+        bcachefs list -b "$b" /work/kernel-prealloc.img >"$OUT/kernel-prealloc.$b.txt" 2>&1 || true
+done
 # The lister's view of its inodes (#142): this crate's file beside the
 # module's, in a directory with options.
 docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
