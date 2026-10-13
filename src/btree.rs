@@ -241,6 +241,7 @@ impl Node {
                     .iter()
                     .any(|&(start, end)| start <= journal_seq && journal_seq < end);
             let mut p = keys_at;
+            let mut prev: Option<Bpos> = None;
             while committed && p < end {
                 let n = b[p] as usize;
                 if n == 0 {
@@ -250,7 +251,18 @@ impl Node {
                 if kend > end {
                     return Err(Error::Corrupt("key runs past its bset".into()));
                 }
-                all.push((index, bkey::decode(&b[p..kend], &node.format)?));
+                let k = bkey::decode(&b[p..kend], &node.format)?;
+                // A bset is sorted; one that is not would be re-sorted
+                // below without a word, and the reference refuses it ("keys
+                // out of order", #162).
+                if let Some(prev) = prev.filter(|&prev| k.pos < prev) {
+                    return Err(Error::Corrupt(format!(
+                        "keys out of order in a bset: {} after {prev}",
+                        k.pos
+                    )));
+                }
+                prev = Some(k.pos);
+                all.push((index, k));
                 p = kend;
             }
             index += 1;
@@ -327,7 +339,12 @@ pub fn walk_replayed(
         blacklist: sb.journal_seq_blacklist()?,
     };
     let mut out = Vec::new();
-    walk.descend(&NodePtr::from_key(&root_key)?, root_level, &mut out)?;
+    walk.descend(
+        &NodePtr::from_key(&root_key)?,
+        root_key.pos,
+        root_level,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -447,6 +464,7 @@ impl<'a> Cursor<'a> {
                     &self.walk.blacklist,
                 )?,
             };
+            check_header(&node, self.walk.id, level, &ptr, max)?;
             let keys = self
                 .walk
                 .apply(node.keys, level, node.min_key, node.max_key);
@@ -593,9 +611,11 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Read the node at `level` (0 = leaf) and everything below it.
-    fn descend(&self, ptr: &NodePtr, level: u8, out: &mut Vec<Bkey>) -> Result<()> {
+    /// Read the node at `level` (0 = leaf), which its pointer places at
+    /// `max`, and everything below it.
+    fn descend(&self, ptr: &NodePtr, max: Bpos, level: u8, out: &mut Vec<Bkey>) -> Result<()> {
         let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq, &self.blacklist)?;
+        check_header(&node, self.id, level, ptr, max)?;
         let keys = self.apply(node.keys, level, node.min_key, node.max_key);
         if level == 0 {
             out.extend(keys);
@@ -608,7 +628,7 @@ impl Walk<'_> {
                     k.key_type
                 )));
             }
-            self.descend(&NodePtr::from_key(&k)?, level - 1, out)?;
+            self.descend(&NodePtr::from_key(&k)?, k.pos, level - 1, out)?;
         }
         Ok(())
     }
@@ -663,6 +683,41 @@ impl Walk<'_> {
 /// The accounting btree and its key type (S1's orders; S8).
 const ACCOUNTING: u8 = 20;
 const ACCOUNTING_KEY: u8 = 34;
+
+/// A node read through the pointer `ptr`, in btree `id` at `level`, where
+/// the pointer's key places its last position at `max`: its header must
+/// say the same of it. The reference checks a node against its parent and
+/// refuses one that disagrees ("incorrect btree id", "incorrect min_key",
+/// "incorrect max key"); a node that lies about where it belongs would feed
+/// its keys into the wrong place (#162).
+fn check_header(node: &Node, id: u8, level: u8, ptr: &NodePtr, max: Bpos) -> Result<()> {
+    let (node_id, node_level) = flags_id_and_level(node.flags);
+    let at = ptr.ptrs[0].offset;
+    if node_id != id {
+        return Err(Error::Corrupt(format!(
+            "btree node at sector {at} is of btree {node_id}, and its pointer is in btree {id}"
+        )));
+    }
+    if node_level != level {
+        return Err(Error::Corrupt(format!(
+            "btree node at sector {at} is at level {node_level}, and its pointer leads to \
+             level {level}"
+        )));
+    }
+    if node.min_key != ptr.min_key {
+        return Err(Error::Corrupt(format!(
+            "btree node at sector {at} starts at {}, and its pointer at {}",
+            node.min_key, ptr.min_key
+        )));
+    }
+    if node.max_key != max {
+        return Err(Error::Corrupt(format!(
+            "btree node at sector {at} ends at {}, and its pointer at {max}",
+            node.max_key
+        )));
+    }
+    Ok(())
+}
 
 pub fn read_node(dev: &dyn BlockRead, sb: &Superblock, ptr: &NodePtr) -> Result<Node> {
     read_node_upto(dev, sb, ptr, u64::MAX, &sb.journal_seq_blacklist()?)

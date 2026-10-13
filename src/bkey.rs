@@ -112,6 +112,28 @@ impl BkeyFormat {
                 f.key_u64s
             )));
         }
+        // Every value a field's bits can hold, plus its offset, must fit the
+        // field it unpacks into: inode, offset, snapshot, size, version_hi,
+        // version_lo. One that does not wraps its keys silently, and the
+        // reference refuses it ("invalid bkey format: field N too large",
+        // #162).
+        const FIELD_BITS: [u32; 6] = [64, 64, 32, 32, 32, 64];
+        for (i, &width) in FIELD_BITS.iter().enumerate() {
+            let span = match f.bits[i] {
+                0 => 0,
+                b => u64::MAX >> (64 - u32::from(b)),
+            };
+            let field_max = u64::MAX >> (64 - width);
+            if f.field_offset[i]
+                .checked_add(span)
+                .is_none_or(|top| top > field_max)
+            {
+                return Err(Error::Corrupt(format!(
+                    "bkey_format field {i}: offset {:#x} and {} bits unpack past its {width} bits",
+                    f.field_offset[i], f.bits[i]
+                )));
+            }
+        }
         Ok(f)
     }
 }
