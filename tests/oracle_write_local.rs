@@ -1168,6 +1168,138 @@ fn a_create_reads_paths_not_whole_btrees() {
     assert_eq!(fs.read(f).unwrap(), b"new\n");
 }
 
+/// Setting an xattr reads the xattrs btree on the path to the name's slot
+/// and the run of taken slots from there, not every xattr of the inode
+/// after it (#193). /hello.txt is given enough xattrs, put in place in one
+/// insert, that its table spans many leaves; the new name is the one of 64
+/// whose slot comes first, so nearly all of the table lies after it.
+#[test]
+fn an_xattr_set_reads_its_run_not_the_rest_of_the_table() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    use std::collections::BTreeSet;
+    let img = scratch("default.img", "xattr-probe-run");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let ino = fs.lookup("/hello.txt").unwrap();
+    let inode = fs.inode(ino).unwrap();
+    let snapshot = {
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::INODES)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.pos.inode == 0 && k.pos.offset == ino && k.key_type == key_type::INODE_V3)
+            .unwrap()
+            .pos
+            .snapshot
+    };
+    drop(fs);
+    let slot = |name: &[u8]| {
+        fs_bcachefs::xattr::slot(inode.hash_type(), inode.hash_seed, 0, name).unwrap()
+    };
+    // A user xattr with a 1500-byte value, at its own slot.
+    let xattr = |i: usize| {
+        let name = format!("filler-{i:05}");
+        let value = vec![b'v'; 1500];
+        let mut v = vec![0u8, name.len() as u8];
+        v.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        v.extend_from_slice(name.as_bytes());
+        v.extend_from_slice(&value);
+        v.resize(v.len().div_ceil(8) * 8, 0);
+        Bkey {
+            key_type: key_type::XATTR,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: Bpos {
+                inode: ino,
+                offset: slot(name.as_bytes()),
+                snapshot,
+            },
+            value: v,
+        }
+    };
+    // The first xattr makes the btree's root through the writer; the rest
+    // go in by the batch until the table spans enough nodes for the bound
+    // to mean something.
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.set_xattr(ino, b"user.first", b"1").unwrap();
+    let nodes = |img: &std::path::Path| {
+        let dev = CountingRw::new(FileDevice::open(img).unwrap());
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::XATTRS).unwrap();
+        let root = sb
+            .btree_roots()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.btree_id == btree_id::XATTRS)
+            .unwrap();
+        (
+            dev.offsets().into_iter().collect::<BTreeSet<u64>>(),
+            usize::from(root.level) + 1,
+        )
+    };
+    let mut made = 0;
+    let (mut xattr_nodes, mut depth) = (BTreeSet::new(), 1);
+    for _ in 0..40 {
+        w.insert(btree_id::XATTRS, (made..made + 250).map(xattr).collect())
+            .unwrap();
+        made += 250;
+        (xattr_nodes, depth) = nodes(&img);
+        if xattr_nodes.len() > 4 * (depth + 1) {
+            break;
+        }
+    }
+    drop(w);
+    assert!(
+        xattr_nodes.len() > 4 * (depth + 1),
+        "only {} xattrs nodes after {made} xattrs: the bound proves nothing",
+        xattr_nodes.len()
+    );
+    // What reads back before the set. Not every inserted xattr does yet
+    // (#202), so the set is held to what it adds: one xattr, and nothing
+    // lost from the table it probed.
+    let before = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .xattrs(ino)
+        .unwrap()
+        .len();
+
+    let name = (0..64)
+        .map(|i| format!("new-xattr-{i:02}"))
+        .min_by_key(|n| slot(n.as_bytes()))
+        .unwrap();
+    let mut w = Writer::open(CountingRw::new(FileDevice::open_rw(&img).unwrap())).unwrap();
+    let opened = w.device().offsets().len();
+    w.set_xattr(ino, format!("user.{name}").as_bytes(), b"new")
+        .unwrap();
+    let read = w.device().offsets()[opened..]
+        .iter()
+        .filter(|o| xattr_nodes.contains(o))
+        .collect::<BTreeSet<_>>()
+        .len();
+    drop(w);
+    assert!(
+        read <= depth + 1,
+        "one xattr set read {read} of the {} xattrs nodes, in a btree of {depth} levels",
+        xattr_nodes.len()
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let full = format!("user.{name}");
+    let set = fs.xattrs(ino).unwrap();
+    assert!(
+        set.iter()
+            .any(|x| x.name == full.as_bytes() && x.value == b"new"),
+        "{full} does not read back"
+    );
+    assert_eq!(
+        set.len(),
+        before + 1,
+        "the set adds its xattr and loses none of the {before} before it ({made} inserted, #202)"
+    );
+}
+
 /// A node written into a reused bucket is read as itself, not as the node
 /// that was there before (#108, #132): the writer's node cache keys a node
 /// by its bucket's generation too, which reuse raises. Read through a stale
