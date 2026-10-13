@@ -700,6 +700,29 @@ impl<D: BlockDevice> Writer<D> {
         Ok(out)
     }
 
+    /// The keys of btree `id` in the run of consecutive offsets that starts
+    /// at `from`, through a cursor: a hash table's probe. It stops at the
+    /// first key that skips an offset, so a lookup reads the nodes its run
+    /// is in, not every node after its slot (#191).
+    fn run_from(&self, id: u8, from: Bpos) -> Result<Vec<Bkey>> {
+        let mut c = match self.cursor(id) {
+            // A btree with no root yet holds nothing.
+            Err(Error::NotFound(_)) if self.root(id).is_err() => return Ok(Vec::new()),
+            r => r?,
+        };
+        c.seek(from)?;
+        let mut out = Vec::new();
+        let mut next = Some(from.offset);
+        while let Some(k) = c.next_key()? {
+            if k.pos.inode != from.inode || next.is_none_or(|n| k.pos.offset > n) {
+                break;
+            }
+            next = k.pos.offset.checked_add(1);
+            out.push(k);
+        }
+        Ok(out)
+    }
+
     /// Delete every key of inode `ino`'s xattr hash table, for an inode
     /// that is going (#161): left behind, the reference checker reports each
     /// as `key_in_missing_inode`. Whiteouts go too, and none is written,
@@ -767,7 +790,7 @@ impl<D: BlockDevice> Writer<D> {
         let start = crate::inode::name_hash(dir.raw.hash_type(), dir.raw.hash_seed, name)
             .ok_or_else(|| Error::Unsupported(format!("directory {ino}: unknown string hash")))?;
         let slots: std::collections::BTreeMap<u64, Bkey> = self
-            .keys_from(
+            .run_from(
                 ids::DIRENTS,
                 Bpos {
                     inode: ino,
