@@ -661,8 +661,10 @@ impl<D: BlockRead> Filesystem<D> {
                 crate::bkey::key_type::RESERVATION
                 | crate::bkey::key_type::WHITEOUT
                 | crate::bkey::key_type::EXTENT_WHITEOUT => {
-                    let zeros = vec![0u8; k.size as usize * 512];
-                    copy_window(&mut out, offset, end, key_start, &zeros);
+                    // Only the part in the window is zeroed: the key's own
+                    // size is up to 2 TiB, and a buffer of it would abort
+                    // the process (#151).
+                    zero_window(&mut out, offset, end, key_start, u64::from(k.size) * 512);
                 }
                 // "Reads to these ranges return IO errors" (S1 9.1.2.1).
                 crate::bkey::key_type::ERROR => {
@@ -823,28 +825,43 @@ impl<D: BlockRead> Filesystem<D> {
     /// The `len` live sectors of one extent, decompressed and checked.
     fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
         e.ptr.check(self.dev_idx, self.pointer_gen(e)?)?;
-        extent_bytes(e, |at, buf| Ok(self.dev.read_at(at, buf)?))
+        extent_bytes(e, self.dev.size_bytes(), |at, buf| {
+            Ok(self.dev.read_at(at, buf)?)
+        })
     }
 }
 
 /// The live bytes of a data extent, read with `read(byte offset, buffer)`:
 /// the stored sectors, their checksum verified, decompressed, and the
 /// extent's live range cut out. The writer reads a file's contents through
-/// this too, for a write into part of it (#102).
+/// this too, for a write into part of it (#102). Stored sectors that would
+/// run past `dev_bytes`, the device's size, are refused before anything is
+/// allocated for them: an extent with no checksum entry is read by the
+/// key's own size, up to 2 TiB, and a buffer that size aborts the process
+/// (#151).
 pub(crate) fn extent_bytes(
     e: &DataExtent,
+    dev_bytes: u64,
     read: impl Fn(u64, &mut [u8]) -> Result<()>,
 ) -> Result<Vec<u8>> {
-    let (stored_sectors, crc) = match e.crc {
-        Some(c) => (c.compressed_size as u64, c),
-        None => {
-            let mut b = vec![0u8; e.len as usize * 512];
-            read(e.ptr.offset * 512, &mut b)?;
-            return Ok(b);
-        }
+    let stored_sectors = match e.crc {
+        Some(c) => c.compressed_size as u64,
+        None => e.len,
     };
-    let mut raw = vec![0u8; stored_sectors as usize * 512];
-    read(e.ptr.offset * 512, &mut raw)?;
+    let at = e.ptr.offset.saturating_mul(512);
+    let stored_bytes = stored_sectors.saturating_mul(512);
+    if at.saturating_add(stored_bytes) > dev_bytes {
+        return Err(Error::Corrupt(format!(
+            "an extent of {stored_sectors} sectors at sector {} runs past the end of the \
+             device ({dev_bytes} bytes)",
+            e.ptr.offset
+        )));
+    }
+    let mut raw = crate::util::zeroed(stored_bytes as usize, "an extent")?;
+    read(at, &mut raw)?;
+    let Some(crc) = e.crc else {
+        return Ok(raw);
+    };
     if !crate::csum::is_known(crc.csum_type) {
         return Err(Error::Unsupported(format!(
             "data checksum type {}",
@@ -899,6 +916,17 @@ fn snapshots_not_read(k: &Bkey, root_snapshot: u32) -> Error {
 /// Copy the part of `data` (which starts at file byte `data_start`) that
 /// falls inside the window `[win_start, win_end)` into `out`, which holds
 /// that window.
+/// Zero the bytes `data_start..data_start + data_len` of a file in the
+/// window `out` of its bytes `win_start..win_end`: [`copy_window`] for a
+/// run of zeros, without a buffer of them.
+fn zero_window(out: &mut [u8], win_start: u64, win_end: u64, data_start: u64, data_len: u64) {
+    let from = data_start.max(win_start);
+    let to = data_start.saturating_add(data_len).min(win_end);
+    if from < to {
+        out[(from - win_start) as usize..(to - win_start) as usize].fill(0);
+    }
+}
+
 pub(crate) fn copy_window(
     out: &mut [u8],
     win_start: u64,
