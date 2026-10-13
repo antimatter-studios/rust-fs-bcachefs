@@ -20,10 +20,13 @@
 //! A filesystem not shut down cleanly is checked through the replay of its
 //! journal, as it would be read.
 //!
-//! It is a subset of what the reference checker checks (allocation,
-//! accounting, backpointers and lru are not), and the tests hold it to
-//! that: wherever it reports a problem, so does the reference (tests in the
-//! guest), and on every clean fixture it reports none.
+//! Of the allocation btrees, each bucket's generation in bucket_gens is
+//! checked against its alloc key.
+//!
+//! It is a subset of what the reference checker checks (the rest of
+//! allocation, accounting, backpointers and lru are not), and the tests
+//! hold it to that: wherever it reports a problem, so does the reference
+//! (tests in the guest), and on every clean fixture it reports none.
 
 use std::collections::BTreeMap;
 
@@ -43,6 +46,10 @@ const SUBVOLUMES: u8 = 8;
 const SNAPSHOTS: u8 = 9;
 const KEY_SUBVOLUME: u8 = 21;
 const KEY_SNAPSHOT: u8 = 22;
+/// The bucket_gens btree, and its key type: 256 buckets' generations a
+/// key, one byte each, at `dev:bucket >> 8` (S8).
+const BUCKET_GENS: u8 = 14;
+const KEY_BUCKET_GENS: u8 = 30;
 /// A dirent's type when it names a subvolume (the lister's `type subvol`).
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
@@ -511,6 +518,32 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .filter_map(|k| crate::extent::alloc_v4_gen(&k.value).map(|g| (k.pos.offset, g)))
         .collect();
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
+
+    // Every bucket's generation as bucket_gens records it, against its
+    // alloc key's; a bucket with no alloc key is at generation 0 (#163: the
+    // reference's "incorrect gen in bucket_gens").
+    if trees.contains_key(&btree_id::ALLOC) {
+        for k in trees
+            .get(&BUCKET_GENS)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == KEY_BUCKET_GENS && k.pos.inode == u64::from(sb.dev_idx))
+        {
+            for (i, &recorded) in k.value.iter().take(256).enumerate() {
+                let bucket = k.pos.offset << 8 | i as u64;
+                let alloc = gens.get(&bucket).copied().unwrap_or(0);
+                if recorded != alloc {
+                    r.add(
+                        "incorrect_gen_in_bucket_gens",
+                        format!(
+                            "bucket {bucket}: bucket_gens says generation {recorded}, its alloc \
+                             key {alloc}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
 
     // Extents: their inode, their bounds, their neighbours, their data.
     let have_inodes = trees.contains_key(&btree_id::INODES);
