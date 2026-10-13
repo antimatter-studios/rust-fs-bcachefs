@@ -71,8 +71,15 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     arch="$(dpkg --print-architecture)"
     apt-get install -y -qq --no-install-recommends -t trixie-backports \
         "linux-image-$arch" "linux-headers-$arch" >/dev/null
+    # The module is built from its source by DKMS, whose compiler output
+    # can quote it: stderr stays in the container, and a failure reports
+    # only its status (#153, docs/clean-room.md).
     apt-get install -y -qq --no-install-recommends \
-        "bcachefs-kernel-dkms=1:$REF_VERSION" "bcachefs-tools=1:$REF_VERSION" >/dev/null
+        "bcachefs-kernel-dkms=1:$REF_VERSION" "bcachefs-tools=1:$REF_VERSION" \
+        >/dev/null 2>/tmp/dkms-install.err || {
+        echo "kernel-oracle: the reference module did not install (apt-get exited $?); its output stays in the container, unprinted" >&2
+        exit 1
+    }
     kver="$(ls /lib/modules | sort -V | tail -n 1)"
     echo "$kver" >/work/kver
     cp "/boot/vmlinuz-$kver" /work/vmlinuz
