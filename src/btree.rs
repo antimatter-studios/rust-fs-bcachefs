@@ -562,8 +562,8 @@ impl NodeCache {
 /// the superblock's clean section records will not read (#166). `None` when
 /// the clean section's roots all read.
 ///
-/// The journal records every root again (S1's journal entries: `btree_root`,
-/// "Btree root pointers, recorded every journal write"), and on every clean
+/// Each journal write names every btree's root again, in its `btree_root`
+/// entries (S1, journal entry types), and on every clean
 /// fixture its newest flush entry records the same roots as the clean
 /// section (tests/oracle_journal_roots.rs). The reference opened, and
 /// checked clean, two images whose superblock root had been damaged (the
