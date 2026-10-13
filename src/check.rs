@@ -470,7 +470,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
             // holding one (S8, the `poison` image), and so does this one.
-            if matches!(crate::extent::poisoned(&k.value), Ok(true)) {
+            // An unwritten one has no data to check (#158).
+            if matches!(crate::extent::poisoned(&k.value), Ok(true)) || e.ptr.is_unwritten() {
                 continue;
             }
             if let Err(e) = verify_data(dev, &e) {

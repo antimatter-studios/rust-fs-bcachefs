@@ -38,6 +38,7 @@ States:
 | Colliding directory entries (hash run, `hash_whiteout`) | Supported | 0.4.0 (#88) | | `oracle_collisions.rs` |
 | crc64-hashed directories | Partial: found by scanning the directory | 0.4.0 (#72) | open question 17 | |
 | Extents, inline data | Supported | 0.4.0 (#1) | | `oracle_fs.rs`, `oracle_aged.rs` |
+| Unwritten extents (preallocated in a `nocow` file), read as zeros; `fallocate` elsewhere makes reservations, also read as zeros | Supported | Unreleased | #158; cached pointers are refused (none seen) | `oracle_unwritten.rs` |
 | Ranged reads (a window of a file) | Supported | 0.4.0 (#70) | | `oracle_read_range.rs` |
 | Data checksums: crc32c, crc64, xxhash | Supported | 0.4.0 (#1) | | `oracle_fs.rs` |
 | Compression: lz4, zstd, gzip | Supported | 0.4.0 (#1) | | `oracle_fs.rs` |

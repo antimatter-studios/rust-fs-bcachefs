@@ -10,7 +10,8 @@
 //! hexdump against the reference lister's printed values (S3, S4):
 //!
 //! ```text
-//! ptr    bit 0 = 1; bits 1..3 flags (unread); bits 4..47 sector offset;
+//! ptr    bit 0 = 1; bits 1..3 flags (0b100 unwritten, the rest unread);
+//!        bits 4..47 sector offset;
 //!        bits 48..55 device; bits 56..63 generation   (device and
 //!        generation: only ever 0 in the fixtures -- an open question)
 //! crc32  bits 0..1 = 0b10; bits 2..8 compressed_size-1; 9..15
@@ -41,6 +42,18 @@ pub struct Ptr {
     pub flags: u8,
 }
 
+/// A pointer's flags when it marks an unwritten extent: space allocated
+/// and never written, which reads as zeros (S1's metadata version history,
+/// `unwritten_extents`: "Preallocated extents that read as zeros").
+/// OBSERVED (#158, S3 + S4): the reference kernel module, asked to
+/// `fallocate` a MiB in a file the reference tool marked `nocow`, wrote
+/// extents whose pointers carry flags 0b100 (word bit 3), each printed
+/// `unwritten` by the reference lister, and one pointer with no flag where
+/// 4 KiB were then written. The same in a file without `nocow` made
+/// `reservation` keys instead. The other flag bits, which S1 says mark
+/// cached pointers, are still unobserved.
+pub const PTR_UNWRITTEN: u8 = 0b100;
+
 /// The generation a bucket's `alloc_v4` key records: byte 4 of its second
 /// word (docs/clean-room.md, "Allocating space": word 1 holds the flags in
 /// byte 0, the generation in byte 4, the oldest generation in byte 5).
@@ -49,6 +62,11 @@ pub fn alloc_v4_gen(value: &[u8]) -> Option<u8> {
 }
 
 impl Ptr {
+    /// Whether this pointer marks an unwritten extent ([`PTR_UNWRITTEN`]).
+    pub fn is_unwritten(&self) -> bool {
+        self.flags == PTR_UNWRITTEN
+    }
+
     /// Whether this pointer may be read on device `dev_idx`, whose bucket
     /// `bucket_gen` is the generation the allocator currently records for
     /// the pointer's bucket (`None` when the bucket has no alloc key).
@@ -58,8 +76,9 @@ impl Ptr {
     /// detected and dropped during reads)", and flags that "distinguish
     /// cached pointers ... from dirty pointers, and mark unwritten
     /// reservations". A pointer at another device is not on this one; a
-    /// stale pointer names a reused bucket; a flagged pointer has a meaning
-    /// (cached, unwritten) this reader has never observed and refuses.
+    /// stale pointer names a reused bucket; an unwritten pointer is judged
+    /// like any other ([`PTR_UNWRITTEN`]), and a pointer with any other flag
+    /// has a meaning (cached) this reader has never observed and refuses.
     pub fn check(&self, dev_idx: u8, bucket_gen: Option<u8>) -> crate::Result<()> {
         if self.dev != dev_idx {
             return Err(crate::Error::Corrupt(format!(
@@ -68,9 +87,9 @@ impl Ptr {
                 self.offset, self.dev
             )));
         }
-        if self.flags != 0 {
+        if self.flags != 0 && !self.is_unwritten() {
             return Err(crate::Error::Unsupported(format!(
-                "pointer to sector {} carries flags {:#05b} (cached or unwritten): not read",
+                "pointer to sector {} carries flags {:#05b} (cached?): not read",
                 self.offset, self.flags
             )));
         }

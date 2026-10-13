@@ -822,9 +822,15 @@ impl<D: BlockRead> Filesystem<D> {
         Ok(())
     }
 
-    /// The `len` live sectors of one extent, decompressed and checked.
+    /// The `len` live sectors of one extent, decompressed and checked; an
+    /// unwritten extent's are zeros, whatever its sectors hold (#158).
     fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
         e.ptr.check(self.dev_idx, self.pointer_gen(e)?)?;
+        if e.ptr.is_unwritten() {
+            let bytes = usize::try_from(e.len.saturating_mul(512))
+                .map_err(|_| Error::Corrupt(format!("an unwritten extent of {} sectors", e.len)))?;
+            return Ok(vec![0; bytes]);
+        }
         extent_bytes(e, self.dev.size_bytes(), |at, buf| {
             Ok(self.dev.read_at(at, buf)?)
         })

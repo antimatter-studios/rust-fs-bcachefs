@@ -187,6 +187,30 @@ if [ -b /dev/vdd ] && mount -t bcachefs -o noatime /dev/vdd /written 2>/tmp/writ
 else
     say "written-seed: mount failed ($(head -c 200 /tmp/written.err))"
 fi
+# PREALLOCATED SPACE (#158), on the fifth disk: a MiB preallocated with
+# fallocate in a file the reference tool marked nocow and in an ordinary
+# one, and 4 KiB written at 64 KiB in each. The rest of each MiB is space
+# the file holds and never wrote, which reads as zeros.
+mkdir -p /prealloc
+if [ -b /dev/vde ] && mount -t bcachefs -o noatime /dev/vde /prealloc 2>/tmp/prealloc.err; then
+    : >/prealloc/nocow
+    : >/prealloc/cow
+    if bcachefs set-file-option --nocow /prealloc/nocow 2>/tmp/prealloc.err; then
+        say "prealloc-option.nocow: ok"
+    else
+        say "prealloc-option.nocow: failed ($(head -c 200 /tmp/prealloc.err | tr '\n' ' '))"
+    fi
+    for f in nocow cow; do
+        if prealloc "/prealloc/$f" 2>/tmp/prealloc.err; then
+            say "prealloc.$f: ok"
+        else
+            say "prealloc.$f: failed ($(head -c 200 /tmp/prealloc.err | tr '\n' ' '))"
+        fi
+    done
+    if umount /prealloc; then say "prealloc: ok"; else say "prealloc: unmount failed"; fi
+else
+    say "prealloc: mount failed ($(head -c 200 /tmp/prealloc.err))"
+fi
 say "done: yes"
 sync
 poweroff -f
