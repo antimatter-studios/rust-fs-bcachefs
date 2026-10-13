@@ -619,9 +619,12 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    buckets, carries the generation its bucket's `alloc_v4` key records
    (`tests/oracle_pointers.rs`); the device bits are only ever 0. The
    reader refuses a pointer whose generation is not the bucket's (stale,
-   S1 9.1.3.1), one for another device, or one with any flag bit set (bits
-   1..3; cached and unwritten pointers, never observed). Btree node
-   pointers are not yet judged the same way.
+   S1 9.1.3.1), one for another device, or one with a flag bit set other
+   than unwritten (bits 1..3; cached pointers, never observed). Unwritten
+   is SETTLED (#158): flags 0b100, on the extents the reference module
+   made for `fallocate` in a `nocow` file, which the lister prints
+   `unwritten` and which read as zeros; `fallocate` in another file makes
+   `reservation` keys. Btree node pointers are not yet judged the same way.
 3. **Btree node flags**: what bit 8 and bit 32 mean. The btree id and
    level are settled (question 13); the reader does not need them (it
    trusts the parent), and the writer copies the other bits from an
