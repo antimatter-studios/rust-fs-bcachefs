@@ -1048,48 +1048,76 @@ impl fs_core::BlockDevice for CountingRw {
 
 /// A create in the `large` image's directory of 30000 names (#108) reads
 /// the dirents and inodes nodes on its keys' paths, not every node of those
-/// btrees: of the node offsets one walk of them reads, a create reads a few.
+/// btrees. A lookup reads one node per level of its btree, and one leaf
+/// more when what it reads runs past a leaf's end (#191): in the inodes
+/// btree the directory's inode and the allocation cursor's next number, in
+/// the dirents btree the name's run of hash slots. The name is the one of
+/// 64 whose slot comes first, so nearly all of the directory lies after
+/// it: a probe that read on past its run would read most of the dirents
+/// nodes, whatever hash seed the fixture's directory was given.
 #[test]
 fn a_create_reads_paths_not_whole_btrees() {
     use fs_bcachefs::{btree, superblock::Superblock};
     use std::collections::BTreeSet;
     let img = scratch("large.img", "cursor-create");
-    // Where the dirents and inodes nodes are: every offset a walk reads.
-    let nodes: BTreeSet<u64> = {
-        let dev = CountingRw::new(FileDevice::open(&img).unwrap());
-        let sb = Superblock::read(&dev).unwrap();
+    // Where each btree's nodes are (every offset a walk of it reads), and
+    // how many levels it has.
+    let dev = CountingRw::new(FileDevice::open(&img).unwrap());
+    let sb = Superblock::read(&dev).unwrap();
+    let roots = sb.btree_roots().unwrap();
+    let tree = |id: u8| {
         let before = dev.offsets().len();
-        for id in [btree::btree_id::DIRENTS, btree::btree_id::INODES] {
-            btree::walk(&dev, &sb, id).unwrap();
-        }
-        dev.offsets()[before..].iter().copied().collect()
+        btree::walk(&dev, &sb, id).unwrap();
+        let nodes: BTreeSet<u64> = dev.offsets()[before..].iter().copied().collect();
+        let root = roots.iter().find(|r| r.btree_id == id).unwrap();
+        (nodes, usize::from(root.level) + 1)
     };
+    let (dirents, dirents_depth) = tree(btree::btree_id::DIRENTS);
+    let (inodes, inodes_depth) = tree(btree::btree_id::INODES);
     assert!(
-        nodes.len() > 20,
-        "only {} nodes: the bound proves nothing",
-        nodes.len()
+        dirents.len() > 3 * (dirents_depth + 1),
+        "only {} dirents nodes: the bound proves nothing",
+        dirents.len()
     );
-    let wide = Filesystem::open(FileDevice::open(&img).unwrap())
-        .unwrap()
-        .lookup("/wide")
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    let wide = fs.lookup("/wide").unwrap();
+    let dir = fs.inode(wide).unwrap();
+    let name = (0..64)
+        .map(|i| format!("new-entry-{i:02}"))
+        .min_by_key(|n| {
+            fs_bcachefs::inode::name_hash(dir.hash_type(), dir.hash_seed, n.as_bytes()).unwrap()
+        })
         .unwrap();
     let mut w = Writer::open(CountingRw::new(FileDevice::open_rw(&img).unwrap())).unwrap();
     let opened = w.device().offsets().len();
-    let f = w.create_file(wide, b"new-entry", b"new\n", 0o644).unwrap();
-    let read: BTreeSet<u64> = w.device().offsets()[opened..]
-        .iter()
-        .copied()
-        .filter(|o| nodes.contains(o))
-        .collect();
+    let f = w
+        .create_file(wide, name.as_bytes(), b"new\n", 0o644)
+        .unwrap();
+    let offsets = w.device().offsets()[opened..].to_vec();
     drop(w);
+    let read = |nodes: &BTreeSet<u64>| {
+        offsets
+            .iter()
+            .filter(|o| nodes.contains(o))
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
     assert!(
-        read.len() * 4 < nodes.len(),
-        "one create read {} of the {} dirents and inodes nodes",
-        read.len(),
-        nodes.len()
+        read(&dirents) <= dirents_depth + 1,
+        "one create read {} of the {} dirents nodes, in a btree of {} levels",
+        read(&dirents),
+        dirents.len(),
+        dirents_depth
+    );
+    assert!(
+        read(&inodes) <= 2 * (inodes_depth + 1),
+        "one create read {} of the {} inodes nodes, in a btree of {} levels",
+        read(&inodes),
+        inodes.len(),
+        inodes_depth
     );
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
-    assert_eq!(fs.lookup("/wide/new-entry").unwrap(), f);
+    assert_eq!(fs.lookup(&format!("/wide/{name}")).unwrap(), f);
     assert_eq!(fs.read(f).unwrap(), b"new\n");
 }
 
