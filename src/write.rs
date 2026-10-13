@@ -1631,8 +1631,10 @@ impl<D: BlockDevice> Writer<D> {
                     i.raw.hash_type()
                 ))
             })?;
+        // The run of taken slots from the name's own, read up to the first
+        // offset it skips, not every xattr of the inode after it (#193).
         let slots: std::collections::BTreeMap<u64, Bkey> = self
-            .keys_from(
+            .run_from(
                 XATTRS,
                 Bpos {
                     inode: ino,
