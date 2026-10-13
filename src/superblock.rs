@@ -326,11 +326,11 @@ impl Superblock {
     /// Read the superblock from a device: every copy the layout names,
     /// the one with the highest valid `seq` winning.
     ///
-    /// The Principles of Operation (S1, 9.5.1): the superblock "is written
-    /// with a monotonically increasing sequence number (seq); on read, the
-    /// copy with the highest valid sequence number is authoritative", and
-    /// the standalone layout at sector 7 "is consulted only when the primary
-    /// superblock cannot be read". So: the primary first, its embedded
+    /// The Principles of Operation (S1, 9.5.1): each write of the
+    /// superblock carries a `seq` one above the last, and of the copies a
+    /// reader finds valid, the largest `seq` is the one to believe; the
+    /// standalone layout at sector 7 is a fallback, read only if the
+    /// primary superblock is unreadable. So: the primary first, its embedded
     /// layout naming the copies; failing that, the layout at 3584; then
     /// every copy, and a copy that does not parse is skipped (the checker
     /// reports it, [`Superblock::read_copies`]). Observed (S4): every
