@@ -37,6 +37,8 @@ rm -rf "$work"
 mkdir -p "$work/root" "$OUT"
 : >"$OUT/kernel.txt"
 record() { echo "$1: $2" >>"$OUT/kernel.txt"; }
+# shellcheck source=scripts/kernel-oracle-boot.sh
+source "$here/scripts/kernel-oracle-boot.sh"
 
 missing=
 [ -w /dev/kvm ] || missing="$missing /dev/kvm"
@@ -130,7 +132,7 @@ echo "kernel-oracle: kernel $kver; modules: $(tr '\n' ' ' <"$work/root/modules.o
 (cd "$work/root" && find . | cpio -o -H newc --quiet | gzip -1) >"$work/initrd.gz"
 
 echo "kernel-oracle: booting it"
-timeout 300 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
+boot 300 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
     -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
     -append "console=ttyS0,115200 panic=-1 rdinit=/init" \
     -drive "file=$work/kernel.img,if=virtio,format=raw" \
@@ -173,7 +175,7 @@ else
     record written "no writer at $writer: build it with chore cli:install"
 fi
 echo "kernel-oracle: booting it again to read what this crate wrote"
-timeout 120 qemu-system-x86_64 -enable-kvm -machine q35,accel=kvm -cpu host -m 1G -smp 1 \
+boot 120 -enable-kvm -machine q35,accel=kvm -cpu host -m 1G -smp 1 \
     -kernel "$work/vmlinuz" -initrd "$work/initrd.gz" \
     -append "console=ttyS0,115200 panic=-1 rdinit=/init oracle=judge" \
     -drive "file=$work/kernel-written.img,if=virtio,format=raw" \
