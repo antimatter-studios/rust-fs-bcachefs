@@ -886,15 +886,25 @@ impl<D: BlockDevice> Writer<D> {
         };
         let mut out = Vec::new();
         let mut at = idx;
-        for v in self.keys_from(
-            REFLINK,
-            Bpos {
-                inode: 0,
-                offset: idx + 1,
-                snapshot: 0,
-            },
-        )? {
-            if at >= end || v.start_offset() > at {
+        // Through a cursor, read as far as the pointer's run goes: from the
+        // first indirect extent ending past `idx` to the one that reaches
+        // `end`, or the gap before it. Collecting every key from `idx` on
+        // read the whole rest of the reflink btree first (#193).
+        let mut c = match self.cursor(REFLINK) {
+            // A btree with no root holds nothing: a pointer into it points
+            // at nothing.
+            Err(Error::NotFound(_)) if self.root(REFLINK).is_err() => {
+                return if at < end { Err(missing(at)) } else { Ok(out) };
+            }
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: 0,
+            offset: idx + 1,
+            snapshot: 0,
+        })?;
+        while let Some(v) = c.next_key()? {
+            if v.pos.inode != 0 || at >= end || v.start_offset() > at {
                 break;
             }
             if v.key_type != key_type::REFLINK_V || v.value.len() < 8 {
