@@ -74,7 +74,7 @@ States:
 | An extent or a size near the top of its range judged without overflowing: an extent far past the end of its file is reported | Supported | 0.4.0 (#175) | #150 | `oracle_check_overflow.rs` |
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | 0.4.0 (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | Unreleased | #163 | `oracle_check_namespace.rs` |
-| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's | Supported | Unreleased | #163 | `oracle_check_alloc.rs` |
+| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent written whole with no backpointer at its device sector | Supported | Unreleased | #163 | `oracle_check_alloc.rs` |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)
