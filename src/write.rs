@@ -1386,15 +1386,28 @@ impl<D: BlockDevice> Writer<D> {
         self.write_at(ino, size, data)
     }
 
-    /// Set a file's size (#102): cut short, or grown with zeros.
+    /// Set a file's size (#102): cut short, or grown with zeros. Growing
+    /// leaves the new range a hole (#156): only the file's last block is
+    /// rewritten, zero-filled past the old end, and the size set, so the
+    /// range has no extent and reads as zeros. A size larger than the
+    /// device is still refused, as [`Writer::write_at`]'s is.
     pub fn truncate(&mut self, ino: u64, size: u64) -> Result<()> {
         let mut c = self.contents(ino)?;
-        if size > c.len() as u64 {
-            self.grow(ino, &mut c, size)?;
-        } else {
+        if size <= c.len() as u64 {
             c.truncate(size as usize);
+            return self.write_file(ino, &c);
         }
-        self.write_file(ino, &c)
+        let device = self.dev.size_bytes();
+        if size > device {
+            return Err(Error::Unsupported(format!(
+                "inode {ino}: a size of {size} bytes is more than the device holds \
+                 ({device} bytes)"
+            )));
+        }
+        let block = (u64::from(self.sb.block_size) * 512).max(512);
+        let kept = (c.len() as u64).next_multiple_of(block).min(size);
+        self.grow(ino, &mut c, kept)?;
+        self.write_file_sized(ino, &c, size)
     }
 
     /// Grow the contents `c` of file `ino` to `size` bytes with zeros, for
@@ -1425,6 +1438,12 @@ impl<D: BlockDevice> Writer<D> {
     /// reference would (see [`inline_max`]); empty truncates it.
     /// The old contents' space is freed.
     pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
+        self.write_file_sized(ino, data, data.len() as u64)
+    }
+
+    /// [`Writer::write_file`], with the file's size set to `size`, at least
+    /// `data`'s length: the bytes past `data` are a hole and read as zeros.
+    fn write_file_sized(&mut self, ino: u64, data: &[u8], size: u64) -> Result<()> {
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
             return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
@@ -1440,7 +1459,7 @@ impl<D: BlockDevice> Writer<D> {
         self.free_extents(ino, &old_extents, &mut t)?;
         let sectors = self.put_data(ino, &i.raw, data, &mut t)?;
         let old = i.key.clone();
-        i.raw.size = data.len() as u64;
+        i.raw.size = size.max(data.len() as u64);
         i.raw.sectors = sectors;
         self.touch(&mut i, now);
         t.put(ids::INODES, Some(&old), i.rekey());

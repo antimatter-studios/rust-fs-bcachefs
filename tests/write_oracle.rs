@@ -1271,3 +1271,31 @@ fn reflinked_files_removed_here_pass_the_reference() {
     drop(w);
     assert_fsck_clean(&img);
 }
+
+/// Truncating up leaves the new range a hole (#156): an empty file and a
+/// file of 70,001 bytes, each truncated to 1 MiB here, pass the reference
+/// checker and read back through the reference mount as their data and
+/// then zeros.
+#[test]
+fn files_truncated_up_here_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "truncate-up");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let data = pattern(70_001, 9);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let empty = w.create_file(dir, b"empty-up", b"", 0o644).unwrap();
+    let grown = w.create_file(dir, b"grown-up", &data, 0o644).unwrap();
+    w.truncate(empty, 1 << 20).unwrap();
+    w.truncate(grown, 1 << 20).unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    let mut want = data.clone();
+    want.resize(1 << 20, 0);
+    let zeros = vec![0u8; 1 << 20];
+    assert!(
+        reference_mount_reads(&img, &[("d/empty-up", &zeros), ("d/grown-up", &want)]),
+        "the reference mount does not read the files truncated up"
+    );
+}
