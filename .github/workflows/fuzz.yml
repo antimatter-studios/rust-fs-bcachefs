@@ -44,10 +44,12 @@ jobs:
     # Thirteen targets at two minutes each is roughly half an hour of
     # fuzzing; the rest is building cargo-fuzz and the targets.
     timeout-minutes: 90
-    # issues: write, for filing a failed scheduled run (the last step).
+    # issues: write, for filing a failed scheduled run (the last step);
+    # actions: read, for the fixtures of the newest green main run.
     permissions:
       contents: read
       issues: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -90,6 +92,20 @@ jobs:
         run: |
           find fuzz/corpus -type f | sort
           echo "total: $(find fuzz/corpus -type f | wc -l) seeds"
+
+      # The whole_image target lays its cases over the fixtures the
+      # reference tools made (#152). Building them takes the harness VM, so
+      # the newest green main run's are fetched instead.
+      - name: Fetch the fixtures from the newest green main run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
+          echo "fixtures from run $run: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
 
       - name: Fuzz
         run: ./scripts/fuzz-all.sh "${{ inputs.seconds || '120' }}"

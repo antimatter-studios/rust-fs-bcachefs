@@ -30,7 +30,9 @@ path = "src/lib.rs"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rust-fs-bcachefs = { path = ".." }
+rust-fs-bcachefs = { path = "..", features = ["write"] }
+# The device traits the whole-image overlay implements.
+rust-fs-core = { path = "../../rust-fs-core" }
 
 [[bin]]
 name = "superblock"
@@ -77,6 +79,13 @@ bench = false
 [[bin]]
 name = "lz4_block"
 path = "fuzz_targets/lz4_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "whole_image"
+path = "fuzz_targets/whole_image.rs"
 test = false
 doc = false
 bench = false
