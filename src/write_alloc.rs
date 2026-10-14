@@ -222,11 +222,13 @@ impl<D: BlockDevice> Writer<D> {
     /// Write `data` for inode `ino` into fresh buckets and add every key
     /// that goes with it to `t`. Returns the sectors allocated.
     /// `opts` is the file's data checksum and compression as superblock
-    /// option numbers ([`super::data_options`]).
+    /// option numbers ([`super::data_options`]). `base` is the file sector
+    /// `data` starts at, a whole block.
     pub(super) fn allocate_data(
         &mut self,
         ino: u64,
         opts: (u64, u64),
+        base: u64,
         data: &[u8],
         t: &mut Txn,
     ) -> Result<u64> {
@@ -405,7 +407,7 @@ impl<D: BlockDevice> Writer<D> {
                 size: u_size as u32,
                 version_hi: 0,
                 version_lo: 0,
-                pos: pos(ino, piece.file_sector + u_size),
+                pos: pos(ino, base + piece.file_sector + u_size),
                 value,
             };
             t.put(ids::EXTENTS, None, extent.clone());

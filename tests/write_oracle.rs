@@ -1272,6 +1272,40 @@ fn reflinked_files_removed_here_pass_the_reference() {
     assert_fsck_clean(&img);
 }
 
+/// Writing past a file's end leaves the gap a hole (#156): an empty file
+/// written at 1 MiB and a file of 70,001 bytes written just past 1 MiB
+/// pass the reference checker and read back through the reference mount
+/// as their data, zeros, and the write.
+#[test]
+fn files_written_past_their_end_here_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "write-past-end");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let data = pattern(70_001, 11);
+    let tail = pattern(5_000, 12);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let empty = w.create_file(dir, b"empty-past", b"", 0o644).unwrap();
+    let grown = w.create_file(dir, b"grown-past", &data, 0o644).unwrap();
+    w.write_at(empty, 1 << 20, &tail).unwrap();
+    w.write_at(grown, (1 << 20) + 100, &tail).unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    let mut want_empty = vec![0u8; 1 << 20];
+    want_empty.extend_from_slice(&tail);
+    let mut want_grown = data.clone();
+    want_grown.resize((1 << 20) + 100, 0);
+    want_grown.extend_from_slice(&tail);
+    assert!(
+        reference_mount_reads(
+            &img,
+            &[("d/empty-past", &want_empty), ("d/grown-past", &want_grown)]
+        ),
+        "the reference mount does not read the files written past their end"
+    );
+}
+
 /// Truncating up leaves the new range a hole (#156): an empty file and a
 /// file of 70,001 bytes, each truncated to 1 MiB here, pass the reference
 /// checker and read back through the reference mount as their data and

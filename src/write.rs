@@ -1036,7 +1036,7 @@ impl<D: BlockDevice> Writer<D> {
         let mut sectors = 0;
         if extents > 0 {
             let opts = data_options(&self.sb, raw)?;
-            sectors = self.allocate_data(ino, opts, &data[..extents], t)?;
+            sectors = self.allocate_data(ino, opts, 0, &data[..extents], t)?;
         }
         if inline > 0 {
             let block_sectors = u64::from(self.sb.block_size).max(1);
@@ -1439,12 +1439,38 @@ impl<D: BlockDevice> Writer<D> {
     /// the write ends past its size; a gap past the old end reads as zeros.
     /// The file is rewritten whole, laid out as [`Writer::write_file`] lays
     /// it out, so what the reference would store for those bytes is what
-    /// is stored.
+    /// is stored. A gap of a block or more is left a hole (#156): the old
+    /// data up to its last block, then nothing, then the blocks the write
+    /// covers.
     pub fn write_at(&mut self, ino: u64, offset: u64, data: &[u8]) -> Result<()> {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))?;
         let mut c = self.contents(ino)?;
+        let block = (u64::from(self.sb.block_size) * 512).max(512);
+        let kept = (c.len() as u64).next_multiple_of(block);
+        let start = offset - offset % block;
+        if !data.is_empty() && start > kept {
+            let device = self.dev.size_bytes();
+            if end > device {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: a size of {end} bytes is more than the device holds \
+                     ({device} bytes)"
+                )));
+            }
+            self.grow(ino, &mut c, kept)?;
+            let mut tail = Vec::new();
+            tail.try_reserve_exact((end - start) as usize)
+                .map_err(|_| {
+                    Error::Unsupported(format!(
+                        "inode {ino}: {} bytes do not fit in memory",
+                        end - start
+                    ))
+                })?;
+            tail.resize((offset - start) as usize, 0);
+            tail.extend_from_slice(data);
+            return self.write_with_hole(ino, &c, start, &tail);
+        }
         if end > c.len() as u64 {
             self.grow(ino, &mut c, end)?;
         }
@@ -1512,6 +1538,59 @@ impl<D: BlockDevice> Writer<D> {
     /// The old contents' space is freed.
     pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
         self.write_file_sized(ino, data, data.len() as u64)
+    }
+
+    /// Replace a file's contents with `head` at its start and `tail` at byte
+    /// `start`, a whole block past `head`'s last block, with nothing between
+    /// them: a hole, which reads as zeros (#156). The size is where `tail`
+    /// ends. `head` is a whole number of blocks and goes in extents, as a
+    /// file's full blocks do; `tail` is laid out as the end of a file of
+    /// that size is (see [`data_layout`]), its full blocks in extents and a
+    /// short last block inline.
+    fn write_with_hole(&mut self, ino: u64, head: &[u8], start: u64, tail: &[u8]) -> Result<()> {
+        let mut i = self.inode(ino)?;
+        if i.raw.mode() & 0o170000 != 0o100000 {
+            return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
+        }
+        let size = start + tail.len() as u64;
+        let whole = usize::try_from(size)
+            .map_err(|_| Error::Unsupported("size larger than memory".into()))?;
+        let in_extents = (self.layout(whole).0 as u64).saturating_sub(start) as usize;
+        if !head.is_empty() || in_extents > 0 {
+            self.discard_freed()?;
+        }
+        let now = self.now();
+        let mut t = Txn::default();
+        let old_extents = self.extents_of(ino)?;
+        self.free_extents(ino, &old_extents, &mut t)?;
+        let opts = data_options(&self.sb, &i.raw)?;
+        let mut sectors = 0;
+        if !head.is_empty() {
+            sectors += self.allocate_data(ino, opts, 0, head, &mut t)?;
+        }
+        if in_extents > 0 {
+            sectors += self.allocate_data(ino, opts, start / 512, &tail[..in_extents], &mut t)?;
+        }
+        if in_extents < tail.len() {
+            let block_sectors = u64::from(self.sb.block_size).max(1);
+            t.put(
+                ids::EXTENTS,
+                None,
+                Self::inline_key(
+                    ino,
+                    (start + in_extents as u64) / 512,
+                    &tail[in_extents..],
+                    block_sectors,
+                ),
+            );
+            sectors += block_sectors;
+        }
+        let old = i.key.clone();
+        i.raw.size = size;
+        i.raw.sectors = sectors;
+        self.touch(&mut i, now);
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
     }
 
     /// [`Writer::write_file`], with the file's size set to `size`, at least
