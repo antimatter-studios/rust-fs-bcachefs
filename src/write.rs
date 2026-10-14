@@ -1319,8 +1319,9 @@ impl<D: BlockDevice> Writer<D> {
 
     /// A file's whole contents as this writer sees them, a session's
     /// journal included: inline data, and data extents read, checked and
-    /// decompressed as the reader does (`fs::extent_bytes`). Holes and
-    /// reservations read as zeros.
+    /// decompressed as the reader does (`fs::extent_bytes`). Holes,
+    /// reservations and unwritten extents read as zeros: an unwritten
+    /// extent's sectors are not the file's data (#158, #207).
     fn contents(&self, ino: u64) -> Result<Vec<u8>> {
         let claimed = self.inode(ino)?.raw.size;
         // The whole file is held to be rewritten; one larger than the device
@@ -1338,6 +1339,9 @@ impl<D: BlockDevice> Writer<D> {
             match k.key_type {
                 key_type::EXTENT => {
                     let e = crate::extent::DataExtent::from_key(&k)?;
+                    if e.ptr.is_unwritten() {
+                        continue;
+                    }
                     let data = crate::fs::extent_bytes(&e, self.dev.size_bytes(), |at, buf| {
                         Ok(self.dev.read_at(at, buf)?)
                     })?;
