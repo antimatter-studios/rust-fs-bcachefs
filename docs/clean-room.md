@@ -499,6 +499,20 @@ checker judged each attempt and named what was missing until nothing was.
   `dev_data_type need_discard` (and keeps zeroed keys, as the reference
   does). Judged: unlinking, shrinking and growing large files passes the
   reference checker and the mount reads what remains (S8 checker run).
+- Pieces of checksummed regions (#169; S8, read off the reference's
+  `aged` and `crc128-overwrite` images with this crate's reader, against
+  the lister's extents listing): where the reference overwrites part of a
+  file it leaves extents whose crc entry covers more than they do, a
+  region's pieces each pointing at the region's start with their offset
+  into it in the crc entry. A bucket counts a piece's live sectors, not
+  its region's: `aged` bucket 105 holds pieces of 111 and 120 sectors of
+  one 256-sector region and counts 231, bucket 106 a 148-sector piece of a
+  246-sector region and whole extents of 97 and 10 and counts 255, and
+  `crc128-overwrite` bucket 56 pieces of 8 and 1008 sectors of a
+  1024-sector region and counts 1016. A piece's backpointer sits at the
+  region's sector << 16 plus its offset (`26880 << 16 | 136`, `57344 <<
+  16 | 16`), with the piece's live length. Only uncompressed regions'
+  pieces appear in any fixture.
 - A bucket holding several nodes (#109): on a filesystem whose nodes are
   smaller than its buckets the reference formatter fills a bucket with
   more than one node (`write-study/base-small-nodes.img`: 64-sector nodes
