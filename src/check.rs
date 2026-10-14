@@ -21,7 +21,8 @@
 //! journal, as it would be read.
 //!
 //! Of the allocation btrees, each bucket's generation in bucket_gens is
-//! checked against its alloc key.
+//! checked against its alloc key, and each data extent written whole has
+//! its backpointer.
 //!
 //! It is a subset of what the reference checker checks (the rest of
 //! allocation, accounting, backpointers and lru are not), and the tests
@@ -50,6 +51,10 @@ const KEY_SNAPSHOT: u8 = 22;
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
 const KEY_BUCKET_GENS: u8 = 30;
+/// The backpointers btree, and its key type: a data pointer's backpointer
+/// sits at `dev:sector << 16` (S8).
+const BACKPOINTERS: u8 = 13;
+const KEY_BACKPOINTER: u8 = 28;
 /// A dirent's type when it names a subvolume (the lister's `type subvol`).
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
@@ -518,6 +523,14 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .filter_map(|k| crate::extent::alloc_v4_gen(&k.value).map(|g| (k.pos.offset, g)))
         .collect();
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
+    // Where the device's backpointers are, when the filesystem keeps them.
+    let backpointers: Option<std::collections::BTreeSet<u64>> =
+        trees.get(&BACKPOINTERS).map(|keys| {
+            keys.iter()
+                .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
+                .map(|k| k.pos.offset)
+                .collect()
+        });
 
     // Every bucket's generation as bucket_gens records it, against its
     // alloc key's; a bucket with no alloc key is at generation 0 (#163: the
@@ -627,6 +640,24 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 if let Err(err) = e.ptr.check(sb.dev_idx, gen) {
                     r.add("extent_pointer", format!("extent {}: {err}", k.pos));
                     continue;
+                }
+            }
+            // Its backpointer, at its device sector << 16 (#163: the
+            // reference's "missing backpointer"). Only for the shapes whose
+            // backpointer is known to sit there: data written whole, not an
+            // unwritten extent and not a piece of a checksummed region.
+            let whole = e
+                .crc
+                .is_none_or(|c| c.offset == 0 && u64::from(c.uncompressed_size) == e.len);
+            if let Some(bps) = &backpointers {
+                if whole && !e.ptr.is_unwritten() && !bps.contains(&(e.ptr.offset << 16)) {
+                    r.add(
+                        "missing_backpointer",
+                        format!(
+                            "extent {}: no backpointer at device sector {}",
+                            k.pos, e.ptr.offset
+                        ),
+                    );
                 }
             }
             // A poisoned extent's data is known to be bad, and the
