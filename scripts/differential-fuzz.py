@@ -251,13 +251,28 @@ def fold(line):
     return re.sub(r"\s+", " ", s)
 
 
+# A pass's progress, `name...`, and what was printed after it on its line.
+PROGRESS = re.compile(r"^[a-z_]+\.\.\.(.+)$")
+
+
+def usual(line):
+    """One of the reference's usual lines, or a pass's progress broken by
+    one: on aged.img seed 3 (exit 0) it printed `check_allocations...` and
+    then its own `Running userspace offline fsck` on the same line. A
+    finding printed after a pass's progress is still a finding."""
+    if any(p.match(line) for p in NORMAL):
+        return True
+    rest = PROGRESS.match(line)
+    return bool(rest) and any(p.match(rest.group(1)) for p in NORMAL)
+
+
 def findings(text, normal=frozenset()):
     """The lines that are not the reference's usual ones, nor (folded) one
     it printed on the unchanged fixture."""
     return [
         l.rstrip()
         for l in text.splitlines()
-        if not any(p.match(l.rstrip()) for p in NORMAL) and fold(l) not in normal
+        if not usual(l.rstrip()) and fold(l) not in normal
     ]
 
 
