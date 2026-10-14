@@ -21,8 +21,13 @@
 //! journal, as it would be read.
 //!
 //! Of the allocation btrees, each bucket's generation in bucket_gens is
-//! checked against its alloc key, and each data extent written whole has
-//! its backpointer.
+//! checked against its alloc key, each data extent has its backpointer (a
+//! piece of a compressed region aside), each bucket holding data is a user
+//! bucket in its alloc key,
+//! the fragmentation lru holds an entry for each partly filled bucket and
+//! nothing else, the need_discard btree a key for each bucket waiting for
+//! discard and nothing else, and the device's accounting by data type is
+//! what its alloc keys add up to.
 //!
 //! It is a subset of what the reference checker checks (the rest of
 //! allocation, accounting, backpointers and lru are not), and the tests
@@ -55,6 +60,30 @@ const KEY_BUCKET_GENS: u8 = 30;
 /// sits at `dev:sector << 16` (S8).
 const BACKPOINTERS: u8 = 13;
 const KEY_BACKPOINTER: u8 = 28;
+/// An alloc_v4 key's data type, byte 6 of its second word, and the type of
+/// a bucket holding file data (docs/clean-room.md, "Allocating space").
+const ALLOC_DATA_TYPE: usize = 14;
+const DATA_BTREE: u8 = 3;
+const DATA_USER: u8 = 4;
+/// The lru btree, and the key type of its entries: a partly filled bucket's
+/// fragmentation entry sits at `(1 << 61 | dirty * 2^31 / bucket_size) :
+/// bucket`, the top three bits of the inode field naming the lru (S8).
+const LRU: u8 = 10;
+const KEY_SET: u8 = 25;
+const LRU_FRAGMENTATION: u64 = 1;
+/// The need_discard btree, and the data type of a bucket waiting for
+/// discard: its key sits at `journal_seq_empty : bucket`, the sequence
+/// number word 6 of the bucket's alloc key (S8; every need_discard bucket
+/// of the reference's fixtures has its key there).
+const NEED_DISCARD: u8 = 12;
+const DATA_NEED_DISCARD: u8 = 9;
+/// The accounting btree, its key type, and the kind of key that accounts
+/// for a device's buckets of one data type: the position's first byte is
+/// the kind, then the device and the data type, byte by byte; the value
+/// is buckets, sectors, fragmented (S8).
+const ACCOUNTING: u8 = 20;
+const KEY_ACCOUNTING: u8 = 34;
+const ACCT_DEV_DATA_TYPE: u64 = 3;
 /// A dirent's type when it names a subvolume (the lister's `type subvol`).
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
@@ -522,6 +551,29 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
         .filter_map(|k| crate::extent::alloc_v4_gen(&k.value).map(|g| (k.pos.offset, g)))
         .collect();
+    let data_types: BTreeMap<u64, u8> = trees
+        .get(&btree_id::ALLOC)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+        .filter_map(|k| k.value.get(ALLOC_DATA_TYPE).map(|&t| (k.pos.offset, t)))
+        .collect();
+    // A written extent's bucket is a user bucket in its alloc key; a bucket
+    // with no alloc key is free (#163). An unwritten extent's is not judged:
+    // no fixture shows what the reference gives it.
+    let data_type_wrong = |what: String, ptr: &crate::extent::Ptr| -> Option<String> {
+        let b = bucket_size?;
+        if ptr.is_unwritten() {
+            return None;
+        }
+        let bucket = ptr.offset / b;
+        let t = data_types.get(&bucket).copied().unwrap_or(0);
+        (t != DATA_USER).then(|| {
+            format!(
+                "{what}: bucket {bucket} holds its data, and its alloc key gives it data type {t}"
+            )
+        })
+    };
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
     // Where the device's backpointers are, when the filesystem keeps them.
     let backpointers: Option<std::collections::BTreeSet<u64>> =
@@ -554,6 +606,182 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                         ),
                     );
                 }
+            }
+        }
+    }
+
+    // Every partly filled user or btree bucket has its fragmentation lru
+    // entry, and every fragmentation lru entry is one of those (#163: the
+    // reference's "missing fragmentation lru entry" and "incorrect lru
+    // entry"). Judged on one device only: where another device's entries
+    // sit is unobserved.
+    if let Some(b) =
+        bucket_size.filter(|_| trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1)
+    {
+        let want: std::collections::BTreeMap<(u64, u64), u64> = trees
+            .get(&btree_id::ALLOC)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+            .filter(|k| {
+                matches!(
+                    k.value.get(ALLOC_DATA_TYPE),
+                    Some(&DATA_USER) | Some(&DATA_BTREE)
+                )
+            })
+            .filter_map(|k| {
+                let dirty = le64(k.value.get(16..24)?, 0) & 0xffff_ffff;
+                (dirty > 0 && dirty < b).then_some((
+                    (
+                        (LRU_FRAGMENTATION << 61) | ((dirty << 31) / b),
+                        k.pos.offset,
+                    ),
+                    dirty,
+                ))
+            })
+            .collect();
+        let have: std::collections::BTreeSet<(u64, u64)> = trees
+            .get(&LRU)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == KEY_SET && k.pos.inode >> 61 == LRU_FRAGMENTATION)
+            .map(|k| (k.pos.inode, k.pos.offset))
+            .collect();
+        for (&(at, bucket), dirty) in &want {
+            if !have.contains(&(at, bucket)) {
+                r.add(
+                    "missing_fragmentation_lru_entry",
+                    format!(
+                        "bucket {bucket}: {dirty} of {b} sectors in use and no fragmentation lru \
+                         entry at {at}:{bucket}"
+                    ),
+                );
+            }
+        }
+        for &(at, bucket) in &have {
+            if !want.contains_key(&(at, bucket)) {
+                r.add(
+                    "incorrect_lru_entry",
+                    format!(
+                        "lru entry {at}:{bucket}: bucket {bucket}'s fill gives it no entry there"
+                    ),
+                );
+            }
+        }
+    }
+
+    // Every bucket waiting for discard has its need_discard key, and every
+    // need_discard key is one of those (#163). On one device only, as the
+    // lru: where another device's keys sit is unobserved.
+    if trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1 {
+        let want: std::collections::BTreeSet<(u64, u64)> = trees
+            .get(&btree_id::ALLOC)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+            .filter(|k| k.value.get(ALLOC_DATA_TYPE) == Some(&DATA_NEED_DISCARD))
+            .filter_map(|k| Some((le64(k.value.get(48..56)?, 0), k.pos.offset)))
+            .collect();
+        let have: std::collections::BTreeSet<(u64, u64)> = trees
+            .get(&NEED_DISCARD)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == KEY_SET)
+            .map(|k| (k.pos.inode, k.pos.offset))
+            .collect();
+        for &(seq, bucket) in want.difference(&have) {
+            r.add(
+                "missing_need_discard_entry",
+                format!("bucket {bucket}: waiting for discard and no need_discard key at {seq}:{bucket}"),
+            );
+        }
+        for &(seq, bucket) in have.difference(&want) {
+            r.add(
+                "incorrect_need_discard_entry",
+                format!(
+                    "need_discard key {seq}:{bucket}: bucket {bucket}'s alloc key gives it no key there"
+                ),
+            );
+        }
+    }
+
+    // The device's accounting by data type is what its alloc keys add up
+    // to (#163: the reference's "accounting mismatch"): each data type's
+    // buckets, their dirty sectors, and the unused part of each bucket with
+    // any in use; free, every bucket from the first usable one with no
+    // alloc key of another type. Every fixture the reference made agrees,
+    // all 51 of them. On one device only, as the lru.
+    let member = sb
+        .members()
+        .ok()
+        .and_then(|m| m.get(sb.dev_idx as usize).cloned());
+    if let (true, 1, Some(b), Some(m)) = (
+        trees.contains_key(&btree_id::ALLOC),
+        sb.nr_devices,
+        bucket_size,
+        &member,
+    ) {
+        let mut want: BTreeMap<u8, [u64; 3]> = BTreeMap::new();
+        for k in trees
+            .get(&btree_id::ALLOC)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+            .filter(|k| k.pos.offset >= u64::from(m.first_bucket))
+        {
+            let (Some(&t), Some(d)) = (k.value.get(ALLOC_DATA_TYPE), k.value.get(16..24)) else {
+                continue;
+            };
+            let dirty = le64(d, 0) & 0xffff_ffff;
+            let e = want.entry(t).or_default();
+            e[0] += 1;
+            e[1] += dirty;
+            if dirty > 0 {
+                e[2] += b.saturating_sub(dirty);
+            }
+        }
+        let used: u64 = want
+            .iter()
+            .filter(|(&t, _)| t != 0)
+            .map(|(_, e)| e[0])
+            .sum();
+        let total = m.nbuckets.saturating_sub(u64::from(m.first_bucket));
+        want.insert(0, [total.saturating_sub(used), 0, 0]);
+        let have: BTreeMap<u8, [u64; 3]> = trees
+            .get(&ACCOUNTING)
+            .into_iter()
+            .flatten()
+            .filter(|k| {
+                k.key_type == KEY_ACCOUNTING
+                    && k.pos.inode >> 56 == ACCT_DEV_DATA_TYPE
+                    && (k.pos.inode >> 48) & 0xff == u64::from(sb.dev_idx)
+            })
+            .map(|k| {
+                let mut v = [0u64; 3];
+                for (i, x) in v.iter_mut().enumerate() {
+                    if let Some(w) = k.value.get(i * 8..i * 8 + 8) {
+                        *x = le64(w, 0);
+                    }
+                }
+                (((k.pos.inode >> 40) & 0xff) as u8, v)
+            })
+            .collect();
+        let types: std::collections::BTreeSet<u8> =
+            want.keys().chain(have.keys()).copied().collect();
+        for t in types {
+            let (w, h) = (
+                want.get(&t).copied().unwrap_or_default(),
+                have.get(&t).copied().unwrap_or_default(),
+            );
+            if w != h {
+                r.add(
+                    "accounting_mismatch",
+                    format!(
+                        "data type {t} on device {}: the alloc keys add up to {} buckets, {} \
+                         sectors, {} fragmented; the accounting says {}, {}, {}",
+                        sb.dev_idx, w[0], w[1], w[2], h[0], h[1], h[2]
+                    ),
+                );
             }
         }
     }
@@ -641,21 +869,31 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     r.add("extent_pointer", format!("extent {}: {err}", k.pos));
                     continue;
                 }
+                if let Some(d) = data_type_wrong(format!("extent {}", k.pos), &e.ptr) {
+                    r.add("alloc_key_data_type_wrong", d);
+                }
             }
-            // Its backpointer, at its device sector << 16 (#163: the
-            // reference's "missing backpointer"). Only for the shapes whose
-            // backpointer is known to sit there: data written whole, not an
-            // unwritten extent and not a piece of a checksummed region.
-            let whole = e
-                .crc
-                .is_none_or(|c| c.offset == 0 && u64::from(c.uncompressed_size) == e.len);
+            // Its backpointer, at its device sector << 16 plus its offset
+            // into a checksummed region it is a piece of (#163: the
+            // reference's "missing backpointer"; the aged image: the piece
+            // at offset 136 of the region at sector 26880 has its
+            // backpointer at 26880 << 16 | 136). Only for the shapes whose
+            // backpointer is known to sit there: not an unwritten extent,
+            // and not a piece of a compressed region.
+            let known = e.crc.is_none_or(|c| {
+                c.compression_type == crate::extent::compression::NONE
+                    || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
+            });
+            let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
             if let Some(bps) = &backpointers {
-                if whole && !e.ptr.is_unwritten() && !bps.contains(&(e.ptr.offset << 16)) {
+                if known && !e.ptr.is_unwritten() && !bps.contains(&at) {
                     r.add(
                         "missing_backpointer",
                         format!(
-                            "extent {}: no backpointer at device sector {}",
-                            k.pos, e.ptr.offset
+                            "extent {}: no backpointer at device sector {} offset {}",
+                            k.pos,
+                            e.ptr.offset,
+                            at & 0xffff
                         ),
                     );
                 }
@@ -736,6 +974,9 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             if let Err(err) = e.ptr.check(sb.dev_idx, gen) {
                 r.add("extent_pointer", format!("reflink {}: {err}", v.pos));
                 continue;
+            }
+            if let Some(d) = data_type_wrong(format!("reflink {}", v.pos), &e.ptr) {
+                r.add("alloc_key_data_type_wrong", d);
             }
         }
         if let Err(e) = verify_data(dev, &e) {
