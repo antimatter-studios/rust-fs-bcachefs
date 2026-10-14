@@ -74,7 +74,7 @@ States:
 | An extent or a size near the top of its range judged without overflowing: an extent far past the end of its file is reported | Supported | 0.4.0 (#175) | #150 | `oracle_check_overflow.rs` |
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | 0.4.0 (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | Unreleased | #163 | `oracle_check_namespace.rs` |
-| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent written whole with no backpointer at its device sector | Supported | Unreleased | #163 | `oracle_check_alloc.rs` |
+| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent, or a piece of an uncompressed checksummed region, with no backpointer at its device sector plus its offset into the region; a bucket holding written data whose alloc key gives it another data type than user; on one device, a partly filled bucket with no fragmentation lru entry, an lru entry no bucket's fill gives, a bucket waiting for discard with no need_discard key, a need_discard key no such bucket gives, and the device's accounting of a data type out of step with its alloc keys | Supported | Unreleased | #163 | `oracle_check_alloc.rs` |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)
