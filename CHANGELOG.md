@@ -10,6 +10,180 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-14
+
+### Added
+
+- **Preallocated space reads as zeros (#158).** An extent whose pointer is
+  marked unwritten, which the reference kernel module makes when a MiB is
+  preallocated with `fallocate` in a `nocow` file, used to make the whole
+  file unreadable; it now reads as zeros over its range, as the reference
+  reads it, and the checker accepts it. The flag was observed rather than
+  guessed: the kernel oracle builds a fifth image for it, and
+  `tests/oracle_unwritten.rs` reads both a `nocow` and an ordinary
+  preallocated file back as their 4 KiB in a MiB of zeros. A pointer with
+  any other flag (S1's cached pointers, never observed) is still refused.
+
+### Fixed
+
+- **One damaged alloc node no longer makes every file unreadable.** Every
+  data read checked its pointer's generation against the bucket's alloc
+  key, so a torn alloc node failed every file though the data and its
+  checksums were intact. When the alloc btree cannot be read, the
+  generation now comes from the bucket_gens btree, and when that has none
+  either, the extent's own data checksum stands in; an extent with no
+  checksum is still refused (#167).
+
+- **The checker judges allocation information only on a filesystem shut
+  down cleanly (#163).** After an unclean shutdown the allocation btrees
+  can lag the rest of the filesystem, as the reference leaves them in its
+  own crash images (a bucket's generation in bucket_gens one ahead of its
+  alloc key), and the reference rebuilds them in recovery. The checks of
+  bucket_gens, backpointers, data types, the fragmentation lru,
+  need_discard and accounting reported such an image as damaged; they are
+  now made only when the filesystem was shut down cleanly.
+
+- **The checker reports more allocation damage (#163): a data bucket of
+  the wrong type, a fragmentation lru, need_discard btree or device
+  accounting out of step with the buckets, and a missing backpointer of a
+  piece of a checksummed region.** Each bucket holding a written data extent, or an indirect
+  extent's data, must be a user bucket in its alloc key; one that is not,
+  or that has no alloc key, is reported as `alloc_key_data_type_wrong`. On
+  a single-device filesystem each partly filled user or btree bucket must
+  have its fragmentation lru entry, as the reference checker requires (one
+  without is `missing_fragmentation_lru_entry`, an entry no bucket's fill
+  gives is `incorrect_lru_entry`), and each bucket waiting for discard its
+  need_discard key (`missing_need_discard_entry`, and
+  `incorrect_need_discard_entry` for a key no such bucket gives), and the
+  device's accounting of each data type must be what its alloc keys add
+  up to (`accounting_mismatch`, the reference checker's words). A piece
+  of an uncompressed checksummed region, which the reference leaves where
+  it overwrote part of a file, must have its backpointer at its region's
+  sector plus its offset, and is reported as `missing_backpointer` without
+  it.
+
+- **The checker reads the allocation btrees' bucket generations (#163).**
+  A bucket whose generation in `bucket_gens` is not the one its alloc key
+  holds is reported as `incorrect_gen_in_bucket_gens`, as the reference's
+  checker reports "incorrect gen in bucket_gens". The checker judged no
+  allocation btree before.
+
+- **The checker reports a data extent with no backpointer (#163).** Each
+  data extent written whole, not unwritten and not a piece of a checksummed
+  region, must have its backpointer at its device sector, as the reference
+  checker requires ("missing backpointer"); one without is reported as
+  `missing_backpointer`, naming the extent.
+
+- **The checker finds xattr, back-reference and options-flag damage
+  (#163).** `check::check` and `fsck.bcachefs` now report an xattr whose
+  inode is gone (`key_in_missing_inode`), an xattr its name's hash slot
+  cannot reach (`hash_table_key_wrong_offset`), an inode whose
+  back-reference names no entry or another inode's
+  (`inode_points_to_missing_dirent`, `inode_points_to_wrong_dirent`), and an
+  inode whose has-options flag disagrees with its option fields
+  (`inode_has_inode_opts_flag_wrong`). The reference checker found each of
+  these on images where this one reported nothing.
+
+- **A crafted reservation, whiteout or extent size no longer aborts the
+  process.** A reservation or whiteout read as zeros through a buffer as
+  large as its key, and an extent with no checksum entry was read into a
+  buffer as large as the extent, both before anything bounded them; a key
+  claiming up to 2 TiB aborted the process. Reservations and whiteouts now
+  zero only the bytes a read asked for, and an extent whose stored sectors
+  run past the end of the device is refused as corrupt (#151).
+
+- **A create, link, rename or removal reads only its name's run of dirent
+  hash slots.** Finding a name's slot read every dirents key of the directory
+  from the name's hash on, so in a large directory one create could read
+  most of its dirents nodes; it now stops at the first offset its run
+  skips (#191).
+
+- **A write or truncate past the device's size no longer aborts the
+  process.** The writer rewrites a file whole and held the new size in
+  memory before checking it, so a truncate to 1 TiB, or a one-byte write
+  at 1 TiB, asked for a terabyte and aborted the caller, C ABI hosts
+  included. A new size larger than the device is now refused before
+  anything is allocated (#156).
+
+- **A btree node is checked against the pointer that leads to it.** The
+  reader believed what a node's header said about itself, so a node naming
+  another btree or another level, or starting or ending somewhere its
+  pointer does not, fed its keys into the wrong place. Such a node is now
+  refused, as is a key format whose fields unpack past their width and a
+  bset whose keys are out of order, both of which wrapped or re-sorted keys
+  silently (#162).
+
+- **Unlinking a reflinked file reads its run of indirect extents, not the
+  rest of the reflink btree (#193).** Dropping a `reflink_p`'s references
+  collected every reflink key from the pointer's start to the end of the
+  btree before it looked at any of them, so its cost grew with the reflink
+  btree rather than with the file. It now reads through a cursor and stops
+  at the run's end or at its first gap.
+
+- **Removing a directory reads up to its first entry, not all of them.**
+  The check that a directory is empty read every dirents key it held, so
+  refusing to remove a large one read its every leaf; it now stops at the
+  first live entry (#193).
+
+- **A superblock root that will not read is replaced by the journal's
+  (#166).** The journal records every btree root again, and on every clean
+  fixture it records the same roots as the superblock's clean field. The
+  reference opened images whose clean-field root had been damaged, and so
+  does this reader now: when a root's key does not decode, its node does not
+  read, or the node belongs to another btree or level, `Filesystem::open`
+  and the checker read the filesystem through its journal, as after an
+  unclean shutdown, instead of refusing it or failing that btree.
+
+- **A damaged journal entry outside the replay window no longer makes the
+  filesystem unreadable.** The journal is a ring, and entries older than
+  the window are stale writes recovery never reads, but the reader parsed
+  every entry and refused the filesystem over one damaged anywhere. Damage
+  older than the window, or newer than its last flush, is now passed over;
+  damage inside the window is still refused (#165).
+
+- **The CLI tarball and the static library carry their crates' licence
+  notices.** Both link nineteen crates under MIT, Apache-2.0, Zlib and
+  0BSD, and carried only this repository's `LICENSE`. They now ship
+  `THIRD-PARTY-LICENSES.md` beside it, generated from `cargo metadata` by
+  `scripts/third-party-notices.py`, and `chore lint` fails when a shipped
+  crate has no notice there (#155).
+
+- **Truncating a file up leaves the new range a hole (#156).** A truncate
+  up rewrote the file with the added range as allocated zeros, so an
+  empty file truncated to 1 MiB took a MiB of buckets, and a sparse file
+  lost its holes. Only the file's last block is rewritten now, zero-filled
+  past the old end, and the size set; the added range has no extent and
+  reads as zeros. A write past the end still writes the gap as zeros.
+
+- **A file held by pieces of checksummed regions can be rewritten
+  (#169).** Where the reference overwrites part of a file, it leaves
+  extents whose checksum entry covers more than they do, and the writer
+  refused to free them ("freeing part of a checksummed extent is not
+  implemented"), so any write, truncate or unlink of such a file failed.
+  A piece of an uncompressed region is now freed as the reference counts
+  it: its live sectors from its bucket, and its backpointer at the
+  region's sector plus its offset. A piece of a compressed region, which
+  no image has shown, is still refused.
+
+- **A write to a file with preallocated space keeps that space reading as
+  zeros (#207).** The writer rewrites a file whole from what it reads of
+  it, and it read an unwritten extent's device sectors as the file's data,
+  so any `write_at`, `append` or `truncate` on such a file stored whatever
+  the device held there, a deleted file's bytes on a reused bucket. Those
+  ranges are now zeros, as the reader reads them.
+
+- **A reflinked file can be written (#169).** `write_at`, `append` and
+  `truncate` refused a file whose data is shared through a `reflink_p`
+  ("extent key type 15 cannot be rewritten"), so a cloned file could not be
+  modified at all. The rewrite now reads the shared data and copies it into
+  extents of the file's own, dropping one reference to each indirect
+  extent; the last reference frees it, as an unlink does.
+
+- **Setting an xattr reads its run of slots, not the rest of the table.**
+  The probe for an xattr's slot read every xattr key of the inode from the
+  name's hash onwards, so on an inode with many xattrs one set read most of
+  its table; it now stops at the first slot its run skips (#193).
+
 ## [0.4.1] — 2026-10-12
 
 ### Fixed

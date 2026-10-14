@@ -38,18 +38,18 @@ States:
 | Colliding directory entries (hash run, `hash_whiteout`) | Supported | 0.4.0 (#88) | | `oracle_collisions.rs` |
 | crc64-hashed directories | Partial: found by scanning the directory | 0.4.0 (#72) | open question 17 | |
 | Extents, inline data | Supported | 0.4.0 (#1) | | `oracle_fs.rs`, `oracle_aged.rs` |
-| Unwritten extents (preallocated in a `nocow` file), read as zeros; `fallocate` elsewhere makes reservations, also read as zeros | Supported | Unreleased | #158; cached pointers are refused (none seen) | `oracle_unwritten.rs` |
+| Unwritten extents (preallocated in a `nocow` file), read as zeros; `fallocate` elsewhere makes reservations, also read as zeros | Supported | 0.4.2 | #158; cached pointers are refused (none seen) | `oracle_unwritten.rs` |
 | Ranged reads (a window of a file) | Supported | 0.4.0 (#70) | | `oracle_read_range.rs` |
 | Data checksums: crc32c, crc64, xxhash | Supported | 0.4.0 (#1) | | `oracle_fs.rs` |
 | Compression: lz4, zstd, gzip | Supported | 0.4.0 (#1) | | `oracle_fs.rs` |
 | Background compression (`reconcile` extent entry) | Supported | 0.4.0 (#75) | | `oracle_bgcompress.rs` |
 | Extent pointers checked against the allocator's generations, a bucket reused by the reference kernel module among them | Supported | 0.4.0 (#69, #95) | | `oracle_pointers.rs` |
-| A damaged alloc node does not fail every file: a pointer's generation is checked against the bucket_gens btree when the alloc btree cannot be read, and the extent's own checksum stands in when neither can; an extent with no checksum is then refused | Supported | Unreleased (#186) | | `oracle_alloc_damage.rs` |
+| A damaged alloc node does not fail every file: a pointer's generation is checked against the bucket_gens btree when the alloc btree cannot be read, and the extent's own checksum stands in when neither can; an extent with no checksum is then refused | Supported | 0.4.2 (#186) | | `oracle_alloc_damage.rs` |
 | Error extents, extent whiteouts, older inode encodings | Supported | 0.4.0 (#68) | | `oracle_refused_local.rs` |
 | Extended attributes, user and trusted namespaces | Supported | 0.4.0 (#18) | | `oracle_xattr.rs` |
 | Unclean filesystems, through an in-memory journal replay | Supported | 0.4.0 (#17) | | `oracle_journal.rs` |
-| A clean filesystem whose superblock records a root that will not read, through the journal's copy of the roots | Supported | Unreleased | #166 | `oracle_journal_roots.rs` |
-| A damaged journal entry older than the replay window, or newer than its last flush, is passed over as recovery passes over it; one inside the window is refused | Supported | Unreleased (#183) | `Writer::open_journalled` still refuses a journal holding any damaged entry | `oracle_journal_window.rs` |
+| A clean filesystem whose superblock records a root that will not read, through the journal's copy of the roots | Supported | 0.4.2 | #166 | `oracle_journal_roots.rs` |
+| A damaged journal entry older than the replay window, or newer than its last flush, is passed over as recovery passes over it; one inside the window is refused | Supported | 0.4.2 (#183) | `Writer::open_journalled` still refuses a journal holding any damaged entry | `oracle_journal_window.rs` |
 | Journal sequence blacklist | Supported | 0.4.0 (#67) | | `oracle_blacklist.rs` |
 | crc128 extent entries (extents over 512 sectors), partly overwritten ones too | Supported | 0.4.0 (#97) | | `oracle_extent_entries.rs` |
 | Poisoned extents (flags entry): reads fail with an I/O error, as the reference's do | Supported | 0.4.0 (#97) | | `oracle_extent_entries.rs` |
@@ -58,10 +58,10 @@ States:
 | Multi-device filesystems | Refused | 0.4.0 (#19) | | `oracle_refused.rs` |
 | A key at a snapshot the snapshots btree does not have, overlapping extents, unknown checksum types | Refused | 0.4.0 (#65) | | `oracle_refused_local.rs` |
 | A whole-file read of a file that claims more than its device holds (read it with `read_range`), and a size memory cannot hold, refused with an error rather than a panic or an abort; a symlink target over 4096 bytes | Refused | 0.4.1 (#176) | #149 | `oracle_crafted_inode_size.rs` |
-| A btree node whose header disagrees with its pointer (btree id, level, min_key, max_key), a key format whose fields unpack past their width, and keys out of order in a bset | Refused | Unreleased (#185) | | `oracle_node_header.rs` |
-| A reservation or whiteout read through a window of zeros, not a buffer the size of its key; an extent whose stored sectors run past the device, refused as corrupt before anything is allocated for it | Refused | Unreleased (#177) | #151 | `oracle_crafted_extent_size.rs` |
+| A btree node whose header disagrees with its pointer (btree id, level, min_key, max_key), a key format whose fields unpack past their width, and keys out of order in a bset | Refused | 0.4.2 (#185) | | `oracle_node_header.rs` |
+| A reservation or whiteout read through a window of zeros, not a buffer the size of its key; an extent whose stored sectors run past the device, refused as corrupt before anything is allocated for it | Refused | 0.4.2 (#177) | #151 | `oracle_crafted_extent_size.rs` |
 | Snapshots and subvolumes: each subvolume and snapshot read as it is (`Filesystem::resolve` and the `_at` calls) | Supported (read) | 0.4.0 (#129) | #12; the writer writes the root subvolume only (#138) | `oracle_kernel.rs` |
-| Reflinked extents (`reflink_p` into the reflink btree): read, checked, and freed by the writer one reference at a time; a write into a reflinked file copies its data out of the shared extents | Supported | 0.4.0 (#128, #144, #145); writes Unreleased (#169) | #7, #140; a pointer covering part of an indirect extent is refused (none seen) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs`, `oracle_write_local.rs`, `write_oracle.rs` |
+| Reflinked extents (`reflink_p` into the reflink btree): read, checked, and freed by the writer one reference at a time; a write into a reflinked file copies its data out of the shared extents | Supported | 0.4.0 (#128, #144, #145); writes 0.4.2 (#169) | #7, #140; a pointer covering part of an indirect extent is refused (none seen) | `oracle_kernel.rs`, `oracle_check.rs`, `oracle_refused_local.rs`, `oracle_write_local.rs`, `write_oracle.rs` |
 | Casefolded directories (`--casefold`): names listed as given, found in any case, non-ASCII included (Unicode full folding and NFD) | Supported | 0.4.0 (#98, #126) | folding tables are a newer Unicode than the reference's 12.1 (open question 18) | `oracle_casefold.rs` |
 | Per-inode options: data_checksum, compression, background_compression and data_replicas read as the reference tool reports them, inherited ones included (`Inode::option`) | Supported (read) | 0.4.0 (#127) | #81; the other option fields are read raw, no image sets them | `oracle_kernel.rs`, `oracle_inode_fields.rs` |
 
@@ -73,8 +73,8 @@ States:
 | Damaged superblock copies reported | Supported | 0.4.0 (#66) | | `tests/cli/test-fsck.sh` |
 | An extent or a size near the top of its range judged without overflowing: an extent far past the end of its file is reported | Supported | 0.4.0 (#175) | #150 | `oracle_check_overflow.rs` |
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | 0.4.0 (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
-| `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | Unreleased | #163 | `oracle_check_namespace.rs` |
-| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent, or a piece of an uncompressed checksummed region, with no backpointer at its device sector plus its offset into the region; a bucket holding written data whose alloc key gives it another data type than user; on one device, a partly filled bucket with no fragmentation lru entry, an lru entry no bucket's fill gives, a bucket waiting for discard with no need_discard key, a need_discard key no such bucket gives, and the device's accounting of a data type out of step with its alloc keys | Supported | Unreleased | #163 | `oracle_check_alloc.rs` |
+| `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | 0.4.2 | #163 | `oracle_check_namespace.rs` |
+| `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent, or a piece of an uncompressed checksummed region, with no backpointer at its device sector plus its offset into the region; a bucket holding written data whose alloc key gives it another data type than user; on one device, a partly filled bucket with no fragmentation lru entry, an lru entry no bucket's fill gives, a bucket waiting for discard with no need_discard key, a need_discard key no such bucket gives, and the device's accounting of a data type out of step with its alloc keys | Supported | 0.4.2 | #163 | `oracle_check_alloc.rs` |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)
@@ -90,9 +90,9 @@ reads back byte for byte through the reference implementation's mount
 | mkdir, unlink, rmdir, rename; the last link's removal takes the file's extended attributes with it | Experimental | 0.4.0 (#30, #178) | #161 | `write_oracle.rs`, `oracle_unlink_xattrs.rs` |
 | rename over an existing file, and a directory moved to another directory | Experimental | 0.4.0 (#118) | renaming over a directory is refused (#104) | `oracle_write_local.rs`, `write_oracle.rs` |
 | File data inline or in extents, as the reference lays it out | Experimental | 0.4.0 (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
-| Writing at an offset, appending, truncating to any size (the file is rewritten whole); truncating up leaves the new range a hole | Experimental | 0.4.0 (#120); holes Unreleased (#156) | | `oracle_write_local.rs`, `oracle_write_sparse.rs`, `write_oracle.rs` |
-| A write or truncate whose new size is larger than the device, refused before anything is allocated (the file is rewritten whole, holes as allocated zeros) | Refused | Unreleased (#196) | #156 (holes kept as holes) | `oracle_write_large_offset.rs` |
-| Data in allocated buckets, freed on unlink and rewrite, pieces of uncompressed checksummed regions included (a piece of a compressed region is refused) | Experimental | 0.4.0 (#35, #36); pieces Unreleased (#169) | | `write_oracle.rs`, `oracle_write_pieces.rs` |
+| Writing at an offset, appending, truncating to any size (the file is rewritten whole); truncating up leaves the new range a hole | Experimental | 0.4.0 (#120); holes 0.4.2 (#156) | | `oracle_write_local.rs`, `oracle_write_sparse.rs`, `write_oracle.rs` |
+| A write or truncate whose new size is larger than the device, refused before anything is allocated (the file is rewritten whole, holes as allocated zeros) | Refused | 0.4.2 (#196) | #156 (holes kept as holes) | `oracle_write_large_offset.rs` |
+| Data in allocated buckets, freed on unlink and rewrite, pieces of uncompressed checksummed regions included (a piece of a compressed region is refused) | Experimental | 0.4.0 (#35, #36); pieces 0.4.2 (#169) | | `write_oracle.rs`, `oracle_write_pieces.rs` |
 | A write refused for space leaves the file as it was: data leaves 32 buckets for the btree nodes a commit rewrites | Experimental | 0.4.1 (#179) | #168 | `oracle_failed_write.rs` |
 | Buckets freed in a session used again by its later writes | Experimental | 0.4.0 (#133) | buckets of generation 16 or more wait (#132) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | 0.4.0 (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |
