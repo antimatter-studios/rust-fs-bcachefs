@@ -142,6 +142,36 @@ versions="$(grep -h '^REF_VERSION=' "$REPO/scripts/vm-setup.sh" "$REPO/scripts/k
 [ "$(printf '%s\n' "$versions" | wc -l | tr -d ' ')" = 1 ] ||
     fail "the reference tools' version differs between vm-setup.sh, kernel-oracle.sh and differential-fuzz.sh: $versions"
 
+# Lines the reference 1.39.7 printed in the nightly run of 648 cases. On
+# aged.img seed 3 (exit 0) its only line outside the usual ones was a pass's
+# progress broken by its own header; the rest are real findings it printed
+# behind a pass's progress or alone, and must stay findings.
+python3 - "$PY" >"$tmp/recorded.txt" 2>&1 <<'PY' || fail "a recorded reference line is judged wrong: $(cat "$tmp/recorded.txt")"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("differential", sys.argv[1])
+d = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(d)
+bad = 0
+for line in ("check_allocations...Running userspace offline fsck",):
+    if d.findings(line):
+        print(f"a pass's progress broken by the reference's header is a finding: {line!r}")
+        bad += 1
+for line in (
+    "check_btree_backpointers...backpointer for nonexistent alloc key: 0:4398046511103:0",
+    "check_alloc_info...hole in alloc btree missing in freespace btree",
+    "check_extents...incorrect i_sectors: got 18446744073709551615, should be 1",
+    "invalid bkey in btree_node btree=logged_ops level=0: u64s 7 type inode_alloc_cursor 1:1:0 len 1 ver 0  : min 2147483648 max 9223372036854775807 consumed 314 idx 2147483962 generation 0",
+    "  size != 0, deleting",
+    "  bkey_size_nonzero    1",
+    # Not recorded: a pass's progress with nothing after it is no usual line.
+    "check_allocations...",
+):
+    if d.findings(line) != [line]:
+        print(f"a real finding is not a finding: {line!r}")
+        bad += 1
+sys.exit(bad)
+PY
+
 if [ "$fails" -gt 0 ]; then
     echo "differential-fuzz-classifies: $fails check(s) failed" >&2
     exit 1
