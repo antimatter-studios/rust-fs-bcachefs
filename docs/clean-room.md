@@ -932,6 +932,32 @@ extents btrees is kept as `kernel.<btree>.txt`.
   (`tests/oracle_kernel.rs`). The writer and the checker still read one
   snapshot, the root subvolume's.
 
+### First differential checker baseline (S3, #164)
+
+CI run [38579070302](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38579070302)
+at PR #217 head `034ded6` compared 648 cases with reference checker 1.39.7.
+The `differential-report` artifact's `report.md` has SHA-256
+`9789454d87c7eb69f274b70eefe54a78ab09ce47a73f08da95d45a39d10a8e0d`.
+All eight unchanged controls were clean to both checkers; this crate had no
+panics and no findings missed by the reference. The reference found corruption
+in 97 cases this checker called clean, grouped into 46 exact classes.
+
+The allocation and allowed-key-type gaps (15 classes) are tracked by #163;
+metadata key lengths, snapshots, positions and values (23 classes) by #219;
+snapshot links and skiplist pointers (three classes) by #220; inode directory
+size, journal sequence and sector counts (four classes) by #221; and a torn
+node with fewer written sectors than its parent requires (one class) by #222.
+These facts come from the tools' printed diagnostics on non-crashing cases,
+not from their implementation source. They establish missing validation, not
+general rules for unobserved key types.
+
+`fuzz/differential-baseline.tsv` records only these measured direction,
+mutation-structure and folded-diagnostic triples, each naming its open issue.
+They remain known defects; a fixing PR removes an entry after the same
+oracle comparison confirms its class is gone. New triples, invalid controls
+and crate panics still fail the differential run. The two reference crashes
+or faults were counted only, with their identities and data excluded.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
