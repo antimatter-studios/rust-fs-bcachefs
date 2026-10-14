@@ -66,6 +66,12 @@ chore cli:install  # the tools, staged in tmp/cli
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).
 
+### v0.4.2 — 2026-10-14
+
+- Writes: a file with preallocated space keeps it reading as zeros, a reflinked file and one the reference split into pieces of checksummed regions can be rewritten, and truncating up leaves the new range a hole.
+- The checker reports what the reference checker reports on the allocation btrees (bucket generations, data types, backpointers, the fragmentation lru, need_discard and accounting, on a filesystem shut down cleanly) and on xattrs and inode back-references.
+- Unwritten extents read as zeros; a damaged alloc node, root or journal entry no longer makes the filesystem unreadable.
+
 ### v0.4.1 — 2026-10-12
 
 - A file whose inode claims an impossible size is refused with an error instead of aborting the reading process, and a symlink target over 4096 bytes is refused as damage.
