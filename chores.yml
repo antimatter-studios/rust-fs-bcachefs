@@ -193,6 +193,12 @@ tasks:
     desc: 'Rebuild the fuzz seeds from the fixtures (needs chore fixtures); committed reproducers are kept'
     cmds: ['scripts/make-fuzz-corpus.sh']
 
+  # Not a test tier and not a pull-request gate (#164): its result depends
+  # on its seeds. .github/workflows/differential.yml runs it nightly.
+  fuzz:differential:
+    desc: 'This crate and the reference checker on the same damaged images (needs chore fixtures, docker; Linux): chore fuzz:differential [-- cases [first-seed]]'
+    cmds: ['scripts/differential-fuzz.sh $CLI_ARGS']
+
   lint:
     desc: Formatting, clippy, the family's structural checks and the licence gate, exactly as CI runs them
     cmds:

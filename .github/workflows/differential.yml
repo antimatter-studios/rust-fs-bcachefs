@@ -1,0 +1,145 @@
+name: differential
+
+# Differential fuzzing (#164): this crate and the reference checker on the
+# same damaged images, every disagreement classified and counted, and the
+# run failed by a class of disagreement fuzz/differential-baseline.tsv does
+# not list. scripts/differential-fuzz.sh is the whole of it; this workflow
+# only gives it a runner, the fixtures and a schedule.
+#
+# NOT A PULL-REQUEST GATE, and never a required check: what it finds depends
+# on its seeds, so a fresh finding would fail whichever unrelated change
+# happened to be open. It runs nightly, each night on new seeds; on demand;
+# and on the pull requests that change the harness itself, at seed 0, the
+# seeds the baseline was measured on.
+#
+# DISCLOSURE (AGENTS.md, "A crash in the reference stays private"). The
+# only things this workflow publishes are the report's counts and the
+# classes that are this crate's to fix. Nothing of a case on which the
+# reference crashed or hung reaches the report, the job summary or an
+# artifact: the harness deletes its patch and never keeps its output.
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Cases per fixture"
+        required: false
+        default: "80"
+      first_seed:
+        description: "First seed (empty: 0)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "30 4 * * *"
+  pull_request:
+    paths:
+      - .github/workflows/differential.yml
+      - scripts/differential-fuzz.sh
+      - scripts/differential-fuzz.py
+      - examples/differential.rs
+      - fuzz/differential-baseline.tsv
+      - fuzz/shared/**
+
+concurrency:
+  group: differential-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Read-only unless a job asks for more.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CHORE_VERSION: "0.11.0"
+
+jobs:
+  differential:
+    name: differential (this crate vs the reference checker, damaged images)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # issues: write, for filing a failed scheduled run (the last step);
+    # actions: read, for the fixtures of the newest green main run.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-differential-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Building them takes the harness VM, so the newest green main run's
+      # are fetched instead, as the nightly fuzz run does.
+      - name: Fetch the fixtures from the newest green main run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
+          echo "fixtures from run $run: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
+
+      # Seed 0 unless asked otherwise; a scheduled night starts where the
+      # day's number puts it, so no two nights judge the same cases.
+      - name: chore fuzz:differential
+        env:
+          CASES: ${{ inputs.cases || '80' }}
+          FIRST_SEED: ${{ inputs.first_seed }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          seed="${FIRST_SEED:-0}"
+          if [ "$EVENT" = schedule ]; then
+            seed=$(( $(date -u +%s) / 86400 * CASES ))
+          fi
+          chore fuzz:differential -- "$CASES" "$seed"
+
+      - name: The report, in the job summary
+        if: always()
+        run: |
+          if [ -f tmp/differential/report.md ]; then
+            cat tmp/differential/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The report alone: cases.tsv, the patches and the reference's output
+      # stay on the runner, which is thrown away.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-report
+          path: tmp/differential/report.md
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # A failed night is filed, not lost, as the nightly fuzz run's is.
+      - name: File a failed scheduled run
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="The nightly differential run failed"
+          open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label ci-failure \
+              --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci-failure --title "$title" \
+              --body "The scheduled differential run failed: $RUN_URL. Its report (the job summary, and the differential-report artifact) names each new disagreement class with an example; a class that is this crate's to fix becomes its own issue, and a line of fuzz/differential-baseline.tsv once tracked."
+          fi

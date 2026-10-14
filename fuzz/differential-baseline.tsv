@@ -1,0 +1,17 @@
+# The known disagreements between this crate and the reference checker on
+# damaged images (#164): scripts/differential-fuzz.sh fails on any class of
+# disagreement not listed here. One class a line, tab-separated:
+#
+#   direction  structure  signature  note
+#
+# - direction: `ref-only` (the reference found something this crate called
+#   clean) or `ours-only` (this crate found something the reference did not).
+# - structure: what the case changed (`node`, `node-torn`, `jset`,
+#   `superblock`, `key-<field>`, ...), or `*` for any.
+# - signature: what was found, as the run's report prints it: the
+#   reference's first finding with its numbers folded to `#` for ref-only,
+#   this crate's finding for ours-only.
+# - note: the issue that tracks it, or why it is not a defect.
+#
+# A line is added only from a measured run's report, never by guess. When a
+# fix removes a class, its line goes in the same pull request.

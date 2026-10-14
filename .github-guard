@@ -11,5 +11,7 @@
 #
 # release.yml and fuzz.yml never report on a pull request, so neither may
 # ever be required: a required check that never reports is a permanent block.
+# differential.yml reports only on the pull requests that change its harness,
+# and its result depends on its seeds: it is advisory, never required.
 [checks]
 	required = ci-ok
