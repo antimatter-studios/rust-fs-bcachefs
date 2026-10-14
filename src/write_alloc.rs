@@ -717,19 +717,35 @@ impl<D: BlockDevice> Writer<D> {
             if e.ptr.dev != 0 {
                 return Err(Error::Unsupported("extents on another device".into()));
             }
-            let sectors = e.crc.map(|c| u64::from(c.compressed_size)).unwrap_or(e.len);
-            if e.crc
-                .is_some_and(|c| c.offset != 0 || u64::from(c.uncompressed_size) != e.len)
-            {
+            // A piece of a checksummed region (#169): an extent whose crc
+            // entry covers more than it does, as the reference leaves where
+            // it overwrote part of one. Its bucket counts its live sectors,
+            // not the region's, and its backpointer sits at the region's
+            // sector << 16 plus its offset in the region (S8, the `aged`
+            // image: bucket 105 holds pieces of 111 and 120 sectors of one
+            // 256-sector region and counts 231; the piece at offset 136 has
+            // its backpointer at 26880 << 16 | 136). Only uncompressed
+            // pieces have been seen; a compressed one is refused.
+            let compressed = e
+                .crc
+                .is_some_and(|c| c.compression_type != crate::extent::compression::NONE);
+            let piece = e
+                .crc
+                .is_some_and(|c| c.offset != 0 || u64::from(c.uncompressed_size) != e.len);
+            if compressed && piece {
                 return Err(Error::Unsupported(
-                    "freeing part of a checksummed extent is not implemented".into(),
+                    "freeing part of a compressed extent is not implemented".into(),
                 ));
             }
+            let sectors = match e.crc {
+                Some(c) if compressed => u64::from(c.compressed_size),
+                _ => e.len,
+            };
             t.delete_uncounted(
                 aids::BACKPOINTERS,
                 Bpos {
                     inode: 0,
-                    offset: e.ptr.offset << 16,
+                    offset: e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset)),
                     snapshot: 0,
                 },
             );

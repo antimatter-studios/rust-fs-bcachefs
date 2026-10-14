@@ -92,7 +92,7 @@ reads back byte for byte through the reference implementation's mount
 | File data inline or in extents, as the reference lays it out | Experimental | 0.4.0 (#86) | | `oracle_inline_limit.rs`, `write_oracle.rs` |
 | Writing at an offset, appending, truncating to any size (the file is rewritten whole) | Experimental | 0.4.0 (#120) | | `oracle_write_local.rs`, `write_oracle.rs` |
 | A write or truncate whose new size is larger than the device, refused before anything is allocated (the file is rewritten whole, holes as allocated zeros) | Refused | Unreleased (#196) | #156 (holes kept as holes) | `oracle_write_large_offset.rs` |
-| Data in allocated buckets, freed on unlink and rewrite | Experimental | 0.4.0 (#35, #36) | | `write_oracle.rs` |
+| Data in allocated buckets, freed on unlink and rewrite, pieces of uncompressed checksummed regions included (a piece of a compressed region is refused) | Experimental | 0.4.0 (#35, #36); pieces Unreleased (#169) | | `write_oracle.rs`, `oracle_write_pieces.rs` |
 | A write refused for space leaves the file as it was: data leaves 32 buckets for the btree nodes a commit rewrites | Experimental | 0.4.1 (#179) | #168 | `oracle_failed_write.rs` |
 | Buckets freed in a session used again by its later writes | Experimental | 0.4.0 (#133) | buckets of generation 16 or more wait (#132) | `oracle_write_local.rs`, `write_oracle.rs` |
 | Data on blocks larger than 512 bytes | Experimental | 0.4.0 (#89) | | `oracle_write_local.rs`, `write_oracle.rs` |

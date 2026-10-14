@@ -534,6 +534,32 @@ fn freed_space_is_accepted_by_the_reference() {
     });
 }
 
+/// A write into a file whose data the reference split (#169): on the aged
+/// image, /over/middle.bin is held by pieces of checksummed regions, the
+/// reference having overwritten its middle. Rewriting it frees those
+/// pieces: the reference checker passes the image, and its mount reads the
+/// file as written.
+#[test]
+fn a_file_held_by_pieces_of_checksummed_regions_is_rewritten() {
+    let img = scratch("aged.img", "pieces-aged");
+    let (ino, mut want) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let ino = fs.lookup("/over/middle.bin").unwrap();
+        (ino, fs.read(ino).unwrap())
+    };
+    let at = 125_207;
+    want[at..at + 16].copy_from_slice(b"sixteen bytes in");
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.write_at(ino, at as u64, b"sixteen bytes in")
+        .unwrap_or_else(|e| panic!("writing into /over/middle.bin: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+    assert!(
+        reference_mount_reads(&img, &[("over/middle.bin", &want)]),
+        "the reference mount does not read /over/middle.bin as written"
+    );
+}
+
 /// Journalled commits: the reference replays the entries this crate wrote
 /// and its checker finds nothing to fix; after its own replay its mount
 /// reads the result. An entry written without marking the superblock is
