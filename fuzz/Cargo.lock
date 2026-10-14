@@ -62,6 +62,7 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "rust-fs-bcachefs",
+ "rust-fs-core",
 ]
 
 [[package]]
