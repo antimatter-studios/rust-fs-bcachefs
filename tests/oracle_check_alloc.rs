@@ -553,3 +553,53 @@ fn a_device_accounting_out_of_step_with_the_alloc_keys_is_reported() {
         report.problems
     );
 }
+
+#[test]
+fn an_unclean_filesystem_whose_bucket_gens_runs_ahead_of_its_alloc_keys_is_not_judged() {
+    // After an unclean shutdown allocation information may lag the rest:
+    // the reference's own crash images (`aged-unclean`, CI runs 38505641616
+    // and 38507148919) each hold a bucket whose generation in bucket_gens
+    // is one ahead of its alloc key, and the reference rebuilds such derived
+    // data in its recovery (S1 1.3.1). Here one bucket's bucket_gens is put
+    // a generation ahead on a copy of `default`, and a journalled session
+    // then leaves the filesystem unclean.
+    let img = scratch("unclean-bucket-gens");
+    let alloc = keys(&img, ALLOC)
+        .into_iter()
+        .find(|k| k.key_type == ALLOC_V4 && k.value.len() > 12)
+        .expect("the fixture has an alloc key");
+    let bucket = alloc.pos.offset;
+    let gen = alloc.value[12];
+    let gens = keys(&img, BUCKET_GENS)
+        .into_iter()
+        .find(|k| {
+            k.key_type == BUCKET_GENS_KEY
+                && k.pos.inode == alloc.pos.inode
+                && k.pos.offset == bucket >> 8
+        })
+        .expect("the fixture has a bucket_gens key for the bucket");
+    let mut ahead = gens.clone();
+    ahead.value[(bucket & 0xff) as usize] = gen.wrapping_add(1);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(BUCKET_GENS, vec![ahead]).unwrap();
+    drop(w);
+    let root = fs_bcachefs::Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/")
+        .unwrap();
+    let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.create_file(root, b"after", b"a file in the journal\n", 0o644)
+        .unwrap();
+    drop(w);
+
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report.replayed,
+        "the journalled session left the filesystem clean, so this tests nothing"
+    );
+    assert!(
+        report.clean(),
+        "an unclean filesystem's allocation information was judged: {:?}",
+        report.problems
+    );
+}

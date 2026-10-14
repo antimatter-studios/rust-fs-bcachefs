@@ -27,7 +27,9 @@
 //! the fragmentation lru holds an entry for each partly filled bucket and
 //! nothing else, the need_discard btree a key for each bucket waiting for
 //! discard and nothing else, and the device's accounting by data type is
-//! what its alloc keys add up to.
+//! what its alloc keys add up to. These are made on a filesystem shut down
+//! cleanly only: after a crash the allocation btrees can lag the rest, as
+//! the reference leaves them, and the reference rebuilds them in recovery.
 //!
 //! It is a subset of what the reference checker checks (the rest of
 //! allocation, accounting, backpointers and lru are not), and the tests
@@ -558,11 +560,18 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
         .filter_map(|k| k.value.get(ALLOC_DATA_TYPE).map(|&t| (k.pos.offset, t)))
         .collect();
+    // The allocation btrees are derived data, which the reference rebuilds
+    // in its recovery (S1 1.3.1): after an unclean shutdown they can lag the
+    // rest, as the reference leaves them (its `aged-unclean` crash images in
+    // CI runs 38505641616 and 38507148919: a bucket's bucket_gens one
+    // generation ahead of its alloc key). So they are judged against the
+    // rest only on a filesystem shut down cleanly (#163).
+    let judge_alloc = sb.is_clean();
     // A written extent's bucket is a user bucket in its alloc key; a bucket
     // with no alloc key is free (#163). An unwritten extent's is not judged:
     // no fixture shows what the reference gives it.
     let data_type_wrong = |what: String, ptr: &crate::extent::Ptr| -> Option<String> {
-        let b = bucket_size?;
+        let b = bucket_size.filter(|_| judge_alloc)?;
         if ptr.is_unwritten() {
             return None;
         }
@@ -576,8 +585,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     };
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
     // Where the device's backpointers are, when the filesystem keeps them.
-    let backpointers: Option<std::collections::BTreeSet<u64>> =
-        trees.get(&BACKPOINTERS).map(|keys| {
+    let backpointers: Option<std::collections::BTreeSet<u64>> = trees
+        .get(&BACKPOINTERS)
+        .filter(|_| judge_alloc)
+        .map(|keys| {
             keys.iter()
                 .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
                 .map(|k| k.pos.offset)
@@ -587,7 +598,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // Every bucket's generation as bucket_gens records it, against its
     // alloc key's; a bucket with no alloc key is at generation 0 (#163: the
     // reference's "incorrect gen in bucket_gens").
-    if trees.contains_key(&btree_id::ALLOC) {
+    if judge_alloc && trees.contains_key(&btree_id::ALLOC) {
         for k in trees
             .get(&BUCKET_GENS)
             .into_iter()
@@ -615,8 +626,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // reference's "missing fragmentation lru entry" and "incorrect lru
     // entry"). Judged on one device only: where another device's entries
     // sit is unobserved.
-    if let Some(b) =
-        bucket_size.filter(|_| trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1)
+    if let Some(b) = bucket_size
+        .filter(|_| judge_alloc && trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1)
     {
         let want: std::collections::BTreeMap<(u64, u64), u64> = trees
             .get(&btree_id::ALLOC)
@@ -673,7 +684,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // Every bucket waiting for discard has its need_discard key, and every
     // need_discard key is one of those (#163). On one device only, as the
     // lru: where another device's keys sit is unobserved.
-    if trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1 {
+    if judge_alloc && trees.contains_key(&btree_id::ALLOC) && sb.nr_devices == 1 {
         let want: std::collections::BTreeSet<(u64, u64)> = trees
             .get(&btree_id::ALLOC)
             .into_iter()
@@ -716,7 +727,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         .ok()
         .and_then(|m| m.get(sb.dev_idx as usize).cloned());
     if let (true, 1, Some(b), Some(m)) = (
-        trees.contains_key(&btree_id::ALLOC),
+        judge_alloc && trees.contains_key(&btree_id::ALLOC),
         sb.nr_devices,
         bucket_size,
         &member,
