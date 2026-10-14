@@ -1455,6 +1455,81 @@ fn reflinked_files_are_freed_one_reference_at_a_time() {
     assert_eq!(indirect(&img), 0, "shared data no file references is kept");
 }
 
+/// A reflinked file is written (#169): a byte written into the clone of
+/// big/random.bin copies the clone's data out of the shared extents, and
+/// leaves the original reading as it did, the shared data one reference
+/// fewer and this checker clean; a byte written into the original then
+/// drops the last reference, and the shared data goes.
+#[test]
+fn a_reflinked_file_is_written_by_copying_its_data_out_of_the_shared_extents() {
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::superblock::Superblock;
+    let img = scratch("kernel.img", "reflink-write");
+    let indirect = |img: &std::path::Path| {
+        let dev = FileDevice::open(img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        btree::walk(&dev, &sb, btree_id::REFLINK)
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.key_type == fs_bcachefs::bkey::key_type::REFLINK_V)
+            .count()
+    };
+    let shared = indirect(&img);
+    assert!(shared > 0, "the kernel image holds no shared data");
+    let (original, clone, data) = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        let original = fs.lookup("/big/random.bin").unwrap();
+        let clone = fs.lookup("/big/random-clone.bin").unwrap();
+        let data = fs.read(original).unwrap();
+        assert!(
+            fs.read(clone).unwrap() == data,
+            "the clone reads as the original"
+        );
+        (original, clone, data)
+    };
+    let at = data.len() / 2;
+    let mut changed = data.clone();
+    changed[at] ^= 0xff;
+    let clean = |img: &std::path::Path, after: &str| {
+        let r = fs_bcachefs::check::check(&FileDevice::open(img).unwrap()).unwrap();
+        assert!(r.clean(), "after {after}: {:?}", r.problems);
+    };
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.write_at(clone, at as u64, &[changed[at]])
+        .unwrap_or_else(|e| panic!("writing a byte into the clone: {e}"));
+    drop(w);
+    clean(&img, "writing into the clone");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        fs.read(clone).unwrap() == changed,
+        "the clone does not read as written"
+    );
+    assert!(
+        fs.read(original).unwrap() == data,
+        "a write into the clone changed the original"
+    );
+    drop(fs);
+    assert_eq!(indirect(&img), shared, "shared data freed while referenced");
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.write_at(original, at as u64, &[changed[at]])
+        .unwrap_or_else(|e| panic!("writing a byte into the original: {e}"));
+    drop(w);
+    clean(&img, "writing into the original");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        fs.read(original).unwrap() == changed,
+        "the original does not read as written"
+    );
+    assert!(
+        fs.read(clone).unwrap() == changed,
+        "a write into the original changed the clone"
+    );
+    drop(fs);
+    assert_eq!(indirect(&img), 0, "shared data no file references is kept");
+}
+
 /// Data is written as the file's options say, not only the filesystem's
 /// (#142): on a copy of the kernel image, whose filesystem compresses
 /// nothing, a rewrite of opts/compression-lz4 is stored lz4-compressed, and

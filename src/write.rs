@@ -1321,7 +1321,10 @@ impl<D: BlockDevice> Writer<D> {
     /// journal included: inline data, and data extents read, checked and
     /// decompressed as the reader does (`fs::extent_bytes`). Holes,
     /// reservations and unwritten extents read as zeros: an unwritten
-    /// extent's sectors are not the file's data (#158, #207).
+    /// extent's sectors are not the file's data (#158, #207). Reflinked data
+    /// is read from the indirect extents a `reflink_p` covers
+    /// ([`Writer::reflinked_into`]), so the rewrite copies it into extents
+    /// of the file's own.
     fn contents(&self, ino: u64) -> Result<Vec<u8>> {
         let claimed = self.inode(ino)?.raw.size;
         // The whole file is held to be rewritten; one larger than the device
@@ -1351,6 +1354,7 @@ impl<D: BlockDevice> Writer<D> {
                     let n = k.value.len().min(k.size as usize * 512);
                     crate::fs::copy_window(&mut out, 0, size as u64, start, &k.value[..n]);
                 }
+                key_type::REFLINK_P => self.reflinked_into(ino, &k, &mut out)?,
                 key_type::RESERVATION | key_type::WHITEOUT | key_type::EXTENT_WHITEOUT => {}
                 other => {
                     return Err(Error::Unsupported(format!(
@@ -1360,6 +1364,75 @@ impl<D: BlockDevice> Writer<D> {
             }
         }
         Ok(out)
+    }
+
+    /// Copy the data `reflink_p` key `p` of file `ino` shows into `out`,
+    /// the file's bytes (#169): each indirect extent the pointer covers,
+    /// read as the reader reads it (`Filesystem::read_reflinked`), at the
+    /// file sector it shows up at. The reflink btree is read through a
+    /// cursor from the pointer's start to the end of its run, as
+    /// `unreference` reads it (#193).
+    fn reflinked_into(&self, ino: u64, p: &Bkey, out: &mut [u8]) -> Result<()> {
+        const REFLINK: u8 = crate::btree::btree_id::REFLINK;
+        let idx = crate::extent::reflink_p_idx(&p.value)?;
+        let end = idx + u64::from(p.size);
+        let missing = |at: u64| {
+            Error::Corrupt(format!(
+                "inode {ino}: the reflink btree has nothing at sector {at}, which the \
+                 `reflink_p` at {} points into",
+                p.pos
+            ))
+        };
+        let mut c = match self.cursor(REFLINK) {
+            Err(Error::NotFound(_)) if self.root(REFLINK).is_err() => return Err(missing(idx)),
+            r => r?,
+        };
+        c.seek(Bpos {
+            inode: 0,
+            offset: idx + 1,
+            snapshot: 0,
+        })?;
+        let mut at = idx;
+        while let Some(v) = c.next_key()? {
+            let from = v.start_offset();
+            if v.pos.inode != 0 || at >= end || from > at {
+                break;
+            }
+            if v.key_type != key_type::REFLINK_V || v.value.len() < 8 {
+                return Err(Error::Unsupported(format!(
+                    "inode {ino}: reflinked data in a key of type {} at {}",
+                    v.key_type, v.pos
+                )));
+            }
+            let e = crate::extent::DataExtent::from_key(&Bkey {
+                key_type: key_type::EXTENT,
+                value: v.value[8..].to_vec(),
+                ..v.clone()
+            })?;
+            let to = v.pos.offset.min(end);
+            // An unwritten extent's sectors are not data: the range stays
+            // zeros, as the reader reads it (#158).
+            if !e.ptr.is_unwritten() {
+                let data = crate::fs::extent_bytes(&e, self.dev.size_bytes(), |at, buf| {
+                    Ok(self.dev.read_at(at, buf)?)
+                })?;
+                let cut = data
+                    .get(((at - from) * 512) as usize..((to - from) * 512) as usize)
+                    .ok_or_else(|| {
+                        Error::Corrupt(format!(
+                            "the indirect extent at {} holds less than its size",
+                            v.pos
+                        ))
+                    })?;
+                let size = out.len() as u64;
+                crate::fs::copy_window(out, 0, size, (p.start_offset() + at - idx) * 512, cut);
+            }
+            at = to;
+        }
+        if at < end {
+            return Err(missing(at));
+        }
+        Ok(())
     }
 
     /// Write `data` into a file at byte `offset` (#102), growing it when
