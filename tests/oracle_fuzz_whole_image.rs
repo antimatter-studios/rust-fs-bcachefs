@@ -41,6 +41,11 @@ const CASES: u64 = 24;
 /// targets a clean pass finds have collapsed.
 const CASE_FLOOR: usize = 150;
 
+/// Of the cases, at least this share must open and reach the checker, and
+/// some must get as far as the writes: a change that every open refuses
+/// tests the refusal and nothing behind it.
+const OPENED_SHARE: usize = 4;
+
 /// Long enough that a loaded runner is never the reason, short enough that
 /// a genuine hang is reported rather than left to the job's timeout.
 const DEADLINE: Duration = Duration::from_secs(600);
@@ -216,47 +221,70 @@ fn the_corpus_replays() {
         eprintln!("replaying whole_image/{name}: {fixture} seed {seed}");
         let dev = Overlay::new(Arc::clone(base), false);
         apply_case(&dev, t, seed);
-        workload(&dev, true);
+        let _ = workload(&dev, true);
     }
 }
 
 #[test]
 fn deterministic_cases_over_every_fixture_are_survived() {
     let cases = Arc::new(AtomicUsize::new(0));
+    let opened = Arc::new(AtomicUsize::new(0));
+    let checked = Arc::new(AtomicUsize::new(0));
+    let wrote = Arc::new(AtomicUsize::new(0));
     let current = Arc::new(Mutex::new(String::from("(not started)")));
     let (done_tx, done_rx) = mpsc::channel::<()>();
     {
         let current = Arc::clone(&current);
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = writeln!(
-                std::io::stderr(),
-                "oracle_fuzz_whole_image: the case in flight was {}",
-                describe(&current)
-            );
+            // Only the cases' own thread: the other tests share the hook.
+            if std::thread::current().name() == Some(WORKER) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "oracle_fuzz_whole_image: the case in flight was {}",
+                    describe(&current)
+                );
+            }
             previous(info);
         }));
     }
     let worker = {
         let cases = Arc::clone(&cases);
+        let (opened, checked, wrote) = (
+            Arc::clone(&opened),
+            Arc::clone(&checked),
+            Arc::clone(&wrote),
+        );
         let current = Arc::clone(&current);
-        std::thread::spawn(move || {
-            for (i, (name, base, t)) in bases().into_iter().enumerate() {
-                for seed in 0..CASES {
-                    let dev = Overlay::new(Arc::clone(&base), false);
-                    if let Ok(mut g) = current.lock() {
-                        *g = format!("{name} seed {seed} (fixture {i}), being laid");
+        std::thread::Builder::new()
+            .name(WORKER.into())
+            .spawn(move || {
+                for (i, (name, base, t)) in bases().into_iter().enumerate() {
+                    for seed in 0..CASES {
+                        let dev = Overlay::new(Arc::clone(&base), false);
+                        if let Ok(mut g) = current.lock() {
+                            *g = format!("{name} seed {seed} (fixture {i}), being laid");
+                        }
+                        let what = apply_case(&dev, &t, seed);
+                        if let Ok(mut g) = current.lock() {
+                            *g = format!("{name} seed {seed} (fixture {i}): {what}");
+                        }
+                        let reach = workload(&dev, true);
+                        for (counter, got) in [
+                            (&opened, reach.opened),
+                            (&checked, reach.checked),
+                            (&wrote, reach.wrote),
+                        ] {
+                            if got {
+                                counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        cases.fetch_add(1, Ordering::Relaxed);
                     }
-                    let what = apply_case(&dev, &t, seed);
-                    if let Ok(mut g) = current.lock() {
-                        *g = format!("{name} seed {seed} (fixture {i}): {what}");
-                    }
-                    workload(&dev, true);
-                    cases.fetch_add(1, Ordering::Relaxed);
                 }
-            }
-            let _ = done_tx.send(());
-        })
+                let _ = done_tx.send(());
+            })
+            .expect("the cases' thread starts")
     };
     match done_rx.recv_timeout(DEADLINE) {
         Ok(()) => {}
@@ -271,8 +299,21 @@ fn deterministic_cases_over_every_fixture_are_survived() {
         std::panic::resume_unwind(panic);
     }
     let n = cases.load(Ordering::Relaxed);
+    let (o, c, w) = (
+        opened.load(Ordering::Relaxed),
+        checked.load(Ordering::Relaxed),
+        wrote.load(Ordering::Relaxed),
+    );
     assert!(
         n >= CASE_FLOOR,
         "only {n} whole-image cases ran (floor {CASE_FLOOR}): the fixture list has collapsed"
     );
+    assert!(
+        o * OPENED_SHARE >= n && c * OPENED_SHARE >= n && w > 0,
+        "of {n} cases, {o} opened, {c} reached the checker and {w} the writes: the cases \
+         stop before the code they are for"
+    );
 }
+
+/// The name of the thread the cases run on.
+const WORKER: &str = "whole-image-cases";

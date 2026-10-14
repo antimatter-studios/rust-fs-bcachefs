@@ -154,25 +154,40 @@ impl fs_core::BlockDevice for Overlay {
 const WI_WALK_NODES: usize = 48;
 const WI_WALK_ENTRIES: usize = 16;
 
+/// How far a case's workload got: a gate whose cases all stop at the
+/// first refusal exercises nothing past it, and would pass looking busy.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Reach {
+    pub opened: bool,
+    pub checked: bool,
+    pub wrote: bool,
+}
+
 /// Open, walk, check; on an image the checker passes, and when `write`
 /// says so, a few writes, then the walk and the checker again. Every error
 /// is an answer; only a panic, a hang or an allocation past the cap is a
 /// finding.
-pub fn workload(dev: &std::sync::Arc<Overlay>, write: bool) {
+pub fn workload(dev: &std::sync::Arc<Overlay>, write: bool) -> Reach {
+    let mut reach = Reach::default();
     let Ok(fs) = fs_bcachefs::Filesystem::open(std::sync::Arc::clone(dev)) else {
-        return;
+        return reach;
     };
+    reach.opened = true;
     wi_walk(&fs);
     drop(fs);
-    let clean = matches!(fs_bcachefs::check::check(&**dev), Ok(r) if r.clean());
+    let report = fs_bcachefs::check::check(&**dev);
+    reach.checked = report.is_ok();
+    let clean = matches!(report, Ok(r) if r.clean());
     if !(write && clean) {
-        return;
+        return reach;
     }
+    reach.wrote = true;
     wi_writes(dev);
     if let Ok(fs) = fs_bcachefs::Filesystem::open(std::sync::Arc::clone(dev)) {
         wi_walk(&fs);
     }
     let _ = fs_bcachefs::check::check(&**dev);
+    reach
 }
 
 fn wi_walk<D: fs_core::BlockRead>(fs: &fs_bcachefs::Filesystem<D>) {
@@ -452,13 +467,15 @@ fn wi_key_case(dev: &std::sync::Arc<Overlay>, t: &Targets, rng: &mut WiRng) -> S
 
 /// The fixtures cases are laid over: the reference formatter's default and
 /// 4 KiB-block images, an lz4 one, the aged image (two-level btrees, reused
-/// buckets, pieces of checksummed regions), and the kernel module's (journal
-/// entries, snapshots, subvolumes, reflinks).
-pub const WI_FIXTURES: [&str; 7] = [
+/// buckets, pieces of checksummed regions) and its unclean twin, the only
+/// one whose open replays the journal, and the kernel module's (snapshots,
+/// subvolumes, reflinks).
+pub const WI_FIXTURES: [&str; 8] = [
     "default.img",
     "block4k.img",
     "lz4.img",
     "aged.img",
+    "aged-unclean.img",
     "kernel.img",
     "kernel-rootsnap.img",
     "kernel-written.img",

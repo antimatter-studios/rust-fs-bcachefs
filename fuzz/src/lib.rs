@@ -47,5 +47,5 @@ pub fn whole_image_case(data: &[u8]) {
     let (base, t) = &bases[i % bases.len()];
     let dev = Overlay::new(std::sync::Arc::clone(base), false);
     apply_case(&dev, t, seed);
-    workload(&dev, true);
+    let _ = workload(&dev, true);
 }
