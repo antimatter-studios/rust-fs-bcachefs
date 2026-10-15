@@ -31,6 +31,22 @@ cd "$here" || exit 1
 
 fail() { echo "default74-reference: $*" >&2; exit 1; }
 
+# The pinned test's one observation, printed as "key stored computed". The
+# live path below and scripts/pinned-default74-observation-controls.sh both
+# read it through this function, so the controls exercise the live parse.
+observed_tuple() {
+    local lines n
+    [ -n "${1:-}" ] && [ -s "$1" ] || fail "OURS_LOG names no log of the pinned test"
+    lines="$(grep -E '^default-74: extent_data key [^ ]+ stored 0x[0-9a-f]+ computed 0x[0-9a-f]+$' "$1")"
+    n="$(printf '%s\n' "$lines" | grep -c .)"
+    [ "$n" = 1 ] || fail "the pinned test's log names $n extent_data keys, not 1"
+    printf '%s\n' "$lines" | cut -d' ' -f4,6,8
+}
+if [ "${1:-}" = --observed-tuple ]; then
+    observed_tuple "${2:-}"
+    exit
+fi
+
 # Replay the same final verdict over kept observations in CI. This entry
 # point deliberately shares the live job's grader; it does not run a tool,
 # mount a filesystem or manufacture an independent reference observation.
@@ -187,12 +203,10 @@ echo "default74-reference: the reference's verdicts match on the pinned fixtures
 # reference lister's spelling (src/bkey.rs), must be listed in the mutated
 # image carrying the stored checksum the test reported. A crash or hang of
 # the lister keeps its status only, as the judge does.
-[ -n "${OURS_LOG:-}" ] && [ -s "$OURS_LOG" ] || fail "OURS_LOG names no log of the pinned test"
-key_lines="$(grep -E '^default-74: extent_data key [^ ]+ stored 0x[0-9a-f]+ computed 0x[0-9a-f]+$' "$OURS_LOG")"
-[ "$(printf '%s\n' "$key_lines" | grep -c .)" = 1 ] ||
-    fail "the pinned test's log names $(printf '%s\n' "$key_lines" | grep -c .) extent_data keys, not 1"
-key="$(printf '%s\n' "$key_lines" | cut -d' ' -f4)"
-stored="$(printf '%s\n' "$key_lines" | cut -d' ' -f6)"
+tuple="$(observed_tuple "${OURS_LOG:-}")" || exit 1
+read -r key stored computed <<<"$tuple"
+[ -n "$key" ] && [ -n "$stored" ] && [ -n "$computed" ] || fail "the observed tuple '$tuple' is incomplete"
+key_lines="default-74: extent_data key $key stored $stored computed $computed"
 stored_hex="${stored#0x}"
 
 mkdir -p "$out/scratch" "$out/listing"

@@ -60,6 +60,7 @@ on:
       - tests/oracle_differential_default74.rs
       - scripts/pinned-default74-reference.sh
       - scripts/pinned-default74-read-controls.py
+      - scripts/pinned-default74-observation-controls.sh
 
 concurrency:
   group: differential-${{ github.event.pull_request.number || github.ref }}
@@ -100,6 +101,8 @@ jobs:
           unzip -q "$RUNNER_TEMP/default74-read.zip" -d "$RUNNER_TEMP/default74-read"
       - name: The live evidence grader accepts the recorded EIO and rejects invalid observations
         run: python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default74-read"
+      - name: The pinned job reads exactly one complete observation from its test's log
+        run: bash scripts/pinned-default74-observation-controls.sh
 
   # Case default-74's expected checksums belong to one fixtures artifact, so
   # it is judged only over that artifact, fetched by run, id and digest and
