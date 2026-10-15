@@ -146,6 +146,36 @@ done
 grep -qx $'default-55\tours-only\tnode\tcheck:missing_backpointer\t.*' "$pin" \
     || fail "the #230 pin does not hold default-55 as ours-only check:missing_backpointer"
 grep -qx '#! control_clean default.img' "$pin" || fail "the #230 pin does not assert default.img's control clean"
+# A missing_backpointer case is corroborated by the reference's own listings
+# (#230): the lines below are those the reference printed for default-55 in
+# control run 38761923257. The extent's pointer stays at 0:236:20 while its
+# backpointer moved to 0:236:19 suboffset 65281, so the reference itself lists
+# no backpointer where this crate looked.
+k="$tmp/kept-bp"
+mkdir -p "$k"
+printf '{"id": "default-55", "detail": "extent 2147483894:1:U32_MAX: no backpointer at device sector 15124 offset 0"}\n' >"$k/case.json"
+for image in original mutated; do
+    printf '%s\n' 'u64s 7 type extent 2147483893:1:U32_MAX len 1 ver 0  : durability: 1 ' \
+        "  ptr: default-55.img 0:236:19 gen 0" \
+        'u64s 7 type extent 2147483894:1:U32_MAX len 1 ver 0  : durability: 1 ' \
+        '  crc32: c_size 1 size 1 offset 0 nonce 0 csum crc32c 0:ef1a78c7  compress none' \
+        "  ptr: default-55.img 0:236:20 gen 0" >"$k/$image.list-extents.txt"
+done
+printf '%s\n' 'u64s 9 type backpointer 0:991166464:0 len 0 ver 0  : bucket=0:236:20 btree=extents level=0 data_type=user suboffset=0 len=1 gen=0 pos=2147483894:1:U32_MAX' >"$k/original.list-backpointers.txt"
+printf '%s\n' 'u64s 9 type backpointer 0:991166209:0 len 0 ver 0  : bucket=0:236:19 btree=extents level=0 data_type=user suboffset=65281 len=1 gen=0 pos=2147483894:1:U32_MAX' >"$k/mutated.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    || fail "the reference's listings of default-55 did not corroborate its missing backpointer: $(cat "$tmp/corroborate.txt")"
+# The mutated image still listing the backpointer at the extent's pointer is
+# a false positive of this crate's lookup, and must not corroborate.
+cp "$k/original.list-backpointers.txt" "$k/mutated.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    && fail "a backpointer the reference still lists at the extent's pointer corroborated a missing one"
+grep -q 'mutated listing still has the backpointer for 2147483894:1:U32_MAX at 0:236:20' "$tmp/corroborate.txt" \
+    || fail "the uncorroborated reason is not named: $(cat "$tmp/corroborate.txt")"
+# An original that lacks the backpointer too cannot show it went missing.
+: >"$k/original.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    && fail "a backpointer the original never listed corroborated a missing one"
 # A control is clean only when it exits 0 and prints no finding (#230): under
 # -n the reference exits 0 after a repair it made in memory, so an exit 0
 # alone must not let control_clean pass. The stand-in's control on tiny.img

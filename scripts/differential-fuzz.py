@@ -873,6 +873,64 @@ def read_replay(path):
     return settings, expect
 
 
+def listed_backpointer(kept, image, pos):
+    """The reference's own view of extent POS in IMAGE's kept listings: the
+    `dev:bucket:offset` of its pointer in `list -b extents`, and whether
+    `list -b backpointers` holds a backpointer naming POS at that same
+    `bucket=` with suboffset 0. None when the extent is not listed."""
+    head = re.compile(r"^u64s \d+ type extent " + re.escape(pos) + r" ")
+    ptr = None
+    with open(os.path.join(kept, image + ".list-extents.txt"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    for n, line in enumerate(lines):
+        if head.match(line):
+            for more in lines[n + 1 :]:
+                if more.startswith("u64s "):
+                    break
+                m = re.match(r"^\s+ptr: \S+ (\d+:\d+:\d+) ", more)
+                if m:
+                    ptr = m.group(1)
+                    break
+            break
+    if ptr is None:
+        return None
+    want = re.compile(
+        r"type backpointer .* bucket="
+        + re.escape(ptr)
+        + r" .*\bsuboffset=0 .*\bpos="
+        + re.escape(pos)
+        + r"$"
+    )
+    with open(
+        os.path.join(kept, image + ".list-backpointers.txt"), encoding="utf-8"
+    ) as f:
+        return ptr, any(want.search(line.rstrip()) for line in f)
+
+
+def corroborate(kept):
+    """A kept missing_backpointer case is corroborated (#230) only when the
+    reference's own listings show the named extent's backpointer present in
+    the unchanged image and absent, at the same pointer, in the mutated one.
+    Returns a reason it is not, or None."""
+    with open(os.path.join(kept, "case.json"), encoding="utf-8") as f:
+        case = json.load(f)
+    m = re.match(r"^extent (\S+): no backpointer at ", case.get("detail", ""))
+    if not m:
+        return f"its detail names no extent: {case.get('detail')!r}"
+    pos = m.group(1)
+    seen = {}
+    for image in ("original", "mutated"):
+        got = listed_backpointer(kept, image, pos)
+        if got is None:
+            return f"the reference's {image} extents listing has no extent {pos}"
+        seen[image] = got
+    if not seen["original"][1]:
+        return f"the reference's original listing has no backpointer for {pos} at {seen['original'][0]}"
+    if seen["mutated"][1]:
+        return f"the reference's mutated listing still has the backpointer for {pos} at {seen['mutated'][0]}"
+    return None
+
+
 def replay(args):
     """Each pinned case was kept and still lands in exactly its expected
     class: absent, crashed, unjudged or reclassified is a failure."""
@@ -928,6 +986,16 @@ def replay(args):
         if got != (cls, structure, sig):
             failed.append(f"{cid}: expected {(cls, structure, sig)}, got {got}")
             continue
+        if sig == "check:missing_backpointer" and {"backpointers", "extents"} <= set(
+            settings.get("listings", "").split()
+        ):
+            why = corroborate(kept)
+            if why:
+                failed.append(f"{cid}: not corroborated: {why}")
+                continue
+            print(
+                f"differential replay: {cid}: the reference's listings show the backpointer missing"
+            )
         print(f"differential replay: {cid} is {cls} / {structure}: {sig}")
     if failed:
         print("differential replay: FAILED: " + "; ".join(failed))
@@ -988,7 +1056,15 @@ def main():
         action="store_true",
         help="print the replay's fixture run, digest, cases, seed and case IDs",
     )
+    k = sub.add_parser("corroborate")
+    k.add_argument("kept", help="a kept case directory with its listings")
     args = p.parse_args()
+    if args.command == "corroborate":
+        why = corroborate(args.kept)
+        print(
+            f"corroborate: {why or 'the backpointer is missing in the reference listings'}"
+        )
+        return 1 if why else 0
     return {
         "judge": judge,
         "classify": classify,

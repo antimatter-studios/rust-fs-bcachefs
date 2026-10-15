@@ -7,6 +7,12 @@
 # displaced key's lookup is judged by the reference's own view. The fixtures
 # artifact expires 2026-10-22T04:38:12Z; after that the replay fails at the
 # fetch, and the inputs must be rebuilt rather than substituted.
+# The replay corroborates the case from those listings: control run
+# 38761923257 shows the extent's pointer at 0:236:20 in both images and its
+# backpointer moved from bucket=0:236:20 suboffset=0 to bucket=0:236:19
+# suboffset=65281, so the reference lists no backpointer where this crate
+# looked. The finding is not a lookup false positive; the reference's fsck
+# exits clean regardless.
 #! fixture_run 38680345154
 #! fixture_digest sha256:8045844cc79edf28e4373422d4d3d0d0713d3b5c7562ce17356ac0b1e227ce9c
 #! cases 80
