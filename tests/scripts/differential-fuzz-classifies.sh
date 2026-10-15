@@ -138,6 +138,19 @@ done
 grep -qx $'default-55\tours-only\tnode\tcheck:missing_backpointer\t.*' "$pin" \
     || fail "the #230 pin does not hold default-55 as ours-only check:missing_backpointer"
 grep -qx '#! control_clean default.img' "$pin" || fail "the #230 pin does not assert default.img's control clean"
+# A control is clean only when it exits 0 and prints no finding (#230): under
+# -n the reference exits 0 after a repair it made in memory, so an exit 0
+# alone must not let control_clean pass. The stand-in's control on tiny.img
+# exits 0 and prints the bitmap note and scheduled recovery pass the reference
+# prints on block4k; every other line it prints is a clean image's.
+grep -v '^#! listings' "$tmp/replay2.tsv" | sed 's/repair failure/repair success/' >"$tmp/replay4.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
+    || fail "the replay of a kept case in its class failed: $(cat "$tmp/replay.txt")"
+printf '#! control_clean tiny.img\n' >>"$tmp/replay4.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay called a control clean that exits 0 and prints findings"
+grep -q 'tiny.img: its unchanged control is not clean' "$tmp/replay.txt" \
+    || fail "the control that is not clean is not named: $(cat "$tmp/replay.txt")"
 
 for id in tiny-987654 tiny-876543 tiny-765432; do
     [ ! -e "$tmp/out/ref/$id.txt" ] || fail "$id: the reference crashed, hung or faulted, and its output was kept"
