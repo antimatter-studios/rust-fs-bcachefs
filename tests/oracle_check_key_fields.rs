@@ -53,6 +53,7 @@ const ACCT_INUM: u64 = 8;
 enum Change {
     Size(u32),
     Snapshot(u32),
+    KeyType(u8),
 }
 
 /// Change one field of the first key of type `kt` in btree `id` of a copy
@@ -95,6 +96,7 @@ fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Chan
             );
             k.pos.snapshot = snapshot;
         }
+        Change::KeyType(key_type) => k.key_type = key_type,
     }
     let pos = k.pos;
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
@@ -289,4 +291,21 @@ fn a_freespace_key_at_a_snapshot_is_refused() {
     let kind = "bkey_snapshot_nonzero";
     let snap = Change::Snapshot(u32::MAX - 1);
     refused("kernel-rootsnap", FREESPACE, SET, any, snap, kind);
+}
+
+/// Differential run 38753768243 changed a dirent of kernel-rootsnap.img
+/// (seed 10) into an xattr; the reference deleted it as "invalid key type
+/// for btree dirents (xattr)".
+#[test]
+fn an_xattr_in_dirents_is_refused() {
+    let kind = "bkey_invalid_type_for_btree";
+    let xattr = Change::KeyType(key_type::XATTR);
+    refused(
+        "kernel-rootsnap",
+        btree_id::DIRENTS,
+        key_type::DIRENT,
+        any,
+        xattr,
+        kind,
+    );
 }
