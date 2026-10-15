@@ -79,3 +79,11 @@ ref-only	node	check_allocations...accounting mismatch for snapshot id=# btree=(u
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : nr_inodes	#219: metadata key invariants
 ref-only	key-value	check_extents...extent type past end of inode #, i_size #	#221: inode metadata consistency
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : replicas 	#219: metadata key invariants
+
+# Measured at 3be1c2a in PR CI run 38718924048, reference checker 1.39.7.
+# The job takes fixtures from the newest green main run, so seeds reach other
+# nodes than run 38698985871 did: none of the eight lines above occurred, and
+# three further exact classes did (report SHA-256 8921a81d...cacb, #227).
+ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#219: metadata key invariants
+ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
+ref-only	key-offset	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#163: allocation metadata and allowed key types

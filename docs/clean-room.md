@@ -997,6 +997,26 @@ These entries acknowledge measured disagreements, not completed driver
 fixes. No wildcard, old baseline entry, checker assertion or oracle check
 is removed. New classes, failed controls and crate panics still fail.
 
+PR run [38718924048](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38718924048)
+at `3be1c2a9bbb50465182ad10dd8a8158eed6b89f3` (differential job 116368360626,
+report SHA-256
+`8921a81d0a0d720476af6e2c31f4c2c3f06c13309b36dac66eb9f2e23e25cacb`) shows
+the fixture source is not fixed: the job fetches the fixtures of the newest
+green main run, so the same seeds reached different nodes. Of its 648 cases,
+454 were both clean, 90 both found something, 98 reference-only, none
+crate-only and six reference crashes, faults or hangs. None of the eight
+classes above occurred, and three further exact classes did:
+
+| observed disagreement | example | open work |
+|---|---|---|
+| accounting key with nonzero size, device-data kind | kernel seed 37 | #219, metadata key invariants |
+| backpointer with nonzero snapshot, node re-stamped | kernel seed 53 | #219, metadata key invariants |
+| dirents accounting mismatch after a dirent offset change | kernel-rootsnap seed 0 | #163, accounting consistency |
+
+The third case also shows the reference reporting a duplicate dirent hash key
+at a wrong offset, which this crate called clean. These entries are tracked
+gaps, not fixes; pinning the fixture run the job reads is the open item.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
