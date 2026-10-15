@@ -929,6 +929,31 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_case_requiring_61_sectors_but_finding_37_is_refused() {
+        // Reference-made default.img from CI run 38554478803, its extent
+        // node at byte 3014656, limited to the parent's 61 written sectors.
+        // Differential run 38579070302, seed 42, tore the bset at sector 37
+        // ("node offset 37/61: btree node data missing: expected 61
+        // sectors, found 37"; the reference exited 9). Four bytes of that
+        // bset's sequence stand in for the tear here.
+        let mut b = include_bytes!("../tests/data/default-extents-38554478803.bin").to_vec();
+        let magic = le64(&b, 16);
+        let seq = le64(&b, HEADER_BSET);
+        assert!(!Node::parse(&b, magic, 512, Some(seq))
+            .unwrap()
+            .keys
+            .is_empty());
+        b[18960..18964].copy_from_slice(&0xadd0_4627u32.to_le_bytes());
+        assert!(
+            matches!(
+                Node::parse(&b, magic, 512, Some(seq)),
+                Err(Error::Corrupt(_))
+            ),
+            "the original non-crashing reference case must not be accepted as a valid prefix"
+        );
+    }
+
+    #[test]
     fn an_ignored_bset_is_still_checksummed() {
         let mut b = node(15);
         b[560] ^= 1; // inside the second bset's key (its record spans 512..592)
