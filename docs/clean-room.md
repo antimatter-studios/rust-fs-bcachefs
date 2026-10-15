@@ -1080,6 +1080,23 @@ no longer found it: #221's four inode-metadata classes (#225).
   written, past anywhere the reference's journal can be while it checks;
   nearer ones are not judged.
 
+### Dirent hash reachability (#221, #225)
+
+Completed differential run `38759380443` at `c5d1c60`, reference checker
+1.39.7, seed 0 and 80 cases per fixture, found the reference-only class
+"hash table key at wrong offset" on kernel seed 45. The same branch's
+completed CI run `38759379043` failed the five-slot displacement regression;
+its hash-whiteout control passed.
+
+The collision observation in question 10 supplies the lookup rule: a
+dirent must be reachable from its name's hash slot through consecutive
+dirents or hash whiteouts. The checker uses the stored folded name for a
+casefolded entry, and leaves an unknown hash type unjudged, matching the
+reader's existing policy. `tests/check_oracle.rs` additionally requires the
+reference checker itself to reject the five-slot displacement and accept
+the one-slot displacement past a hash whiteout. These guest assertions are
+retained as independent controls; their post-fix CI result is still pending.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
