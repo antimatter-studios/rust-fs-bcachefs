@@ -283,11 +283,65 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
             },
             ..d
         };
+        let dirents = vec![at_slot, moved];
+        let inodes = vec![ino];
+        // The writer's insert leaves each btree's key and byte counters as
+        // they were, so they move here by what these keys add and remove.
+        let counters = {
+            let dev = FileDevice::open(&img.0).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            let all = btree::walk(&dev, &sb, ACCOUNTING).unwrap();
+            [(btree_id::DIRENTS, &dirents), (btree_id::INODES, &inodes)]
+                .into_iter()
+                .filter_map(|(id, keys)| {
+                    let (n, bytes) = counted(&dev, &sb, id, keys);
+                    if n == 0 && bytes == 0 {
+                        return None;
+                    }
+                    let at = 0x05ff_ffff_ff00_0000 | (u64::from(id) << 16);
+                    let mut k = all
+                        .iter()
+                        .find(|k| {
+                            k.key_type == ACCOUNTING_KEY && k.pos.inode == at && k.pos.offset == 0
+                        })
+                        .cloned()
+                        .expect("the btree's key and byte counter");
+                    for (i, delta) in [n, bytes].into_iter().enumerate() {
+                        let v = u64::from_le_bytes(k.value[i * 8..i * 8 + 8].try_into().unwrap());
+                        let v = v.checked_add_signed(delta).expect("a counter below zero");
+                        k.value[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+                    }
+                    Some(k)
+                })
+                .collect::<Vec<_>>()
+        };
         let mut w = Writer::open(FileDevice::open_rw(&img.0).unwrap()).unwrap();
-        w.insert(btree_id::DIRENTS, vec![at_slot, moved]).unwrap();
-        w.insert(btree_id::INODES, vec![ino]).unwrap();
+        w.insert(btree_id::DIRENTS, dirents).unwrap();
+        w.insert(btree_id::INODES, inodes).unwrap();
+        w.insert(ACCOUNTING, counters).unwrap();
         drop(w);
         img
+    }
+
+    /// The accounting btree, and its key type (S8: kind 5, `snapshot
+    /// id=4294967295 btree=NAME`, holds keys, bytes, 0).
+    const ACCOUNTING: u8 = 20;
+    const ACCOUNTING_KEY: u8 = 34;
+
+    /// What inserting `keys` into btree `id` changes in its key and byte
+    /// counters: each replaces the key at its position, and one of type
+    /// `deleted` removes it. A key's bytes are its 40-byte header and value.
+    fn counted(dev: &FileDevice, sb: &Superblock, id: u8, keys: &[Bkey]) -> (i64, i64) {
+        let now = btree::walk(dev, sb, id).unwrap();
+        let size = |k: &Bkey| match k.key_type {
+            key_type::DELETED => (0, 0),
+            _ => (1, 40 + k.value.len() as i64),
+        };
+        keys.iter().fold((0, 0), |(n, bytes), k| {
+            let (on, ob) = now.iter().find(|o| o.pos == k.pos).map_or((0, 0), size);
+            let (kn, kb) = size(k);
+            (n + kn - on, bytes + kb - ob)
+        })
     }
 
     fn wrong_offset(img: &Path) -> bool {
