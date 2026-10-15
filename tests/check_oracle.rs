@@ -204,6 +204,107 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
     }
 }
 
+/// The dirent damage `tests/oracle_check_dirent_hash.rs` makes (#221),
+/// judged by the reference checker itself. Differential run 38752704728
+/// (job 116482951023, kernel seed 45) grounds the class: the reference
+/// reported "hash table key at wrong offset" and counted
+/// `hash_table_key_wrong_offset` where this crate called the image clean.
+/// A dirent five slots past its hash with empty slots between is that
+/// damage to both checkers; one slot past a whiteout left in its own slot
+/// is reachable, and neither reports it.
+#[cfg(feature = "write")]
+#[test]
+fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::inode::Dirent;
+    use fs_bcachefs::write::Writer;
+
+    /// A copy under /share, removed when dropped, pass or panic.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A copy of `default` under /share with `hello.txt`'s dirent moved
+    /// `by` slots on and a key of type `left` in its own slot.
+    fn displaced(name: &str, by: u64, left: u8) -> Scratch {
+        assert!(
+            Path::new("/usr/local/bin/bcachefs-ref").exists(),
+            "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+        );
+        std::fs::create_dir_all("/share/check-oracle").unwrap();
+        let img = Scratch(PathBuf::from(format!("/share/check-oracle/{name}.img")));
+        std::fs::copy(fixture("default.img"), &img.0).unwrap();
+        let d = {
+            let dev = FileDevice::open(&img.0).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            btree::walk(&dev, &sb, btree_id::DIRENTS)
+                .unwrap()
+                .into_iter()
+                .find(|k| Dirent::from_key(k).is_ok_and(|d| d.name == b"hello.txt"))
+                .expect("the dirent's key")
+        };
+        let at_slot = Bkey {
+            key_type: left,
+            value: Vec::new(),
+            ..d.clone()
+        };
+        let moved = Bkey {
+            pos: Bpos {
+                offset: d.pos.offset + by,
+                ..d.pos
+            },
+            ..d
+        };
+        let mut w = Writer::open(FileDevice::open_rw(&img.0).unwrap()).unwrap();
+        w.insert(btree_id::DIRENTS, vec![at_slot, moved]).unwrap();
+        drop(w);
+        img
+    }
+
+    fn wrong_offset(img: &Path) -> bool {
+        check(&FileDevice::open(img).unwrap())
+            .unwrap()
+            .problems
+            .iter()
+            .any(|p| p.kind == "hash_table_key_wrong_offset")
+    }
+
+    let away = displaced("dirent-wrong-offset", 5, key_type::DELETED);
+    let (theirs, text) = reference_finds_a_problem(&away.0);
+    assert!(
+        theirs && text.contains("hash table key at wrong offset"),
+        "{}: the reference did not report the dirent at a wrong offset, so this \
+         case proves nothing:\n{text}",
+        away.0.display()
+    );
+    assert!(
+        wrong_offset(&away.0),
+        "{}: the reference found a dirent at a wrong offset this checker did not \
+         name as hash_table_key_wrong_offset:\n{text}",
+        away.0.display()
+    );
+
+    let past = displaced("dirent-past-whiteout", 1, key_type::HASH_WHITEOUT);
+    let (theirs, text) = reference_finds_a_problem(&past.0);
+    assert!(
+        !theirs,
+        "{}: the reference found a problem in a dirent reachable over a \
+         whiteout:\n{text}",
+        past.0.display()
+    );
+    assert!(
+        !wrong_offset(&past.0),
+        "{}: the reference calls a dirent reachable over a whiteout clean, and \
+         this checker reported it at a wrong offset",
+        past.0.display()
+    );
+}
+
 /// The inode cases damage their images through the writer: without it
 /// they would vanish, and a case that does not run fails.
 #[cfg(not(feature = "write"))]
