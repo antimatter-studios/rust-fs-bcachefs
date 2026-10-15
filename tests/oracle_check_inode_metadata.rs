@@ -48,7 +48,25 @@ const LZ4_SEQ_FILE: &str = "/hello.txt";
 const LZ4_SECTORS_FILE: &str = "/many/file-0271.txt";
 const AGED_SECTORS_FILE: &str = "/many/f02467";
 
-fn scratch(src: &str, test: &str) -> std::path::PathBuf {
+/// A damaged copy of a fixture, removed when dropped: the guest's temporary
+/// directory is small, and copies left behind filled it before the next
+/// suite (`oracle_write_pieces`) could make its own.
+struct Scratch(std::path::PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn scratch(src: &str, test: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!(
         "rust-fs-bcachefs-check-inode-metadata-{}",
         std::process::id()
@@ -56,7 +74,7 @@ fn scratch(src: &str, test: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join(format!("{test}.img"));
     std::fs::copy(fixture(src), &img).unwrap();
-    img
+    Scratch(img)
 }
 
 /// The keys of btree `id`, through the journal where the image needs it
