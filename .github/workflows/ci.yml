@@ -12,6 +12,9 @@ on:
   merge_group:
   # Callable so release.yml runs THIS gate rather than a copy of it.
   workflow_call:
+  # The full pipeline on demand, on any branch: the evidence for an
+  # oracle-only red before its fix is pushed. See AGENTS.md.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -25,12 +28,12 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
-  # Does this change need the full pipeline? rust-fs-core's
-  # scripts/code-changed.sh reads the change's paths and says false only when
-  # every one is documentation. The change is the pull request's diff, the
-  # merge queue group's (its base_sha to its head_sha: what the queue is
-  # about to land), or a push to main's (before to after). A tag, a release
-  # calling this workflow, or a push it cannot diff runs everything. The
+  # Does this run need the full pipeline? Pull requests, every layer of a
+  # stack included, run the quick checks (unit, scripts, lint, semver). The
+  # merge queue runs everything on the exact tree it is about to land, and
+  # so do tags, manual dispatches, and a release calling this workflow (its
+  # event is the caller's: a tag push or a dispatch). A push to main does not
+  # repeat the queue's oracle work. Anything unexpected runs everything. The
   # jobs that boot the VM or read its fixtures run only when the answer is
   # true, and ci-ok accepts their skip when, and only when, it is false.
   changes:
@@ -51,34 +54,14 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          MQ_BASE: ${{ github.event.merge_group.base_sha }}
-          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.event.after }}
         run: |
           set -euo pipefail
-          range=
+          code=true
           case "$EVENT" in
-            pull_request) range="$PR_BASE...$PR_HEAD" ;;
-            merge_group) range="$MQ_BASE...$MQ_HEAD" ;;
-            push)
-              case "$REF" in
-                refs/heads/*)
-                  if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ] &&
-                    git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
-                    range="$PUSH_BEFORE...$PUSH_AFTER"
-                  fi ;;
-              esac ;;
+            pull_request) code=false ;;
+            push) [ "$REF" != refs/heads/main ] || code=false ;;
           esac
-          if [ -n "$range" ]; then
-            git diff --name-only "$range" | tee changed.txt
-            code="$(bash ../rust-fs-core/scripts/code-changed.sh < changed.txt)"
-          else
-            code=true
-          fi
-          echo "code=$code ($EVENT${range:+ $range})"
+          echo "full pipeline: $code ($EVENT $REF)"
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
   unit:
@@ -560,14 +543,16 @@ jobs:
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
-          # false only for a pull request that changes documentation alone:
-          # then, and only then, a skipped job is not a failed one.
+          # false only for a quick run (a pull request or a push to main):
+          # then, and only then, a FULL_JOBS skip is not a failure.
           CODE: ${{ needs.changes.outputs.code }}
+          FULL_JOBS: '["fixtures", "oracle", "test-arm64", "test-darwin", "suite-in-vm", "cli", "coverage"]'
         run: |
           set -euo pipefail
+          case "$CODE" in true|false) ;; *) echo "::error::missing full-pipeline decision"; exit 1 ;; esac
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "code changed: $CODE"
-          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
+          echo "full pipeline: $CODE"
+          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" --argjson full "$FULL_JOBS" '[to_entries[] | select(.value.result != "success" and (($code == "false" and .value.result == "skipped" and (.key as $job | $full | index($job) != null)) | not)) | .key] | join(", ")')"
           if [ -n "$bad" ]; then
             echo "::error::not green: $bad (failed, cancelled or skipped)"
             exit 1
