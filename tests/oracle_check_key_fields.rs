@@ -67,6 +67,7 @@ fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Chan
     let test = format!("{set}-{id}-{kt}-{kind}");
     let img = dir.join(format!("{test}.img"));
     std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+    let _gone = Scratch(img.clone());
 
     let before = check::check(&FileDevice::open(&img).unwrap()).expect("the checker runs");
     assert!(
@@ -109,6 +110,16 @@ fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Chan
         "{test}: the key at {pos} was not reported as {kind}: {:?}",
         after.problems
     );
+}
+
+/// A copy of a fixture, removed when the test ends however it ends: the
+/// guest's temporary directory holds a few of them, not sixteen.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
 }
 
 fn any(_: &Bkey) -> bool {
