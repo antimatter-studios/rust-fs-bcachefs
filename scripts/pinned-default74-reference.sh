@@ -35,28 +35,56 @@ fail() { echo "default74-reference: $*" >&2; exit 1; }
 # point deliberately shares the live job's grader; it does not run a tool,
 # mount a filesystem or manufacture an independent reference observation.
 grade_read_evidence() (
-    out="$1"
-    inum="$2"
-    read_status() { tr -d '\n' <"$out/read/$1.read.status" 2>/dev/null; }
-    {
-        echo "reference fusemount help status $(tr -d '\n' <"$out/read/fusemount-help.status")"
-        for cid in default-control default-74; do
-            echo "reference read of inode $inum in $cid: mount status $(tr -d '\n' <"$out/read/$cid.mount.status" 2>/dev/null), path $(head -n 1 "$out/read/$cid.path.txt" 2>/dev/null), read status $(read_status "$cid"), $(cut -d' ' -f1 "$out/read/$cid.read.txt" 2>/dev/null | head -n 1)"
-        done
-    } | tee -a "$out/evidence.txt"
-    [ -s "$out/read/default-control.path.txt" ] ||
-        fail "the reference mount of default-control has no inode $inum (read/default-control.mount.txt)"
-    [ "$(read_status default-control)" = 0 ] ||
-        fail "the reference could not read inode $inum in the unmutated control (status $(read_status default-control))"
-    [ -n "$(read_status default-74)" ] ||
-        fail "the reference made no read of inode $inum in default-74 (read/default-74.mount.txt)"
-    if [ "$(read_status default-74)" != 0 ]; then
-        echo "default74-reference: the reference's read of inode $inum fails on default-74 (status $(read_status default-74)): the changed stored checksum is observable on read"
-    elif [ "$(cut -d' ' -f1 "$out/read/default-74.read.txt")" != "$(cut -d' ' -f1 "$out/read/default-control.read.txt")" ]; then
-        echo "default74-reference: the reference reads inode $inum in default-74 with different bytes from the control"
-    else
-        echo "default74-reference: the reference reads inode $inum in default-74 without error, the control's bytes: the changed stored checksum is not observable on read"
-    fi | tee -a "$out/evidence.txt"
+    python3 -I - "$1" "$2" <<'PYGRADE' | tee -a "$1/evidence.txt"
+from pathlib import Path
+import re
+import sys
+
+out = Path(sys.argv[1])
+inode = sys.argv[2]
+
+def require(condition, reason):
+    if not condition:
+        raise SystemExit("default74-reference: " + reason)
+
+def read(relative):
+    path = out / relative
+    require(path.is_file(), "missing observation " + relative)
+    return path.read_text()
+
+require(inode == "2147483904", "the observed extent belongs to inode 2147483904")
+evidence = read("evidence.txt").splitlines()
+for expected in [
+    "fixtures sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e",
+    "reference bcachefs-tools 1.39.7: 1.39.7",
+    "default.img sha256:70e75cfbe82c927f6914689a0142c0e37e99cae289819d86fbacf62f6ee78342",
+    "default-74 mutation.patch sha256:ee572579a8b995cbe6a8950a759560baec5297638f12dcc95f0981ab84c68c67",
+    "default-control reference fsck -n status 0 (expected 0)",
+    "default-74 reference fsck -n status 0 (expected 0)",
+    "default-74 mutated image sha256:3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb",
+    "default-control image sha256:70e75cfbe82c927f6914689a0142c0e37e99cae289819d86fbacf62f6ee78342",
+    "reference crc32c of 2147483904:1:U32_MAX: default-74 0x11ba7, default-control 0xa2f1ba7",
+]:
+    require(evidence.count(expected) == 1, "missing or misbound evidence: " + expected)
+require(read("read/fusemount-help.status") == "0\n", "reference data reader help failed")
+for cid, checksum in [("default-control", "a2f1ba7"), ("default-74", "11ba7")]:
+    require(read(f"listing/{cid}.status") == "0\n", cid + " listing failed")
+    record = read(f"listing/{cid}.key.txt")
+    headers = [line.split() for line in record.splitlines() if line.startswith("u64s ")]
+    require(len(headers) == 1 and headers[0][4] == "2147483904:1:U32_MAX", cid + " lists another extent key")
+    require(re.findall(r"csum crc32c (\S+)", record) == ["0:" + checksum], cid + " lists another checksum")
+    path = f"/mnt/{cid}/many/file-0242.txt"
+    require(read(f"read/{cid}.mount.status") == "0\n", cid + " mount failed")
+    require(read(f"read/{cid}.path.txt") == path + "\n", cid + " path is missing or ambiguous")
+    require(read(f"read/{cid}.stat.txt") == f"2147483904 10 {path}\n", cid + " inode or size differs")
+    if cid == "default-control":
+        require(read(f"read/{cid}.read.status") == "0\n", "control read failed")
+        require(read(f"read/{cid}.read.txt") == f"fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d  {path}\n", "control read has different bytes or binding")
+    else:
+        require(read(f"read/{cid}.read.status") == "1\n", "mutation did not return the recorded integrity failure")
+        require(read(f"read/{cid}.read.txt") == f"sha256sum: {path}: Input/output error\n", "mutation read is not the recorded EIO")
+print("default74-reference: fsck accepts both images; the pinned control reads its expected bytes and the same mutated extent fails with EIO")
+PYGRADE
 )
 
 if [ "${1:-}" = --grade-read-evidence ]; then
@@ -188,6 +216,10 @@ EOF
 control_sha="$(sha256sum "$out/scratch/default-control.img" | cut -d' ' -f1)"
 mutated_sha="$(sha256sum "$out/scratch/default-74.img" | cut -d' ' -f1)"
 [ "$control_sha" != "$mutated_sha" ] || fail "the kept patch leaves default.img unchanged"
+[ "$control_sha" = 70e75cfbe82c927f6914689a0142c0e37e99cae289819d86fbacf62f6ee78342 ] || fail "control physical image differs from the independent read"
+[ "$mutated_sha" = 3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb ] || fail "mutated physical image differs from the independent read"
+[ "$key $stored $computed" = "2147483904:1:U32_MAX 0x11ba7 0xa2f1ba7" ] || fail "the observed checksum tuple differs"
+
 
 docker exec "$ctr" bcachefs list --help >"$out/listing/list-help.txt" 2>&1
 echo "$?" >"$out/listing/list-help.status"
@@ -277,6 +309,7 @@ docker exec "$rctr" bash -euc 'apt-get install -y -qq --no-install-recommends fu
     fail "fuse3 did not install in the reference read container"
 for cid in default-control default-74; do
     cp "$out/scratch/$cid.img" "$out/scratch/read-$cid.img" || fail "the $cid image was not copied for the read"
+    [ "$(sha256sum "$out/scratch/read-$cid.img" | cut -d' ' -f1)" = "$(sha256sum "$out/scratch/$cid.img" | cut -d' ' -f1)" ] || fail "the read copy differs from the listed physical image"
     docker exec -e cid="$cid" -e inum="$inum" "$rctr" timeout -k 5 300 bash -uc '
         m="/mnt/$cid"; mkdir -p "$m"
         bcachefs fusemount "/work/scratch/read-$cid.img" "$m" >"/work/read/$cid.mount.txt" 2>&1
@@ -291,6 +324,8 @@ for cid in default-control default-74; do
             echo "$?" >"/work/read/$cid.read.status"
         fi
         fusermount3 -u "$m" || umount "$m" || true
-    ' || true
+    '
+    s=$?
+    [ "$s" = 0 ] || fail "the reference read operation failed before grading (status $s)"
 done
 grade_read_evidence "$out" "$inum"

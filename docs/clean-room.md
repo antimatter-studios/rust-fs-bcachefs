@@ -1185,6 +1185,34 @@ The same report shows four more refusals, each after one change:
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.
 
+### A pinned extent checksum and the reference's data read (S3, S8, #219)
+
+[Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)
+records two different observations from the reference tools 1.39.7. Its
+checker accepts both the unchanged image and the changed image with status
+0. Through its FUSE mount, inode 2147483904 in the unchanged image reads
+successfully with SHA-256
+`fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d`;
+the same inode in the changed image returns `Input/output error`.
+
+This observation is bound to fixtures artifact 11977252185 from run
+38741040375, digest
+`sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`.
+The changed image has SHA-256
+`3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb`.
+The reference's extent listing names key `2147483904:1:U32_MAX`, with
+stored CRC32C `0x11ba7`; the unchanged image lists `0xa2f1ba7`, matching
+the independently computed checksum. Artifact 11996897949 retains the
+listing and read observations.
+
+`scripts/pinned-default74-reference.sh` requires that exact fixture,
+physical image, extent, inode and checksum binding, the recorded control
+bytes, and the changed image's EIO. Its CI controls reject successful
+reads, timeouts, permission failures, missing observations and mismatched
+identity. The differential class remains open under #219; this evidence
+establishes the distinction between the reference checker's acceptance
+and its data reader's integrity refusal for this one pinned case.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
