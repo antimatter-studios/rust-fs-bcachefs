@@ -175,12 +175,50 @@ impl Node {
         max_journal_seq: u64,
         blacklist: &[(u64, u64)],
     ) -> Result<Self> {
+        Self::parse_keyed(
+            b,
+            magic,
+            block_bytes,
+            expect_seq,
+            max_journal_seq,
+            blacklist,
+            None,
+        )
+    }
+
+    /// [`Node::parse_filtered`] for a node that may be encrypted: its MACs
+    /// are verified and its records decrypted with `key`, the filesystem's
+    /// master key ([`crate::crypt`]). A node whose checksums are MACs
+    /// is refused without one.
+    pub fn parse_keyed(
+        b: &[u8],
+        magic: u64,
+        block_bytes: usize,
+        expect_seq: Option<u64>,
+        max_journal_seq: u64,
+        blacklist: &[(u64, u64)],
+        key: Option<&crate::crypt::Key>,
+    ) -> Result<Self> {
         if b.len() < HEADER_BSET + BSET_HEADER {
             return Err(Error::Corrupt("btree node shorter than its header".into()));
         }
         if le64(b, 16) != magic {
             return Err(Error::BadMagic { what: "btree node" });
         }
+        let block = block_bytes.max(512);
+        let encrypted = crate::crypt::is_mac((le32(b, HEADER_BSET + 16) & 0xf) as u8);
+        let decrypted;
+        let b = if encrypted {
+            let key = key.ok_or_else(|| {
+                Error::Unsupported("an encrypted btree node, and no key to decrypt it".into())
+            })?;
+            let mut copy = b.to_vec();
+            decrypt_node(&mut copy, block, key)?;
+            decrypted = copy;
+            &decrypted[..]
+        } else {
+            b
+        };
         let format = BkeyFormat::parse(&b[80..80 + BkeyFormat::BYTES])?;
         let seq = le64(b, HEADER_BSET);
         if let Some(e) = expect_seq {
@@ -203,7 +241,6 @@ impl Node {
         let mut start = 0usize; // where this record's checksum starts
         let mut bset_at = HEADER_BSET;
         let mut index = 0usize;
-        let block = block_bytes.max(512);
         loop {
             if bset_at + BSET_HEADER > b.len() {
                 break;
@@ -222,19 +259,28 @@ impl Node {
                 ));
             }
             let csum_type = (bflags & 0xf) as u8;
-            if !crate::csum::is_known(csum_type) {
+            if encrypted != crate::crypt::is_mac(csum_type) {
+                return Err(Error::Corrupt(format!(
+                    "a bset with checksum type {csum_type} in a node whose first is {}",
+                    if encrypted { "a MAC" } else { "not" }
+                )));
+            }
+            if !encrypted && !crate::csum::is_known(csum_type) {
                 return Err(Error::Unsupported(format!(
                     "btree node checksum type {csum_type}"
                 )));
             }
+            // An encrypted record's MAC was verified as it was decrypted.
             let stored = le64(b, start) & csum_mask(csum_type);
-            crate::csum::verify(csum_type, &b[start + 16..end], stored).map_err(|computed| {
-                Error::BadChecksum {
-                    what: "btree node",
-                    stored,
-                    computed,
-                }
-            })?;
+            if !encrypted {
+                crate::csum::verify(csum_type, &b[start + 16..end], stored).map_err(
+                    |computed| Error::BadChecksum {
+                        what: "btree node",
+                        stored,
+                        computed,
+                    },
+                )?;
+            }
             let journal_seq = le64(b, bset_at + 8);
             let committed = journal_seq <= max_journal_seq
                 && !blacklist
@@ -302,6 +348,54 @@ impl Node {
         node.keys = merged;
         Ok(node)
     }
+}
+
+/// Verify the MAC of, and decrypt in place, every record of an encrypted
+/// node, walking the records as [`Node::parse_keyed`] does: each bset of
+/// the node's own seq, the first after the header, each later one in a
+/// `btree_node_entry` at the next block boundary. A record's MAC covers it
+/// from byte 16 to the end of its keys, ciphertext and the plaintext bset
+/// header alike. The first record's encrypted header (flags to the key
+/// format, bytes 24..136) and its keys share one keystream, the keys
+/// starting at the next 64-byte block; a later record encrypts only its
+/// keys. Everything else -- the magic and every bset header -- is in the
+/// clear (S4, docs/clean-room.md "Encryption").
+fn decrypt_node(b: &mut [u8], block: usize, key: &crate::crypt::Key) -> Result<()> {
+    const HEADER_ENCRYPTED: std::ops::Range<usize> = 24..HEADER_BSET;
+    let seq = le64(b, HEADER_BSET);
+    let mut start = 0usize;
+    let mut bset_at = HEADER_BSET;
+    while bset_at + BSET_HEADER <= b.len() && le64(b, bset_at) == seq {
+        let csum_type = (le32(b, bset_at + 16) & 0xf) as u8;
+        let keys_at = bset_at + BSET_HEADER;
+        let end = keys_at + le16(b, bset_at + 22) as usize * 8;
+        if !crate::crypt::is_mac(csum_type) || end > b.len() {
+            break; // the parse names what is wrong
+        }
+        if csum_type != crate::crypt::CSUM_CHACHA20_POLY1305_128 {
+            return Err(Error::Unsupported(format!(
+                "btree node MAC type {csum_type}: only 128-bit MACs have been seen in a node"
+            )));
+        }
+        let nonce = crate::crypt::btree_nonce(start, seq, le64(b, bset_at + 8));
+        let mac = key.mac(nonce, &b[start + 16..end])?;
+        if b[start..start + 16] != mac {
+            return Err(Error::BadChecksum {
+                what: "btree node MAC",
+                stored: le64(b, start),
+                computed: u64::from_le_bytes(mac[..8].try_into().expect("8 bytes")),
+            });
+        }
+        let mut keys_nonce = nonce;
+        if start == 0 {
+            key.apply(nonce, &mut b[HEADER_ENCRYPTED])?;
+            keys_nonce[0] += HEADER_ENCRYPTED.len().div_ceil(64) as u32;
+        }
+        key.apply(keys_nonce, &mut b[keys_at..end])?;
+        start = end.div_ceil(block) * block;
+        bset_at = start + 16;
+    }
+    Ok(())
 }
 
 /// How many bytes of the 16-byte checksum field a type uses.
@@ -801,13 +895,14 @@ fn read_node_upto(
     }
     let mut b = vec![0u8; len];
     dev.read_at(p.offset * 512, &mut b)?;
-    Node::parse_filtered(
+    Node::parse_keyed(
         &b,
         node_magic(&sb.uuid),
         sb.block_size as usize * 512,
         Some(ptr.seq),
         max_seq,
         blacklist,
+        sb.crypt_key()?.as_ref(),
     )
 }
 

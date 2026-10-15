@@ -1345,9 +1345,10 @@ impl<D: BlockDevice> Writer<D> {
                     if e.ptr.is_unwritten() {
                         continue;
                     }
-                    let data = crate::fs::extent_bytes(&e, self.dev.size_bytes(), |at, buf| {
-                        Ok(self.dev.read_at(at, buf)?)
-                    })?;
+                    let data =
+                        crate::fs::extent_bytes(&e, None, self.dev.size_bytes(), |at, buf| {
+                            Ok(self.dev.read_at(at, buf)?)
+                        })?;
                     crate::fs::copy_window(&mut out, 0, size as u64, e.file_start * 512, &data);
                 }
                 key_type::INLINE_DATA => {
@@ -1413,7 +1414,7 @@ impl<D: BlockDevice> Writer<D> {
             // An unwritten extent's sectors are not data: the range stays
             // zeros, as the reader reads it (#158).
             if !e.ptr.is_unwritten() {
-                let data = crate::fs::extent_bytes(&e, self.dev.size_bytes(), |at, buf| {
+                let data = crate::fs::extent_bytes(&e, None, self.dev.size_bytes(), |at, buf| {
                     Ok(self.dev.read_at(at, buf)?)
                 })?;
                 let cut = data

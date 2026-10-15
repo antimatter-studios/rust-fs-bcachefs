@@ -698,6 +698,15 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    sits (the CRC entry; 80 bits for data by default, 128 for metadata). The
    byte layouts are still to be learned by computation over known
    plaintext: #159.
+   **Passphrase unlock remains unknown (2026-10-14, #159).** Section
+   9.1.4.1 names scrypt and the superblock crypt field, but does not specify
+   the salt bytes, the encoding of its N/r/p parameters, or the nonce and
+   counter used to decrypt the sealed master key and its magic. The saved
+   `encrypted.img` was formatted without a passphrase; it cannot establish
+   those facts. A reference-made image with a known passphrase and recorded
+   formatter options, or prose specifying those exact inputs, is required
+   before a passphrase unlock implementation can be justified. No values
+   are inferred from the reference implementation's source.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`

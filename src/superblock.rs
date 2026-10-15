@@ -414,6 +414,16 @@ impl Superblock {
         self.field(FIELD_CRYPT).is_some()
     }
 
+    /// The master key of an encrypted filesystem, when the crypt field
+    /// holds it unsealed (formatted without a passphrase). `None` for an
+    /// unencrypted filesystem, and for one whose key a passphrase seals.
+    pub fn crypt_key(&self) -> Result<Option<crate::crypt::Key>> {
+        match self.field(FIELD_CRYPT) {
+            None => Ok(None),
+            Some(f) => crate::crypt::unsealed_key(&f.body),
+        }
+    }
+
     /// Whether the filesystem was shut down cleanly. INFERRED: flags[0]
     /// bit 1, set wherever the reference printer says `Clean: 1` (every
     /// formatter-made fixture and the replayed aged image) and clear on the
