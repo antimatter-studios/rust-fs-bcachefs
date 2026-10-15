@@ -958,6 +958,45 @@ oracle comparison confirms its class is gone. New triples, invalid controls
 and crate panics still fail the differential run. The two reference crashes
 or faults were counted only, with their identities and data excluded.
 
+### Rebuilt-fixture differential control (S3, #227)
+
+Main control [38698985871](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38698985871)
+at `91a47a206cb4ada85cb322775af438a60b03eb6e` used the fixtures rebuilt by
+main run `38680345154`, reference checker 1.39.7, seed 0 and 80 cases per
+fixture. Its `differential-report/report.md` has SHA-256
+`72011e7f6567b072cc8dcf3bc97e7a0a3dd2560da38b9b306c8e312722db5876`.
+The 648 cases comprise eight unchanged controls and 640 mutations: 445 both
+clean, 93 both finding something, 104 reference-only, one crate-only and
+five reference crashes, faults or hangs (counts only). No crate panic occurred.
+All unchanged controls were clean to both after the report's normal
+fixture-specific recovery messages were accounted for.
+
+Rebuilt images have different node layouts, so the same node-mutation seeds
+can expose different checks. This control adds eight exact baseline classes:
+
+| observed disagreement | example | open work |
+|---|---|---|
+| accounting key in the extents tree | default seed 50 | #163, allowed key types |
+| allocation-key diagnostic, with the allocation-pass prefix | block4k seeds 3 and 45 | #163, allocation validation |
+| allocation-key diagnostic, without that prefix | lz4 seed 48 | #163, allocation validation |
+| accounting mismatch at an unknown tree id | aged seed 45 | #163, accounting consistency |
+| accounting key with trailing junk, inode-count kind | kernel seed 64 | #219, metadata key invariants |
+| extent past the inode's reported size | kernel-written seed 19 | #221, inode metadata consistency |
+| accounting key with trailing junk, replica kind | kernel-written seed 68 | #219, metadata key invariants |
+| missing backpointer here, clean to the reference | default seed 55 | #230, unresolved disagreement |
+
+The last case re-stamps a 32,768-byte node at byte 2,752,512. This checker
+reports an absent backpointer for extent `2147483894:1:U32_MAX` at device
+sector 15124, offset 0; the reference exits 0 without a finding. This does
+not establish which checker is right. Issue #230 requires the changed-byte
+and reference-lister evidence before changing the production backpointer
+check. Its exact `ours-only / node / check:missing_backpointer` baseline
+entry tracks that unresolved question; it does not declare the image valid.
+
+These entries acknowledge measured disagreements, not completed driver
+fixes. No wildcard, old baseline entry, checker assertion or oracle check
+is removed. New classes, failed controls and crate panics still fail.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
