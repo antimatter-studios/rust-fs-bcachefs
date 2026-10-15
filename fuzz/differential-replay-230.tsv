@@ -1,0 +1,17 @@
+# The #230 replay: the one ours-only missing_backpointer case of main control
+# run 38698985871 (dispatch at 91a47a206cb4ada85cb322775af438a60b03eb6e,
+# 80 cases per fixture from seed 0, reference 1.39.7). Its report names
+# default.img seed 55, node at byte 2752512 (32768 bytes), reference clean
+# (exit 0). The replay keeps the reference's backpointers and extents
+# listings and raw fsck -n of default.img unchanged and mutated, so the
+# displaced key's lookup is judged by the reference's own view. The fixtures
+# artifact expires 2026-10-22T04:38:12Z; after that the replay fails at the
+# fetch, and the inputs must be rebuilt rather than substituted.
+#! fixture_run 38680345154
+#! fixture_digest sha256:8045844cc79edf28e4373422d4d3d0d0713d3b5c7562ce17356ac0b1e227ce9c
+#! cases 80
+#! first_seed 0
+#! listings backpointers extents
+#! control_clean default.img
+# fixtures artifact 11948986645
+default-55	ours-only	node	check:missing_backpointer	#230: displaced backpointer, reference clean

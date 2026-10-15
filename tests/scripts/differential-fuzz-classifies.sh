@@ -123,6 +123,22 @@ grep -v '^tiny-987654' "$tmp/replay.tsv" >"$tmp/replay2.tsv"
 python3 "$PY" replay "$tmp/out" --expect "$tmp/replay2.tsv" >"$tmp/replay.txt" 2>&1 \
     && fail "the replay passed with a case in another class than expected"
 
+# A replay that names listings fails when a kept case lacks them (#230): a
+# stand-in reference produces none, so the listings never pass unseen.
+printf '#! listings backpointers extents\n' >"$tmp/replay3.tsv"
+grep -v '^#! listings' "$tmp/replay2.tsv" | sed 's/repair failure/repair success/' >>"$tmp/replay3.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay3.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay passed with the reference's listings missing"
+# The #230 pin names default-55 in its class, its listings and a clean control.
+pin="$REPO/fuzz/differential-replay-230.tsv"
+settings="$(python3 "$PY" replay --expect "$pin" --settings)" || fail "the #230 pin does not parse"
+for want in fixture_run=38680345154 cases=80 first_seed=0 keep=default-55 'listings=backpointers extents'; do
+    printf '%s\n' "$settings" | grep -qx "$want" || fail "the #230 pin lacks $want"
+done
+grep -qx $'default-55\tours-only\tnode\tcheck:missing_backpointer\t.*' "$pin" \
+    || fail "the #230 pin does not hold default-55 as ours-only check:missing_backpointer"
+grep -qx '#! control_clean default.img' "$pin" || fail "the #230 pin does not assert default.img's control clean"
+
 for id in tiny-987654 tiny-876543 tiny-765432; do
     [ ! -e "$tmp/out/ref/$id.txt" ] || fail "$id: the reference crashed, hung or faulted, and its output was kept"
     [ ! -e "$tmp/out/patches/$id.patch" ] || fail "$id: the reference crashed, hung or faulted, and its patch was kept"

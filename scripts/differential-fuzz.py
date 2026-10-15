@@ -342,6 +342,10 @@ def judge_one(case, out, chunks, size, args):
         status, text = r.returncode, r.stdout.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         status, text = 124, ""
+    if cid in args.keep and args.listings and args.container:
+        listings = reference_listings(case, out, scratch, args)
+    else:
+        listings = {}
     os.remove(scratch)
     if crashed(status) or any(INTERNAL.search(l) for l in text.splitlines()):
         # Kept as a count and nothing else (DISCLOSURE above).
@@ -363,11 +367,47 @@ def judge_one(case, out, chunks, size, args):
             with open(ref + ".native-read-proof.json", "w") as f:
                 json.dump(read_match, f)
         if cid in args.keep:
-            keep_case(case, out, patch, status, text)
+            keep_case(case, out, patch, status, text, listings)
     return status
 
 
-def keep_case(case, out, patch, status, text):
+def reference_listings(case, out, scratch, args):
+    """The reference's own view of a kept case: `list -b BTREE` and a raw
+    `fsck -n` of the fixture unchanged and of the mutated image, each with
+    its status. A listing that crashes, hangs or reports an internal fault
+    is kept as its status alone (DISCLOSURE above)."""
+    cid = case["id"]
+    orig = os.path.join(out, "scratch", cid + ".orig.img")
+    shutil.copyfile(os.path.join(args.fixtures, case["fixture"]), orig)
+    got = {}
+    try:
+        for image, path in (("original", orig), ("mutated", scratch)):
+            inside = "/work/scratch/" + os.path.basename(path)
+            runs = [("fsck", ["fsck", "-n", inside])]
+            runs += [("list-" + b, ["list", "-b", b, inside]) for b in args.listings]
+            for name, argv in runs:
+                cmd = ["docker", "exec", args.container, "timeout", "-k", "5"]
+                cmd += [str(args.timeout), "bcachefs"] + argv
+                try:
+                    r = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        timeout=args.timeout + 30,
+                        check=False,
+                    )
+                    st, text = r.returncode, r.stdout.decode("utf-8", "replace")
+                except subprocess.TimeoutExpired:
+                    st, text = 124, ""
+                if crashed(st) or any(INTERNAL.search(l) for l in text.splitlines()):
+                    text = None
+                got[f"{image}.{name}"] = (st, text)
+    finally:
+        os.remove(orig)
+    return got
+
+
+def keep_case(case, out, patch, status, text, listings):
     """One named case, kept so its disagreement can be replayed: the
     patch that damages the fixture, the mutation and this crate's verdict
     from cases.tsv, and the reference's whole output. Only a case the
@@ -380,6 +420,12 @@ def keep_case(case, out, patch, status, text):
         f.write("\n")
     with open(os.path.join(kept, "reference.txt"), "w", encoding="utf-8") as f:
         f.write(text)
+    for name, (st, listing) in sorted(listings.items()):
+        with open(os.path.join(kept, name + ".status"), "w") as f:
+            f.write(f"{st}\n")
+        if listing is not None:
+            with open(os.path.join(kept, name + ".txt"), "w", encoding="utf-8") as f:
+                f.write(listing)
 
 
 def judge(args):
@@ -837,11 +883,16 @@ def replay(args):
                 raise SystemExit(f"{args.expect}: no `#! {key}` line")
             print(f"{key}={settings[key]}")
         print("keep=" + " ".join(cid for cid, *_ in expect))
+        print("listings=" + settings.get("listings", ""))
         return 0
     out = args.out
     cases = {c["id"]: c for c in read_cases(out)}
     normal = controls(out, list(cases.values()))
     failed = []
+    for fixture in settings.get("control_clean", "").split():
+        control = normal.get(fixture)
+        if control is None or control["status"] != 0:
+            failed.append(f"{fixture}: its unchanged control is not clean")
     for cid, cls, structure, sig in expect:
         case = cases.get(cid)
         if case is None:
@@ -853,6 +904,16 @@ def replay(args):
             for n in ("mutation.patch", "case.json", "reference.txt")
         ):
             failed.append(f"{cid}: not kept (crashed, hung or never judged?)")
+            continue
+        listed = [
+            f"{image}.{name}.txt"
+            for image in ("original", "mutated")
+            for name in ["fsck"] + ["list-" + b for b in settings.get("listings", "").split()]
+        ]
+        if settings.get("listings") and not all(
+            os.path.isfile(os.path.join(kept, n)) for n in listed
+        ):
+            failed.append(f"{cid}: the reference's listings were not all kept")
             continue
         ref = judged(out, case, normal.get(case["fixture"]))
         if ref is None or ref["verdict"] == "crashed":
@@ -895,6 +956,16 @@ def main():
         help="keep this case's patch, mutation and reference output under "
         "OUT/kept/ when the reference judges it without crashing (repeatable; "
         "none by default)",
+    )
+    j.add_argument(
+        "--listing",
+        dest="listings",
+        action="append",
+        default=[],
+        metavar="BTREE",
+        help="for each kept case, also keep the reference's `list -b BTREE` "
+        "and raw `fsck -n` of the fixture unchanged and of the mutated image "
+        "(repeatable; container only)",
     )
     c = sub.add_parser("classify")
     c.add_argument("out")

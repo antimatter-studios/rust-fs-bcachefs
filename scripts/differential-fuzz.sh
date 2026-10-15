@@ -93,6 +93,9 @@ docker exec -e REF_VERSION="$REF_VERSION" "$ctr" bash -euc '
 # reference output are kept under $out/kept when judged without a crash.
 keep=()
 for id in ${DIFFERENTIAL_KEEP:-}; do keep+=(--keep "$id"); done
+# DIFFERENTIAL_LISTINGS names btrees (space-separated) the reference lists for
+# each kept case, on the fixture unchanged and on the mutated image (#230).
+for b in ${DIFFERENTIAL_LISTINGS:-}; do keep+=(--listing "$b"); done
 read_evidence=()
 if [ -n "${DIFFERENTIAL_READ_EVIDENCE:-}" ]; then
     read_evidence=(--read-evidence "$DIFFERENTIAL_READ_EVIDENCE")
