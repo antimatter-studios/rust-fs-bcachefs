@@ -6,5 +6,6 @@
   `replay_file` set to it keeps the reference's backpointers and extents
   listings and raw `fsck -n` output of the fixture unchanged and mutated, and
   fails unless the case lands in its class and the fixture's unchanged control
-  is clean. Listings of a crash, hang or internal fault are kept as a status
-  only.
+  is clean. Clean means exit 0 with nothing printed beyond a clean image's
+  lines, since the reference exits 0 under `-n` after a repair. Listings of
+  a crash, hang or internal fault are kept as a status only.

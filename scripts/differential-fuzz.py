@@ -889,9 +889,11 @@ def replay(args):
     cases = {c["id"]: c for c in read_cases(out)}
     normal = controls(out, list(cases.values()))
     failed = []
+    # Clean is exit 0 *and* nothing printed beyond a clean image's lines:
+    # under -n the reference exits 0 after a repair it made in memory.
     for fixture in settings.get("control_clean", "").split():
         control = normal.get(fixture)
-        if control is None or control["status"] != 0:
+        if control is None or control["status"] != 0 or control["notes"]:
             failed.append(f"{fixture}: its unchanged control is not clean")
     for cid, cls, structure, sig in expect:
         case = cases.get(cid)
@@ -908,7 +910,8 @@ def replay(args):
         listed = [
             f"{image}.{name}.txt"
             for image in ("original", "mutated")
-            for name in ["fsck"] + ["list-" + b for b in settings.get("listings", "").split()]
+            for name in ["fsck"]
+            + ["list-" + b for b in settings.get("listings", "").split()]
         ]
         if settings.get("listings") and not all(
             os.path.isfile(os.path.join(kept, n)) for n in listed
