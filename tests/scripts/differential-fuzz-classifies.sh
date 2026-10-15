@@ -165,6 +165,7 @@ printf '%s\n' 'u64s 9 type backpointer 0:991166464:0 len 0 ver 0  : bucket=0:236
 printf '%s\n' 'u64s 9 type backpointer 0:991166209:0 len 0 ver 0  : bucket=0:236:19 btree=extents level=0 data_type=user suboffset=65281 len=1 gen=0 pos=2147483894:1:U32_MAX' >"$k/mutated.list-backpointers.txt"
 python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
     || fail "the reference's listings of default-55 did not corroborate its missing backpointer: $(cat "$tmp/corroborate.txt")"
+cp -R "$k" "$tmp/kept-bp-recorded"
 # The mutated image still listing the backpointer at the extent's pointer is
 # a false positive of this crate's lookup, and must not corroborate.
 cp "$k/original.list-backpointers.txt" "$k/mutated.list-backpointers.txt"
@@ -176,6 +177,55 @@ grep -q 'mutated listing still has the backpointer for 2147483894:1:U32_MAX at 0
 : >"$k/original.list-backpointers.txt"
 python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
     && fail "a backpointer the original never listed corroborated a missing one"
+# The replay itself refuses a pinned missing_backpointer it cannot corroborate
+# (#230): a pin listing neither, only backpointers or only extents fails
+# uncorroborated, and so do the recorded listings with the original's
+# backpointer gone or the mutated one's still present. The recorded
+# default-55 listings, original present and mutated missing, pass. The case's
+# class is stood in; its listings and the corroboration are the real ones.
+r="$tmp/replay-bp"
+mkdir -p "$r/kept"
+cp -R "$tmp/kept-bp-recorded" "$r/kept/default-55"
+for f in mutation.patch reference.txt original.fsck.txt mutated.fsck.txt; do : >"$r/kept/default-55/$f"; done
+replay_bp() { # replay_bp <listings> [original|mutated]: a pin of default-55 with those listings
+    { printf '#! fixture_run 38680345154\n#! fixture_digest sha256:0\n#! cases 80\n#! first_seed 0\n'
+      [ -z "$1" ] || printf '#! listings %s\n' "$1"
+      printf 'default-55\tours-only\tnode\tcheck:missing_backpointer\t#230\n'; } >"$r/pin.tsv"
+    cp "$tmp/kept-bp-recorded/original.list-backpointers.txt" "$r/kept/default-55/original.list-backpointers.txt"
+    cp "$tmp/kept-bp-recorded/mutated.list-backpointers.txt" "$r/kept/default-55/mutated.list-backpointers.txt"
+    case "${2:-}" in
+    original) : >"$r/kept/default-55/original.list-backpointers.txt" ;;
+    mutated) cp "$tmp/kept-bp-recorded/original.list-backpointers.txt" "$r/kept/default-55/mutated.list-backpointers.txt" ;;
+    esac
+    python3 - "$PY" "$r" >"$tmp/replay-bp.txt" 2>&1 <<'PY'
+import argparse, importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("differential", sys.argv[1])
+d = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(d)
+case = {"id": "default-55", "fixture": "default.img", "structure": "node", "signature": "check:missing_backpointer"}
+d.read_cases = lambda out: [case]
+d.controls = lambda out, cases: {}
+d.judged = lambda out, case, normal=None: {"verdict": "clean", "signature": ""}
+d.verdict_class = lambda case, ref: "ours-only"
+r = sys.argv[2]
+sys.exit(d.replay(argparse.Namespace(expect=os.path.join(r, "pin.tsv"), settings=False, out=r)))
+PY
+}
+for listings in '' 'backpointers' 'extents'; do
+    replay_bp "$listings" && fail "a pinned missing_backpointer listing '${listings:-nothing}' passed uncorroborated"
+    grep -q 'default-55: not corroborated: the pin does not list backpointers and extents' "$tmp/replay-bp.txt" \
+        || fail "a pin listing '${listings:-nothing}' is not refused as uncorroborated: $(cat "$tmp/replay-bp.txt")"
+done
+replay_bp 'backpointers extents' \
+    || fail "the recorded default-55 listings did not pass the replay: $(cat "$tmp/replay-bp.txt")"
+grep -q "default-55: the reference's listings show the backpointer missing" "$tmp/replay-bp.txt" \
+    || fail "the replay did not corroborate default-55: $(cat "$tmp/replay-bp.txt")"
+replay_bp 'backpointers extents' original && fail "the replay passed with the original's backpointer missing"
+grep -q 'not corroborated: the reference.s original listing has no backpointer' "$tmp/replay-bp.txt" \
+    || fail "the missing original is not named: $(cat "$tmp/replay-bp.txt")"
+replay_bp 'backpointers extents' mutated && fail "the replay passed with the mutated backpointer still present"
+grep -q 'not corroborated: the reference.s mutated listing still has the backpointer' "$tmp/replay-bp.txt" \
+    || fail "the still-present mutated backpointer is not named: $(cat "$tmp/replay-bp.txt")"
 # A control is clean only when it exits 0 and prints no finding (#230): under
 # -n the reference exits 0 after a repair it made in memory, so an exit 0
 # alone must not let control_clean pass. The stand-in's control on tiny.img
