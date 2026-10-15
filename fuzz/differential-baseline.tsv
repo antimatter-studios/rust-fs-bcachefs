@@ -65,3 +65,25 @@ ref-only	key-size	invalid bkey in btree_node btree=snapshot_trees level=#: u#s #
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
 ref-only	key-value	check_inodes...directory with nonzero i_size	#221: inode metadata consistency
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
+
+# Measured on main 91a47a2 in CI run 38698985871, reference checker 1.39.7.
+# Fixtures rebuilt by main run 38680345154 change the nodes reached by seed 0.
+# Eight additional exact classes: seven missing checks and one disputed result.
+# Counts, fixture identities and unresolved ownership are recorded in
+# docs/clean-room.md, "Rebuilt-fixture differential control" (#227).
+ref-only	key-type	check_allocations...invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max	#163: allocation metadata and allowed key types
+ours-only	node	check:missing_backpointer	#230: unresolved backpointer disagreement; reference clean is not proof of validity
+ref-only	node	check_allocations...invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver 	#163: allocation metadata and allowed key types
+ref-only	node	invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver # :	#163: allocation metadata and allowed key types
+ref-only	node	check_allocations...accounting mismatch for snapshot id=# btree=(unknown btree #):	#163: allocation metadata and allowed key types
+ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : nr_inodes	#219: metadata key invariants
+ref-only	key-value	check_extents...extent type past end of inode #, i_size #	#221: inode metadata consistency
+ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : replicas 	#219: metadata key invariants
+
+# Measured at 3be1c2a in PR CI run 38718924048, reference checker 1.39.7.
+# The job takes fixtures from the newest green main run, so seeds reach other
+# nodes than run 38698985871 did: none of the eight lines above occurred, and
+# three further exact classes did (report SHA-256 8921a81d...cacb, #227).
+ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#219: metadata key invariants
+ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
+ref-only	key-offset	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#163: allocation metadata and allowed key types

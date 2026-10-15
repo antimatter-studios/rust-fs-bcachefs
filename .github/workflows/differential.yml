@@ -28,6 +28,19 @@ on:
         description: "First seed (empty: 0)"
         required: false
         default: ""
+      fixture_run:
+        description: "CI run whose fixtures artifact to judge (empty: the newest green main run)"
+        required: false
+        default: ""
+      fixture_digest:
+        description: "Expected fixtures artifact digest, sha256:... (required with fixture_run)"
+        required: false
+        default: ""
+      replay:
+        description: "Replay fuzz/differential-replay.tsv: its fixtures, cases and seed; keep its cases and fail unless each lands in its class"
+        type: boolean
+        required: false
+        default: false
   schedule:
     - cron: "30 4 * * *"
   pull_request:
@@ -37,6 +50,7 @@ on:
       - scripts/differential-fuzz.py
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
+      - fuzz/differential-replay.tsv
       - fuzz/shared/**
 
 concurrency:
@@ -82,25 +96,62 @@ jobs:
           key: ${{ runner.os }}-differential-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       # Building them takes the harness VM, so the newest green main run's
-      # are fetched instead, as the nightly fuzz run does.
-      - name: Fetch the fixtures from the newest green main run
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # are fetched instead, as the nightly fuzz run does. A dispatch may name
+      # the run instead, with its artifact's digest, to reproduce a report
+      # exactly: the same seeds reach different nodes in rebuilt fixtures.
+      # Either way the run, artifact and digests go into the report.
+      # A replay takes everything from fuzz/differential-replay.tsv and keeps
+      # only its named, non-crashing cases (none otherwise).
+      - name: The pinned replay's settings
+        if: inputs.replay
         run: |
           set -euo pipefail
-          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          python3 scripts/differential-fuzz.py replay --expect fuzz/differential-replay.tsv --settings >"$RUNNER_TEMP/replay.env"
+          cat "$RUNNER_TEMP/replay.env"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              fixture_run) echo "FIXTURE_RUN=$value" ;;
+              fixture_digest) echo "FIXTURE_DIGEST=$value" ;;
+              cases) echo "CASES=$value" ;;
+              first_seed) echo "FIRST_SEED=$value" ;;
+              keep) echo "DIFFERENTIAL_KEEP=$value" ;;
+            esac
+          done <"$RUNNER_TEMP/replay.env" >>"$GITHUB_ENV"
+
+      - name: Fetch the fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_RUN: ${{ inputs.replay && env.FIXTURE_RUN || inputs.fixture_run }}
+          FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest }}
+        run: |
+          set -euo pipefail
+          run="$FIXTURE_RUN"
+          if [ -z "$run" ]; then
+            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          elif [ -z "$FIXTURE_DIGEST" ]; then
+            echo "fixture_run $run needs fixture_digest, so a report names the exact input" >&2; exit 1
+          fi
           [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
+          [ -n "$artifact" ] || { echo "run $run has no fixtures artifact (expired?)" >&2; exit 1; }
+          artifact_id="${artifact%% *}"; digest="${artifact#* }"
+          if [ -n "$FIXTURE_DIGEST" ] && [ "$digest" != "$FIXTURE_DIGEST" ]; then
+            echo "run $run fixtures artifact is $digest, not the expected $FIXTURE_DIGEST" >&2; exit 1
+          fi
           gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
-          echo "fixtures from run $run: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
+          from="CI run $run, artifact $artifact_id ($digest), fixtures.tar.gz sha256:$tarball"
+          echo "DIFFERENTIAL_FIXTURES_FROM=$from" >> "$GITHUB_ENV"
+          echo "fixtures from $from: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
 
       # Seed 0 unless asked otherwise; a scheduled night starts where the
       # day's number puts it, so no two nights judge the same cases.
       - name: chore fuzz:differential
         env:
-          CASES: ${{ inputs.cases || '80' }}
-          FIRST_SEED: ${{ inputs.first_seed }}
+          CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
+          FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -116,6 +167,25 @@ jobs:
           if [ -f tmp/differential/report.md ]; then
             cat tmp/differential/report.md >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Runs even when the classify step failed: a replay case absent from
+      # its class is the failure this exists to report.
+      - name: The pinned replay's classes were observed
+        if: always() && inputs.replay
+        run: python3 scripts/differential-fuzz.py replay tmp/differential --expect fuzz/differential-replay.tsv
+
+      # Only the replay's named cases, each judged without a crash; a crash
+      # or hang never reaches tmp/differential/kept.
+      - name: Keep the replayed cases
+        if: always() && inputs.replay
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-replay
+          path: |
+            tmp/differential/kept/
+            fuzz/differential-replay.tsv
+          if-no-files-found: error
+          retention-days: 30
+
       # The report alone: cases.tsv, the patches and the reference's output
       # stay on the runner, which is thrown away.
       - name: Keep the report

@@ -95,7 +95,33 @@ tiny-765432|765432|node|clean||h
 EOF
 
 python3 "$PY" judge "$tmp/out" "$tmp/fixtures" --reference "$tmp/reference" --jobs 3 --timeout 2 \
+    --keep tiny-1 --keep tiny-987654 --keep tiny-876543 --keep tiny-765432 \
     >"$tmp/judge.txt" 2>&1 || fail "the judge failed: $(cat "$tmp/judge.txt")"
+
+# --keep keeps a named case the reference judged, and never a crash's.
+for f in mutation.patch case.json reference.txt; do
+    [ -s "$tmp/out/kept/tiny-1/$f" ] || fail "tiny-1: named with --keep and judged, but $f was not kept"
+done
+grep -q 'checksum error at btree node 12' "$tmp/out/kept/tiny-1/reference.txt" || fail "tiny-1: the kept reference output is not the reference's"
+for id in tiny-987654 tiny-876543 tiny-765432; do
+    [ ! -e "$tmp/out/kept/$id" ] || fail "$id: the reference crashed, hung or faulted, and --keep kept it"
+done
+[ ! -e "$tmp/out/kept/tiny-3" ] || fail "tiny-3: kept without being named"
+
+# The replay passes only when each named case was kept in its exact class.
+printf '#! fixture_run 1\n#! fixture_digest sha256:0\n#! cases 1\n#! first_seed 0\n' >"$tmp/replay.tsv"
+printf 'tiny-1\tref-only\tnode\tchecksum error at btree node # offset #: repair success (rewriting node)\t#0\n' >>"$tmp/replay.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay.tsv" >"$tmp/replay.txt" 2>&1 \
+    || fail "the replay of a kept case in its class failed: $(cat "$tmp/replay.txt")"
+python3 "$PY" replay --expect "$tmp/replay.tsv" --settings | grep -qx 'keep=tiny-1' \
+    || fail "the replay's settings do not name its case"
+printf 'tiny-987654\tref-only\tnode\tanything\t#0\n' >>"$tmp/replay.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay passed with a crashed case absent from its class"
+sed -i.bak 's/repair success/repair failure/' "$tmp/replay.tsv"
+grep -v '^tiny-987654' "$tmp/replay.tsv" >"$tmp/replay2.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay2.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay passed with a case in another class than expected"
 
 for id in tiny-987654 tiny-876543 tiny-765432; do
     [ ! -e "$tmp/out/ref/$id.txt" ] || fail "$id: the reference crashed, hung or faulted, and its output was kept"

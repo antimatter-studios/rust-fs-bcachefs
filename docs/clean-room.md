@@ -958,6 +958,97 @@ oracle comparison confirms its class is gone. New triples, invalid controls
 and crate panics still fail the differential run. The two reference crashes
 or faults were counted only, with their identities and data excluded.
 
+### Rebuilt-fixture differential control (S3, #227)
+
+Main control [38698985871](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38698985871)
+at `91a47a206cb4ada85cb322775af438a60b03eb6e` used the fixtures rebuilt by
+main run `38680345154`, reference checker 1.39.7, seed 0 and 80 cases per
+fixture. Its `differential-report/report.md` has SHA-256
+`72011e7f6567b072cc8dcf3bc97e7a0a3dd2560da38b9b306c8e312722db5876`.
+The 648 cases comprise eight unchanged controls and 640 mutations: 445 both
+clean, 93 both finding something, 104 reference-only, one crate-only and
+five reference crashes, faults or hangs (counts only). No crate panic occurred.
+All unchanged controls were clean to both after the report's normal
+fixture-specific recovery messages were accounted for.
+
+Rebuilt images have different node layouts, so the same node-mutation seeds
+can expose different checks. This control adds eight exact baseline classes:
+
+| observed disagreement | example | open work |
+|---|---|---|
+| accounting key in the extents tree | default seed 50 | #163, allowed key types |
+| allocation-key diagnostic, with the allocation-pass prefix | block4k seeds 3 and 45 | #163, allocation validation |
+| allocation-key diagnostic, without that prefix | lz4 seed 48 | #163, allocation validation |
+| accounting mismatch at an unknown tree id | aged seed 45 | #163, accounting consistency |
+| accounting key with trailing junk, inode-count kind | kernel seed 64 | #219, metadata key invariants |
+| extent past the inode's reported size | kernel-written seed 19 | #221, inode metadata consistency |
+| accounting key with trailing junk, replica kind | kernel-written seed 68 | #219, metadata key invariants |
+| missing backpointer here, clean to the reference | default seed 55 | #230, unresolved disagreement |
+
+The last case re-stamps a 32,768-byte node at byte 2,752,512. This checker
+reports an absent backpointer for extent `2147483894:1:U32_MAX` at device
+sector 15124, offset 0; the reference exits 0 without a finding. This does
+not establish which checker is right. Issue #230 requires the changed-byte
+and reference-lister evidence before changing the production backpointer
+check. Its exact `ours-only / node / check:missing_backpointer` baseline
+entry tracks that unresolved question; it does not declare the image valid.
+
+These entries acknowledge measured disagreements, not completed driver
+fixes. No wildcard, old baseline entry, checker assertion or oracle check
+is removed. New classes, failed controls and crate panics still fail.
+
+PR run [38718924048](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38718924048)
+at `3be1c2a9bbb50465182ad10dd8a8158eed6b89f3` (differential job 116368360626,
+report SHA-256
+`8921a81d0a0d720476af6e2c31f4c2c3f06c13309b36dac66eb9f2e23e25cacb`) shows
+the fixture source is not fixed: the job fetches the fixtures of the newest
+green main run, so the same seeds reached different nodes. Of its 648 cases,
+454 were both clean, 90 both found something, 98 reference-only, none
+crate-only and six reference crashes, faults or hangs. None of the eight
+classes above occurred, and three further exact classes did:
+
+| observed disagreement | example | open work |
+|---|---|---|
+| accounting key with nonzero size, device-data kind | kernel seed 37 | #219, metadata key invariants |
+| backpointer with nonzero snapshot, node re-stamped | kernel seed 53 | #219, metadata key invariants |
+| dirents accounting mismatch after a dirent offset change | kernel-rootsnap seed 0 | #163, accounting consistency |
+
+The third case also shows the reference reporting a duplicate dirent hash key
+at a wrong offset, which this crate called clean. These entries are tracked
+gaps, not fixes.
+
+The fixture source is recorded, not inferred: the job's own fetch log reads
+`fixtures from run 38714446443: 55 images`. That is main CI run
+[38714446443](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38714446443)
+at `b23f1a198d3a7c9855f52f48ad84a88b85f2b7fc`, fixtures artifact 11963530352,
+digest `sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c`.
+The baseline lines above were measured on fixtures 38680345154.
+
+Every report now names its fixtures (run, artifact, artifact digest and the
+tarball's SHA-256), and a dispatch can judge a named run's fixtures, refusing
+one whose artifact digest differs. The three classes above reproduce with:
+
+    gh workflow run differential.yml -R antimatter-studios/rust-fs-bcachefs \
+      -f cases=80 -f first_seed=0 -f fixture_run=38714446443 \
+      -f fixture_digest=sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c
+
+Ordinary runs keep judging the newest green main run's fixtures, so new
+findings still surface. The artifact expires 2026-10-22T10:01:45Z (seven-day
+retention).
+
+A replay dispatch (`gh workflow run differential.yml -f replay=true`) takes
+the fixture run, digest, case count and seed from
+`fuzz/differential-replay.tsv`, which names the three cases (`kernel-37`,
+`kernel-53`, `kernel-rootsnap-0`) and each one's exact class. The judge keeps
+those cases only (`--keep`; no case is kept by default): each case's mutation
+patch, its `cases.tsv` row with this crate's verdict, and the reference's
+whole output. It keeps them only when the reference judged the case without
+crashing or hanging, so no crash or hang is kept, even as an artifact. The
+replay step then fails unless every named case was kept and lands in exactly
+its class. The kept cases are uploaded as the `differential-replay` artifact
+for 30 days. The fixture image plus the patch rebuilds the mutated image, so
+whole images are not stored.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
