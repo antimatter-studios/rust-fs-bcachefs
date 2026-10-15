@@ -1176,6 +1176,11 @@ The same report shows four more refusals, each after one change:
   where the value has 5. The checker refuses an xattr whose header's two
   lengths, with the header, are longer than its value (the layout in
   `src/xattr.rs`).
+- Differential run 38753768243 changed a dirent of `kernel-rootsnap.img`
+  (seed 10) into an xattr; the reference deleted it with "invalid key type
+  for btree dirents (xattr)" (`bkey_invalid_type_for_btree`). The checker
+  refuses that one pair, an xattr in the dirents btree; other pairs of key
+  type and btree were not seen and are not judged.
 
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.

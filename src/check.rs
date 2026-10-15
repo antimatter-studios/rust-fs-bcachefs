@@ -1326,6 +1326,13 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 ),
             )
         }
+        // An xattr belongs in the xattrs btree; differential run
+        // 38753768243 saw the reference delete one found in dirents as
+        // "invalid key type for btree dirents (xattr)".
+        (btree_id::DIRENTS, key_type::XATTR) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is an xattr", k.pos),
+        ),
         _ => {}
     }
 }
