@@ -1150,6 +1150,36 @@ snapshot, so neither rule belongs to a key type or a btree alone: the
 checker judges exactly the observed pairs of btree and key type, and every
 other pair is an open question until an oracle is seen to answer it.
 
+### A key's position and its value's lengths (S3, #219)
+
+The same report shows four more refusals, each after one change:
+
+- A subvolume moved to offset 0 (`POS_MIN`), or to inode U64_MAX, was
+  refused with "invalid pos" (`subvol_pos_bad`). Every subvolume the
+  fixtures hold is at `0:id` with an id of 1 or more, so the checker
+  refuses a subvolume at offset 0 or at any inode other than 0. The inode
+  rule is the one step past what was observed (only U64_MAX was tried). A
+  differential run that tried another inode and saw the reference accept
+  it would show this as a class only this crate finds.
+- A snapshot_tree moved to offset 0 was refused with "bad pos"
+  (`snapshot_tree_pos_bad`).
+- The lister prints an accounting key whose inode is `6 << 56 | id << 48`
+  as `btree btree=NAME`, with the btree of that id: logged_ops (17) and
+  subvolume_children (19), with offset and snapshot 0. One such key moved
+  to snapshot 1, and one whose inode also had `0xff0000` set, were refused
+  with "junk at end of accounting key" (`accounting_key_junk_at_end`).
+  Other kinds of accounting key were not seen changed this way and are
+  not judged.
+- An xattr whose value's first word was set to all ones was refused with
+  "value too small (5 < 8225)" (`xattr_val_size_too_small`): a name of
+  255 bytes and a value of 65535, after the 4-byte header, need 8225 words
+  where the value has 5. The checker refuses an xattr whose header's two
+  lengths, with the header, are longer than its value (the layout in
+  `src/xattr.rs`).
+
+The inode node case of the same report (a re-stamped node, `default.img`
+seed 44) is still open: the report cuts off the reference's reason.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
