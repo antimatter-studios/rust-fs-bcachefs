@@ -180,7 +180,8 @@ classify() {
 classify && fail "a disagreement class missing from the baseline passed: $(cat "$tmp/stdout")"
 grep -q 'NEW ref-only / jset / bad btree header at #, fixing' "$tmp/stdout" ||
     fail "the new class is not named on stdout: $(cat "$tmp/stdout")"
-for want in '|both clean|1|' '|both found something|1|' "|the reference found something; this crate called it clean|2|" \
+# Both unchanged controls are counted: tiny-control and clean-control.
+for want in '|both clean|2|' '|both found something|1|' "|the reference found something; this crate called it clean|2|" \
     '|this crate found something; the reference did not|1|' '|the reference crashed, hung or faulted (counts only)|3|'; do
     tr -d ' ' <"$tmp/report.md" | grep -qF "$(printf '%s' "$want" | tr -d ' ')" || fail "the report does not count $want"
 done
