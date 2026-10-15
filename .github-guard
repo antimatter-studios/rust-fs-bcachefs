@@ -4,7 +4,9 @@
 #
 # ONE REQUIRED CHECK: `ci-ok`, ci.yml's always-run aggregate. It `needs:`
 # every other job and fails when any of them failed, was cancelled or was
-# skipped, so jobs can be renamed, split or added without protection
+# skipped (except a declared full job skipped on a quick pull request or
+# push-to-main run; the merge queue requires every one), so jobs can be
+# renamed, split or added without protection
 # noticing. rust-fs-core's ci-gate.sh (run in place) holds both halves to
 # it: every job in ci.yml is in `ci-ok`'s needs, and this file requires
 # `ci-ok` and nothing else.

@@ -294,3 +294,23 @@ chore test            # unit then oracle, exactly as CI runs them
 A tier prints a verdict and writes everything it saw to `tmp/logs/<tier>.log`.
 A fixture test with no fixture **fails**, naming `chore fixtures`; nothing skips.
 Never leave the VM running: `chore vm:status`, `chore vm:down`.
+
+## Quick pull request checks, full merge-queue validation
+
+Pull requests, including every layer of a native `gh stack`, run the quick
+jobs: `unit` (unit tier and shell guards), `lint` and `semver`. The merge
+queue runs the full pipeline (`fixtures`, `oracle`, `test-arm64`,
+`test-darwin`, `suite-in-vm`, `cli`, `coverage`) on its exact merge tree, and
+so do tags, `workflow_dispatch` and a release calling `ci.yml`. A push to
+`main` runs the quick jobs without repeating the queue's oracle work. `ci-ok`
+fails any failed, cancelled or skipped job, except a full job skipped on a
+quick run; `tests/scripts/ci-depth.sh` holds that truth table.
+
+For an oracle-only regression, record the red full run on the same branch
+before pushing its fix, then cite that run's URL and SHA:
+
+```sh
+gh workflow run ci.yml -R antimatter-studios/rust-fs-bcachefs --ref <branch>
+```
+
+A quick pull request pass is not oracle evidence.
