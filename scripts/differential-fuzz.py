@@ -418,9 +418,15 @@ def example(case, ref):
         out.append(f"  - the reference (exit {ref['status']}):")
         out.append("")
         out.append("    ```")
-        out.extend("    " + l for l in ref["lines"][:12])
-        if len(ref["lines"]) > 12:
-            out.append(f"    ... {len(ref['lines']) - 12} more lines")
+        # The head names the key; the tail names the error the reference
+        # counted, which a long key dump would otherwise push out of view.
+        lines = list(ref["lines"])
+        head, tail = lines[:12], lines[12:]
+        out.extend("    " + l for l in head)
+        if len(tail) > 8:
+            out.append(f"    ... {len(tail) - 8} more lines")
+            tail = tail[-8:]
+        out.extend("    " + l for l in tail)
         out.append("    ```")
     return out
 
