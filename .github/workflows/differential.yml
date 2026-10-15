@@ -28,6 +28,14 @@ on:
         description: "First seed (empty: 0)"
         required: false
         default: ""
+      fixture_run:
+        description: "CI run whose fixtures artifact to judge (empty: the newest green main run)"
+        required: false
+        default: ""
+      fixture_digest:
+        description: "Expected fixtures artifact digest, sha256:... (required with fixture_run)"
+        required: false
+        default: ""
   schedule:
     - cron: "30 4 * * *"
   pull_request:
@@ -82,18 +90,37 @@ jobs:
           key: ${{ runner.os }}-differential-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       # Building them takes the harness VM, so the newest green main run's
-      # are fetched instead, as the nightly fuzz run does.
-      - name: Fetch the fixtures from the newest green main run
+      # are fetched instead, as the nightly fuzz run does. A dispatch may name
+      # the run instead, with its artifact's digest, to reproduce a report
+      # exactly: the same seeds reach different nodes in rebuilt fixtures.
+      # Either way the run, artifact and digests go into the report.
+      - name: Fetch the fixtures
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_RUN: ${{ inputs.fixture_run }}
+          FIXTURE_DIGEST: ${{ inputs.fixture_digest }}
         run: |
           set -euo pipefail
-          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          run="$FIXTURE_RUN"
+          if [ -z "$run" ]; then
+            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          elif [ -z "$FIXTURE_DIGEST" ]; then
+            echo "fixture_run $run needs fixture_digest, so a report names the exact input" >&2; exit 1
+          fi
           [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
+          [ -n "$artifact" ] || { echo "run $run has no fixtures artifact (expired?)" >&2; exit 1; }
+          artifact_id="${artifact%% *}"; digest="${artifact#* }"
+          if [ -n "$FIXTURE_DIGEST" ] && [ "$digest" != "$FIXTURE_DIGEST" ]; then
+            echo "run $run fixtures artifact is $digest, not the expected $FIXTURE_DIGEST" >&2; exit 1
+          fi
           gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
-          echo "fixtures from run $run: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
+          from="CI run $run, artifact $artifact_id ($digest), fixtures.tar.gz sha256:$tarball"
+          echo "DIFFERENTIAL_FIXTURES_FROM=$from" >> "$GITHUB_ENV"
+          echo "fixtures from $from: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
 
       # Seed 0 unless asked otherwise; a scheduled night starts where the
       # day's number puts it, so no two nights judge the same cases.

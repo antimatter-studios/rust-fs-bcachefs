@@ -434,6 +434,10 @@ def classify(args):
         f"Reference checker {args.version}; {n_controls} controls (each fixture unchanged), "
         "the rest one change each."
     )
+    # Which fixtures the cases were cut from: the same seeds reach different
+    # nodes in a rebuilt fixture, so a class is reproducible only with these.
+    fixtures_from = os.environ.get("DIFFERENTIAL_FIXTURES_FROM", "")
+    report += ["", f"Fixtures: {fixtures_from or 'unrecorded (a local run)'}."]
     report += ["", "| class | cases |", "|---|---|"]
     report += [f"| {label} | {counts[c]} |" for c, label in CLASSES.items()]
     if unjudged:

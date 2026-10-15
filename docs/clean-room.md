@@ -1015,7 +1015,27 @@ classes above occurred, and three further exact classes did:
 
 The third case also shows the reference reporting a duplicate dirent hash key
 at a wrong offset, which this crate called clean. These entries are tracked
-gaps, not fixes; pinning the fixture run the job reads is the open item.
+gaps, not fixes.
+
+The fixture source is recorded, not inferred: the job's own fetch log reads
+`fixtures from run 38714446443: 55 images`. That is main CI run
+[38714446443](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38714446443)
+at `b23f1a198d3a7c9855f52f48ad84a88b85f2b7fc`, fixtures artifact 11963530352,
+digest `sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c`.
+The baseline lines above were measured on fixtures 38680345154.
+
+Every report now names its fixtures (run, artifact, artifact digest and the
+tarball's SHA-256), and a dispatch can judge a named run's fixtures, refusing
+one whose artifact digest differs. The three classes above reproduce with:
+
+    gh workflow run differential.yml -R antimatter-studios/rust-fs-bcachefs \
+      -f cases=80 -f first_seed=0 -f fixture_run=38714446443 \
+      -f fixture_digest=sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c
+
+Ordinary runs keep judging the newest green main run's fixtures, so new
+findings still surface. The artifact expires 2026-10-22T10:01:45Z (seven-day
+retention); the
+mutated images themselves are not kept, by the disclosure rule above.
 
 ## Confirmation
 
