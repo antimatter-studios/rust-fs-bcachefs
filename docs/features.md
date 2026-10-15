@@ -78,7 +78,7 @@ States:
 | Differential damaged-image comparison with the reference checker | Partial: exact known defects tracked; kernel as second judge remains | Unreleased (#217) | #164 | `differential.yml`, `tests/scripts/differential-fuzz-classifies.sh` |
 | Additional metadata key lengths, snapshot fields, positions and values | Not supported for 23 measured disagreement classes | | #219 | `differential.yml` report 38579070302 |
 | Snapshot-tree links and skiplist-pointer consistency | Not supported for three measured disagreement classes | | #220 | `differential.yml` report 38579070302 |
-| Directory size, inode journal sequence and sector-count consistency | Not supported for four measured disagreement classes | | #221 | `differential.yml` report 38579070302 |
+| `fsck.bcachefs` on inode metadata: a directory whose size is not 0, an inode whose journal sequence is more than 128 past the newest the journal wrote, an inode whose sector count is not what its extents, reservations, reflink pointers and inline data add up to (judged where every key of its extents is at the inode's own snapshot) | Supported | Unreleased (#225) | #221 | `oracle_check_inode_metadata.rs`, `check_oracle.rs` |
 | A btree node whose bsets end before the sectors its parent's pointer counts as written (a torn or missing later bset), refused as corrupt by the reader and the checker | Refused | Unreleased (#223) | #222 | `oracle_node_written.rs`, `btree.rs` unit tests |
 | Repair | Not supported | | | |
 

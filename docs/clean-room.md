@@ -1049,6 +1049,37 @@ its class. The kept cases are uploaded as the `differential-replay` artifact
 for 30 days. The fixture image plus the patch rebuilds the mutated image, so
 whole images are not stored.
 
+Removed since, each by the pull request that fixed it after a run at seed 0
+no longer found it: #221's four inode-metadata classes (#225).
+
+### Inode metadata against the rest (#221)
+
+- A directory's size is 0: the lister prints `bi_size=0` for every
+  directory of every listed fixture (S3), and the reference reports
+  "directory with nonzero i_size" for one made 2^64 - 1.
+- An inode's sector count is the sum of the sizes of its extents btree
+  keys of type extent, reservation, reflink_p and inline_data, at its own
+  snapshot. Measured (S3) over every inode the lister prints, on default,
+  lz4, zstd, gzip, nocsum, xxhash, crc64, block4k, aged, strhash,
+  bgcompress, crc128, crc128-overwrite, casefold, kernel, kernel-prealloc
+  and probe: no exception, compressed extents counting their key's size.
+  Where an inode's extents have keys at other snapshots too, which of them
+  a version of the inode counts depends on what its snapshot sees (S1
+  9.4), and the checker does not judge it. The reference reports
+  "incorrect i_sectors: got N, should be M".
+- An inode's journal sequence is the journal's when it was last written
+  (S1 6.12 and 8.3 name the field `bi_journal_seq`, and "a
+  bi_journal_seq in the future" as a state the reference corrects).
+  Every fixture's inodes are at or below the sequence it was shut down at
+  (S3). The reference compares with the sequence its own journal is at
+  while it checks ("inode journal seq in future (currently at 45)" on lz4,
+  shut down at 43): it skips 64 past the last entry read after an unclean
+  shutdown (S1 1.3), and its run advanced at most 6 on any fixture, from
+  "recovering from clean shutdown, journal seq N" to "clean shutdown
+  complete". The checker reports a sequence more than 128 past the newest
+  written, past anywhere the reference's journal can be while it checks;
+  nearer ones are not judged.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

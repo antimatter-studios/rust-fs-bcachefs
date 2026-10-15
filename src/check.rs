@@ -11,7 +11,9 @@
 //! that every key is at a snapshot the snapshots btree has; every xattr
 //! against its inode (it exists, the xattr is reachable from its name's
 //! hash slot); every inode's back-reference to the entry naming it; every
-//! inode's has-options flag against its option fields. Entries, inodes
+//! inode's has-options flag against its option fields; every directory's
+//! size (0), every inode's journal sequence against the journal's newest,
+//! and every inode's sector count against what its extents add up to. Entries, inodes
 //! and link counts are judged as each subvolume sees them through its
 //! snapshot's chain, and an entry naming a subvolume against the
 //! subvolumes btree. Every reflinked extent is followed into the reflink
@@ -90,6 +92,27 @@ const ACCT_DEV_DATA_TYPE: u64 = 3;
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
 const MAX_SNAPSHOT_DEPTH: usize = 1024;
+/// The superblock's clean field: flags u32, two u16 clocks, then the
+/// journal sequence of the clean shutdown (src/superblock.rs).
+const FIELD_CLEAN: u32 = 6;
+/// The key types of the extents btree whose size an inode's sector count
+/// adds up: extent, reservation, reflink_p, inline_data (S3: the lister's
+/// `bi_sectors` against its extents, for every inode of every listed
+/// fixture, #221).
+const SECTOR_KEYS: [u8; 4] = [
+    key_type::EXTENT,
+    key_type::RESERVATION,
+    key_type::REFLINK_P,
+    key_type::INLINE_DATA,
+];
+/// How far past the newest journal sequence written an inode's may be
+/// before it is in the future. The reference compares with the sequence
+/// its own journal is at while it checks: after an unclean shutdown it
+/// skips 64 past the last entry read (S1 1.3), and its own run advanced at
+/// most 6 more on any fixture (S3: each fixture's `fsck` record, from
+/// "recovering from ... journal seq N" to "clean shutdown complete").
+/// Beyond 128 past, no journal of the reference's is there yet.
+const JOURNAL_SEQ_SLACK: u64 = 128;
 
 /// One thing found wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +326,17 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
     r.inodes = decoded.len() as u64;
+    // What the extents of each inode add up to (#221), and the newest
+    // journal sequence written: the replayed journal's, or the clean
+    // shutdown's.
+    let extent_sums = ExtentSums::of(trees.get(&btree_id::EXTENTS).into_iter().flatten());
+    let newest_seq = match &replay {
+        Some(rp) => Some(rp.seq),
+        None => sb
+            .field(FIELD_CLEAN)
+            .filter(|f| f.body.len() >= 16)
+            .map(|f| le64(&f.body, 8)),
+    };
     // The has-options flag (#163): bit 12 of bi_flags is set exactly when
     // the inode carries an option, set on it or inherited (S3 + S4, #142).
     // A nocow inode may carry it with none of the option fields set.
@@ -327,6 +361,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 ),
             );
         }
+        inode_metadata(k, &raw, &decoded[&k.pos], &extent_sums, newest_seq, &mut r);
     }
     // The inode a snapshot sees at `ino`.
     let inode_seen = |chain: &[u32], ino: u64| -> Option<&Inode> {
@@ -995,6 +1030,92 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
     Ok(r)
+}
+
+/// The sizes of each inode's extents, by `(inode, snapshot)`, and the
+/// snapshots each inode's extents btree keys are at.
+#[derive(Default)]
+struct ExtentSums {
+    sectors: BTreeMap<(u64, u32), u64>,
+    snapshots: BTreeMap<u64, std::collections::BTreeSet<u32>>,
+}
+
+impl ExtentSums {
+    fn of<'a>(keys: impl Iterator<Item = &'a Bkey>) -> Self {
+        let mut out = Self::default();
+        for k in keys {
+            out.snapshots
+                .entry(k.pos.inode)
+                .or_default()
+                .insert(k.pos.snapshot);
+            if SECTOR_KEYS.contains(&k.key_type) {
+                let sum = out
+                    .sectors
+                    .entry((k.pos.inode, k.pos.snapshot))
+                    .or_default();
+                *sum = sum.saturating_add(u64::from(k.size));
+            }
+        }
+        out
+    }
+
+    /// What the extents of the inode at `pos` add up to, when every key of
+    /// its extents is at the inode's own snapshot. With keys at other
+    /// snapshots too, which of them this version of the inode counts
+    /// depends on what its snapshot sees, and it is not judged.
+    fn of_inode(&self, pos: Bpos) -> Option<u64> {
+        let alone = self
+            .snapshots
+            .get(&pos.offset)
+            .is_none_or(|s| s.iter().all(|&x| x == pos.snapshot));
+        alone.then(|| {
+            self.sectors
+                .get(&(pos.offset, pos.snapshot))
+                .copied()
+                .unwrap_or(0)
+        })
+    }
+}
+
+/// An inode's metadata against the rest (#221): a directory's size is 0;
+/// its journal sequence is not past any the journal reaches; and its
+/// sector count is what its extents add up to.
+fn inode_metadata(
+    k: &Bkey,
+    raw: &InodeV3Raw,
+    i: &Inode,
+    extents: &ExtentSums,
+    newest_seq: Option<u64>,
+    r: &mut Report,
+) {
+    if i.is_dir() && i.size != 0 {
+        r.add(
+            "directory_nonzero_i_size",
+            format!("directory {}: size {}", k.pos, i.size),
+        );
+    }
+    if let Some(newest) = newest_seq {
+        if raw.journal_seq > newest.saturating_add(JOURNAL_SEQ_SLACK) {
+            r.add(
+                "inode_journal_seq_in_future",
+                format!(
+                    "inode {}: journal sequence {}, and the newest written is {newest}",
+                    k.pos, raw.journal_seq
+                ),
+            );
+        }
+    }
+    if let Some(want) = extents.of_inode(k.pos) {
+        if i.sectors != want {
+            r.add(
+                "inode_i_sectors_wrong",
+                format!(
+                    "inode {}: {} sectors, and its extents add up to {want}",
+                    k.pos, i.sectors
+                ),
+            );
+        }
+    }
 }
 
 /// Of the versions of one key, the one a snapshot whose chain is `chain`
