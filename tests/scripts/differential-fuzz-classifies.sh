@@ -64,6 +64,7 @@ img="\$1"
 note() { echo "\$(basename "\$img") has \$1k btree buckets and 4.75M marked in bitmap"; echo "  scheduling recovery pass btree_bitmap_gc (49)"; }
 case "\$(head -c 1 "\$img")" in
     c) cat "$tmp/clean.txt"; note 608 ;;
+    k) cat "$tmp/clean.txt" ;;
     r) cat "$tmp/clean.txt"; note 612; echo "checksum error at btree node 12 offset 0x40: repair success (rewriting node)" ;;
     e) echo "  u64s 7 type inode 0:4096:1"; echo "bad btree header at 7/24, fixing"; exit 9 ;;
     s) kill -SEGV \$\$ ;;
@@ -93,6 +94,13 @@ tiny-987654|987654|node|clean||s
 tiny-876543|876543|node|clean||a
 tiny-765432|765432|node|clean||h
 EOF
+
+# A second fixture whose unchanged control prints only a clean image's lines
+# (the reference's first byte `k`): its control is clean, so the replay passes.
+cp "$tmp/fixtures/tiny.img" "$tmp/fixtures/clean.img"
+printf 'k' | dd of="$tmp/fixtures/clean.img" conv=notrunc 2>/dev/null
+printf 'clean-control\tclean.img\t-\tcontrol\ta change\tclean\t\t\n' >>"$tmp/out/cases.tsv"
+: >"$tmp/out/patches/clean-control.patch"
 
 python3 "$PY" judge "$tmp/out" "$tmp/fixtures" --reference "$tmp/reference" --jobs 3 --timeout 2 \
     --keep tiny-1 --keep tiny-987654 --keep tiny-876543 --keep tiny-765432 \
@@ -146,6 +154,11 @@ grep -qx '#! control_clean default.img' "$pin" || fail "the #230 pin does not as
 grep -v '^#! listings' "$tmp/replay2.tsv" | sed 's/repair failure/repair success/' >"$tmp/replay4.tsv"
 python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
     || fail "the replay of a kept case in its class failed: $(cat "$tmp/replay.txt")"
+# The positive case: a control that prints only a clean image's lines is clean.
+cp "$tmp/replay4.tsv" "$tmp/replay5.tsv"
+printf '#! control_clean clean.img\n' >>"$tmp/replay5.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay5.tsv" >"$tmp/replay.txt" 2>&1 \
+    || fail "the replay refused a control that printed only a clean image's lines: $(cat "$tmp/replay.txt")"
 printf '#! control_clean tiny.img\n' >>"$tmp/replay4.tsv"
 python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
     && fail "the replay called a control clean that exits 0 and prints findings"
