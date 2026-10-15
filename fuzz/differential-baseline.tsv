@@ -22,45 +22,31 @@
 # No wildcard entries; new classes, failed controls and crate panics still fail.
 # #221's four inode-metadata classes were removed by #225 once a run at
 # seed 0, 80 cases a fixture, no longer found them.
+# #219's sixteen size and snapshot classes were removed by #226 once a run
+# at seed 0, 80 cases a fixture, no longer found them.
 ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
-ref-only	key-size	invalid bkey in btree_node btree=logged_ops level=#: u#s # type inode_alloc_cursor # len # ver # : m	#219: metadata key invariants
 ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
 ref-only	key-value	check_snapshot_trees...snapshot tree points to missing subvolume:	#220: snapshot metadata relationships
 ref-only	key-inode	check_alloc_info...entry in freespace btree for nonexistant dev:bucket #, fixing	#163: allocation metadata and allowed key types
-ref-only	key-size	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
 ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max len # ver # : nr_in	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#219: metadata key invariants
 ref-only	key-offset	check_alloc_info...bucket incorrectly set in freespace btree	#163: allocation metadata and allowed key types
-ref-only	key-size	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
 ref-only	key-offset	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume pos_min len # ver # : root	#219: metadata key invariants
 ref-only	node	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#163: allocation metadata and allowed key types
-ref-only	key-size	check_allocations...invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # 	#219: metadata key invariants
 ref-only	node	check_allocations...bucket # gen # data type user has wrong stripe_sectors: got #, should be #, fixi	#163: allocation metadata and allowed key types
 ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type xattr # len # ver # : (type #):	#163: allocation metadata and allowed key types
 ref-only	key-size	check_alloc_info...hole in alloc btree missing in freespace btree	#163: allocation metadata and allowed key types
 ref-only	key-value	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type xattr #:u#_max len #	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type accounting # len # ver # : nr_inodes 	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	invalid bkey in btree_node btree=lru level=#: u#s # type set # len # ver #	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=lru level=#: u#s # type set # len # ver #	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type bucket_gens pos_min len # ver # : #	#219: metadata key invariants
 ref-only	key-inode	check_reconcile_work...backpointer should be set in (none)	#163: allocation metadata and allowed key types
 ref-only	key-snapshot	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type lru # len # ver # : idx #	#163: allocation metadata and allowed key types
 ref-only	key-value	accounting_read...accounting underflow for	#163: allocation metadata and allowed key types
-ref-only	key-size	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : inum # # 	#219: metadata key invariants
 ref-only	key-value	check_snapshots...snapshot with bad skiplist pointer #:	#220: snapshot metadata relationships
-ref-only	key-snapshot	invalid bkey in btree_node btree=need_discard level=#: u#s # type set # len # ver #	#219: metadata key invariants
-ref-only	key-size	check_allocations...invalid bkey in btree_node btree=dirents level=#: u#s # type dirent #:u#_max len	#219: metadata key invariants
 ref-only	key-inode	check_reconcile_work...extent should be set in (none)	#163: allocation metadata and allowed key types
 ref-only	key-inode	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume u#_max:# len # ver # : roo	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
 ref-only	key-value	check_snapshots...snapshot points to missing/incorrect tree:	#220: snapshot metadata relationships
-ref-only	key-snapshot	invalid bkey in btree_node btree=freespace level=#: u#s # type set # len # ver #	#219: metadata key invariants
 ref-only	key-offset	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree pos_min len # ver 	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#219: metadata key invariants
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
 
