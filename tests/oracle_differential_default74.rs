@@ -15,7 +15,7 @@
 //! What this does not settle is why the reference passes it: whether its
 //! `fsck -n` reads extent data at all is not assumed here, and is left to the
 //! differential replay, which runs the reference binary.
-#![cfg(feature = "write")]
+#![cfg(feature = "pinned-fixtures")]
 #![allow(dead_code, unused_imports)]
 
 mod common;
@@ -31,6 +31,13 @@ include!("../fuzz/shared/whole_image.rs");
 const SEED: u64 = 74;
 const STORED: u64 = 0x11ba7;
 const COMPUTED: u64 = 0xa2f1ba7;
+
+/// The fixtures artifact the differential reports for default-74 were made
+/// from (CI run 38741040375, artifact 11977252185). Fresh fixtures put seed 74
+/// on other bytes, so the case is judged only over these, which the workflow's
+/// pinned job fetches, checks and records in `.vm-share/fixtures-pin`.
+const FIXTURE_DIGEST: &str =
+    "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e";
 
 /// CRC-32C, the reflected Castagnoli polynomial, one bit at a time from
 /// `init`, with no final inversion.
@@ -51,6 +58,19 @@ fn castagnoli(init: u32, data: &[u8]) -> u32 {
 
 #[test]
 fn the_default_74_extent_data_mismatch_is_in_the_image() {
+    let pin = common::fixtures_dir().join("../fixtures-pin");
+    let recorded = std::fs::read_to_string(&pin).unwrap_or_else(|e| {
+        panic!(
+            "reading {}: {e} (written by differential.yml's pinned job after it checks the artifact digest)",
+            pin.display()
+        )
+    });
+    assert_eq!(
+        recorded.trim(),
+        FIXTURE_DIGEST,
+        "the fixtures are not the artifact default-{SEED} was reported from"
+    );
+
     let path = common::fixture("default.img");
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         panic!(

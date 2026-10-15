@@ -57,6 +57,7 @@ on:
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay.tsv
       - fuzz/shared/**
+      - tests/oracle_differential_default74.rs
 
 concurrency:
   group: differential-${{ github.event.pull_request.number || github.ref }}
@@ -71,6 +72,53 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  # Case default-74's expected checksums belong to one fixtures artifact, so
+  # it is judged only over that artifact, fetched by run, id and digest and
+  # refused on any mismatch. The run fails unless exactly that one test ran
+  # and passed. The artifact expires 2026-10-22; the fetch fails after that.
+  pinned-default74:
+    name: pinned default-74 (#219, fixtures sha256:9f112ded)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PIN_RUN: "38741040375"
+      PIN_ARTIFACT: "11977252185"
+      PIN_DIGEST: "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e"
+      PIN_TARBALL: "27b15c9dffa3240b2ec3f3f3a84221c255c210b157f5888d2285f4e358025869"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Fetch the pinned fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PIN_RUN/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
+          [ -n "$artifact" ] || { echo "run $PIN_RUN has no fixtures artifact (expired?)" >&2; exit 1; }
+          [ "$artifact" = "$PIN_ARTIFACT $PIN_DIGEST" ] || { echo "run $PIN_RUN fixtures artifact is $artifact, not $PIN_ARTIFACT $PIN_DIGEST" >&2; exit 1; }
+          gh run download "$PIN_RUN" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
+          [ "$tarball" = "$PIN_TARBALL" ] || { echo "fixtures.tar.gz is sha256:$tarball, not sha256:$PIN_TARBALL" >&2; exit 1; }
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
+          printf '%s\n' "$PIN_DIGEST" > .vm-share/fixtures-pin
+      - name: The default-74 regression runs over them
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 2>&1 | tee "$RUNNER_TEMP/default74.log"
+          grep -q '^test the_default_74_extent_data_mismatch_is_in_the_image \.\.\. ok$' "$RUNNER_TEMP/default74.log" || { echo "the default-74 test did not run and pass" >&2; exit 1; }
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/default74.log" || { echo "expected exactly one executed test" >&2; exit 1; }
+
   differential:
     name: differential (this crate vs the reference checker, damaged images)
     runs-on: ubuntu-24.04
