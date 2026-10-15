@@ -48,6 +48,8 @@ on:
       - .github/workflows/differential.yml
       - scripts/differential-fuzz.sh
       - scripts/differential-fuzz.py
+      - scripts/select-fixture-run.sh
+      - scripts/select-fixture-run-test.sh
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay.tsv
