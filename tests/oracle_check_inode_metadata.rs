@@ -38,13 +38,15 @@ const COUNTED: [u8; 4] = [
     key_type::INLINE_DATA,
 ];
 
-/// The measured cases' inodes: a directory of the kernel module's written
-/// image, a file of lz4 whose journal sequence was damaged, a file of lz4
-/// and one of aged whose sector counts were.
-const KERNEL_WRITTEN_DIR: u64 = 2_305_843_009_213_693_953;
-const LZ4_SEQ_FILE: u64 = 2_147_483_659;
-const LZ4_SECTORS_FILE: u64 = 2_147_483_933;
-const AGED_SECTORS_FILE: u64 = 2_147_486_117;
+/// The measured cases' inodes, by path: their numbers differ from one
+/// build of the fixtures to the next. A directory of the kernel module's
+/// written image (the one with options), the file of lz4 whose journal
+/// sequence was damaged, and the files of lz4 and aged whose sector counts
+/// were.
+const KERNEL_WRITTEN_DIR: &str = "/optdir";
+const LZ4_SEQ_FILE: &str = "/hello.txt";
+const LZ4_SECTORS_FILE: &str = "/many/file-0271.txt";
+const AGED_SECTORS_FILE: &str = "/many/f02467";
 
 fn scratch(src: &str, test: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -156,7 +158,8 @@ fn every_fixture_with_the_counted_extent_types_is_clean() {
 #[test]
 fn a_directory_with_a_nonzero_size_is_reported() {
     let img = scratch("kernel-written.img", "dir-size-max");
-    rewrite_inode(&img, KERNEL_WRITTEN_DIR, |i| i.size = u64::MAX);
+    let ino = lookup(&img, KERNEL_WRITTEN_DIR);
+    rewrite_inode(&img, ino, |i| i.size = u64::MAX);
     assert_reported(
         &img,
         "directory_nonzero_i_size",
@@ -176,7 +179,8 @@ fn a_directory_with_a_nonzero_size_is_reported() {
 #[test]
 fn an_inode_journal_sequence_in_the_future_is_reported() {
     let img = scratch("lz4.img", "seq-measured");
-    rewrite_inode(&img, LZ4_SEQ_FILE, |i| i.journal_seq = 16_711_691);
+    let ino = lookup(&img, LZ4_SEQ_FILE);
+    rewrite_inode(&img, ino, |i| i.journal_seq = 16_711_691);
     assert_reported(
         &img,
         "inode_journal_seq_in_future",
@@ -219,11 +223,13 @@ fn an_inode_at_a_sequence_the_journal_reaches_is_not_reported() {
 #[test]
 fn an_inode_whose_sectors_disagree_with_its_extents_is_reported() {
     let img = scratch("aged.img", "sectors-max");
-    rewrite_inode(&img, AGED_SECTORS_FILE, |i| i.sectors = u64::MAX);
+    let ino = lookup(&img, AGED_SECTORS_FILE);
+    rewrite_inode(&img, ino, |i| i.sectors = u64::MAX);
     assert_reported(&img, "inode_i_sectors_wrong", "a file of 2^64 - 1 sectors");
 
     let img = scratch("lz4.img", "sectors-48");
-    rewrite_inode(&img, LZ4_SECTORS_FILE, |i| i.sectors = (1 << 48) - 1);
+    let ino = lookup(&img, LZ4_SECTORS_FILE);
+    rewrite_inode(&img, ino, |i| i.sectors = (1 << 48) - 1);
     assert_reported(&img, "inode_i_sectors_wrong", "a file of 2^48 - 1 sectors");
 
     let img = scratch("default.img", "sectors-plus-one");

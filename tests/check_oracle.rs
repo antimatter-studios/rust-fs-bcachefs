@@ -124,10 +124,17 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
     use fs_bcachefs::btree;
     use fs_bcachefs::inode::InodeV3Raw;
     use fs_bcachefs::write::Writer;
+    use fs_bcachefs::Filesystem;
 
-    /// A copy of fixture `src` under /share, with inode `ino` changed by
-    /// `change` through the writer.
-    fn rewritten(name: &str, src: &str, ino: u64, change: impl FnOnce(&mut InodeV3Raw)) -> PathBuf {
+    /// A copy of fixture `src` under /share, with the inode at `path`
+    /// changed by `change` through the writer. By path: inode numbers
+    /// differ from one build of the fixtures to the next.
+    fn rewritten(
+        name: &str,
+        src: &str,
+        path: &str,
+        change: impl FnOnce(&mut InodeV3Raw),
+    ) -> PathBuf {
         assert!(
             Path::new("/usr/local/bin/bcachefs-ref").exists(),
             "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
@@ -135,13 +142,17 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
         std::fs::create_dir_all("/share/check-oracle").unwrap();
         let p = PathBuf::from(format!("/share/check-oracle/{name}.img"));
         std::fs::copy(fixture(src), &p).unwrap();
+        let ino = Filesystem::open(FileDevice::open(&p).unwrap())
+            .unwrap()
+            .lookup(path)
+            .unwrap();
         let dev = FileDevice::open(&p).unwrap();
         let sb = Superblock::read(&dev).unwrap();
         let mut k = btree::walk(&dev, &sb, btree_id::INODES)
             .unwrap()
             .into_iter()
             .find(|k| k.pos.inode == 0 && k.pos.offset == ino && k.key_type == key_type::INODE_V3)
-            .unwrap_or_else(|| panic!("{src}: no inode {ino}"));
+            .unwrap_or_else(|| panic!("{src}: no inode {ino} at {path}"));
         let mut raw = InodeV3Raw::parse(&k.value).unwrap();
         change(&mut raw);
         k.value = raw.encode();
@@ -152,28 +163,25 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
 
     let cases = [
         (
-            rewritten(
-                "inode-dir-size",
-                "kernel-written.img",
-                2_305_843_009_213_693_953,
-                |i| i.size = u64::MAX,
-            ),
+            rewritten("inode-dir-size", "kernel-written.img", "/optdir", |i| {
+                i.size = u64::MAX
+            }),
             "directory_nonzero_i_size",
         ),
         (
-            rewritten("inode-seq-future", "lz4.img", 2_147_483_659, |i| {
+            rewritten("inode-seq-future", "lz4.img", "/hello.txt", |i| {
                 i.journal_seq = 16_711_691
             }),
             "inode_journal_seq_in_future",
         ),
         (
-            rewritten("inode-sectors-max", "aged.img", 2_147_486_117, |i| {
+            rewritten("inode-sectors-max", "aged.img", "/many/f02467", |i| {
                 i.sectors = u64::MAX
             }),
             "inode_i_sectors_wrong",
         ),
         (
-            rewritten("inode-sectors-48", "lz4.img", 2_147_483_933, |i| {
+            rewritten("inode-sectors-48", "lz4.img", "/many/file-0271.txt", |i| {
                 i.sectors = (1 << 48) - 1
             }),
             "inode_i_sectors_wrong",
