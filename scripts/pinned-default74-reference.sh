@@ -19,6 +19,9 @@
 #   evidence.txt          fixture and patch sha256s, statuses, verdicts
 #   kept/default-control/ the reference's whole output on the fixture as is
 #   kept/default-74/      the patch, the mutation and the reference's output
+#   listing/              the reference's `list -b extents` of the control and
+#                         of the exact mutated image, its help, and the lines
+#                         naming the key the pinned test reported ($OURS_LOG)
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -113,3 +116,77 @@ done
 [ "$mutated_status" = "$EXPECT_MUTATED_STATUS" ] ||
     fail "the reference gave default-74 status $mutated_status, not $EXPECT_MUTATED_STATUS"
 echo "default74-reference: the reference's verdicts match on the pinned fixtures"
+
+# The reference's own listing of the extents btree, on the fixture as is and
+# on default-74's exact mutated bytes (the fixture with the kept patch laid
+# over it, as the judge lays it). The key the pinned test reported, in the
+# reference lister's spelling (src/bkey.rs), must be listed in the mutated
+# image carrying the stored checksum the test reported. A crash or hang of
+# the lister keeps its status only, as the judge does.
+[ -n "${OURS_LOG:-}" ] && [ -s "$OURS_LOG" ] || fail "OURS_LOG names no log of the pinned test"
+key_lines="$(grep -E '^default-74: extent_data key [^ ]+ stored 0x[0-9a-f]+ computed 0x[0-9a-f]+$' "$OURS_LOG")"
+[ "$(printf '%s\n' "$key_lines" | grep -c .)" = 1 ] ||
+    fail "the pinned test's log names $(printf '%s\n' "$key_lines" | grep -c .) extent_data keys, not 1"
+key="$(printf '%s\n' "$key_lines" | cut -d' ' -f4)"
+stored="$(printf '%s\n' "$key_lines" | cut -d' ' -f6)"
+stored_hex="${stored#0x}"
+
+mkdir -p "$out/scratch" "$out/listing"
+cp "$fixtures/default.img" "$out/scratch/default-control.img" || fail "the control image was not copied"
+python3 -I - "$fixtures/default.img" "$out/kept/default-74/mutation.patch" "$out/scratch/default-74.img" <<'EOF' ||
+import shutil, struct, sys
+src, patch, dst = sys.argv[1:4]
+shutil.copyfile(src, dst)
+with open(patch, "rb") as p:
+    data = p.read()
+with open(dst, "r+b") as f:
+    i = 0
+    while i < len(data):
+        at, n = struct.unpack_from("<QI", data, i)
+        i += 12
+        f.seek(at)
+        f.write(data[i : i + n])
+        i += n
+EOF
+    fail "the mutated image was not laid from the kept patch"
+control_sha="$(sha256sum "$out/scratch/default-control.img" | cut -d' ' -f1)"
+mutated_sha="$(sha256sum "$out/scratch/default-74.img" | cut -d' ' -f1)"
+[ "$control_sha" != "$mutated_sha" ] || fail "the kept patch leaves default.img unchanged"
+
+docker exec "$ctr" bcachefs list --help >"$out/listing/list-help.txt" 2>&1
+echo "$?" >"$out/listing/list-help.status"
+listing_status() { tr -d '\n' <"$out/listing/$1.status" 2>/dev/null; }
+for cid in default-control default-74; do
+    docker exec "$ctr" timeout -k 5 300 bcachefs list -b extents "/work/scratch/$cid.img" \
+        >"$out/listing/$cid.extents.txt" 2>&1
+    s=$?
+    echo "$s" >"$out/listing/$cid.status"
+    if [ "$s" = 124 ] || [ "$s" -ge 128 ]; then
+        rm -f "$out/listing/$cid.extents.txt"
+        fail "the reference lister crashed or hung on $cid (status $s)"
+    fi
+done
+grep -F -- "$key " "$out/listing/default-control.extents.txt" >"$out/listing/default-control.key.txt"
+grep -F -- "$key " "$out/listing/default-74.extents.txt" >"$out/listing/default-74.key.txt"
+
+{
+    echo "default-74 mutated image sha256:$mutated_sha"
+    echo "default-control image sha256:$control_sha"
+    echo "default-74 ours: extent_data key $key stored $stored ($key_lines)"
+    echo "reference list -b extents status: control $(listing_status default-control), default-74 $(listing_status default-74)"
+    echo "reference listing of $key in default-control:"
+    sed 's/^/  /' "$out/listing/default-control.key.txt"
+    echo "reference listing of $key in default-74:"
+    sed 's/^/  /' "$out/listing/default-74.key.txt"
+} | tee -a "$out/evidence.txt"
+
+for cid in default-control default-74; do
+    [ "$(listing_status "$cid")" = 0 ] ||
+        fail "the reference lister gave $cid status $(listing_status "$cid"); see listing/$cid.extents.txt"
+    [ -s "$out/listing/$cid.extents.txt" ] || fail "the reference lister printed nothing for $cid"
+done
+[ -s "$out/listing/default-74.key.txt" ] ||
+    fail "the reference lists no key $key in default-74's mutated image"
+grep -qiF -- "$stored_hex" "$out/listing/default-74.key.txt" ||
+    fail "the reference lists $key in default-74 without the stored checksum $stored"
+echo "default74-reference: the reference lists $key with stored checksum $stored in image sha256:$mutated_sha"

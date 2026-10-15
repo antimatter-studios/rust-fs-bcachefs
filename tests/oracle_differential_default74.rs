@@ -128,6 +128,11 @@ fn the_default_74_extent_data_mismatch_is_in_the_image() {
             raw.len()
         );
         assert_ne!(independent, STORED);
+        // The pinned job's reference listing is searched for this line's key.
+        eprintln!(
+            "default-{SEED}: extent_data key {} stored {STORED:#x} computed {COMPUTED:#x}",
+            k.pos
+        );
         judged += 1;
     }
     assert_eq!(
