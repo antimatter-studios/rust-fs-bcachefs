@@ -166,8 +166,21 @@ for cid in default-control default-74; do
         fail "the reference lister crashed or hung on $cid (status $s)"
     fi
 done
-grep -F -- "$key " "$out/listing/default-control.extents.txt" >"$out/listing/default-control.key.txt"
-grep -F -- "$key " "$out/listing/default-74.extents.txt" >"$out/listing/default-74.key.txt"
+# A listed key is a header line whose fifth field is the key, exactly, followed by its indented
+# value lines; a key whose text merely contains this one is a different key.
+key_record() {
+    awk -v k="$1" '/^[^ ]/ { inrec = ($1 == "u64s" && $5 == k) } inrec' "$2"
+}
+# The reference prints a crc32c as `csum crc32c <hi>:<lo>` in bare hex; ours prints 0x<hex>.
+# Only a zero high half is the same integer, so anything else is kept verbatim and cannot match.
+record_csum() {
+    awk '{ for (i = 1; i < NF; i++) if ($i == "csum" && $(i + 1) == "crc32c") print $(i + 2) }' "$1" |
+        awk -F: 'NF == 2 && $1 ~ /^0+$/ && $2 ~ /^[0-9a-f]+$/ { v = $2; sub(/^0+/, "", v); print "0x" (v == "" ? "0" : v); next } { print "unparsed:" $0 }'
+}
+computed="$(printf '%s\n' "$key_lines" | cut -d' ' -f8)"
+key_record "$key" "$out/listing/default-control.extents.txt" >"$out/listing/default-control.key.txt"
+key_record "$key" "$out/listing/default-74.extents.txt" >"$out/listing/default-74.key.txt"
+key_record "${key}0" "$out/listing/default-74.extents.txt" >"$out/listing/absent.key.txt"
 
 {
     echo "default-74 mutated image sha256:$mutated_sha"
@@ -187,6 +200,19 @@ for cid in default-control default-74; do
 done
 [ -s "$out/listing/default-74.key.txt" ] ||
     fail "the reference lists no key $key in default-74's mutated image"
-grep -qiF -- "$stored_hex" "$out/listing/default-74.key.txt" ||
-    fail "the reference lists $key in default-74 without the stored checksum $stored"
+[ ! -s "$out/listing/absent.key.txt" ] ||
+    fail "the record extraction matched key ${key}0, which is not $key"
+for cid in default-control default-74; do
+    [ "$(grep -c '^u64s ' "$out/listing/$cid.key.txt")" = 1 ] ||
+        fail "the reference lists key $key other than once in $cid"
+done
+ref_stored="$(record_csum "$out/listing/default-74.key.txt")"
+ref_control="$(record_csum "$out/listing/default-control.key.txt")"
+echo "reference crc32c of $key: default-74 $ref_stored, default-control $ref_control" | tee -a "$out/evidence.txt"
+[ "$ref_stored" = "$stored" ] ||
+    fail "the reference lists $key in default-74 with checksum '$ref_stored', not the stored checksum $stored"
+[ "$ref_control" = "$computed" ] ||
+    fail "the reference lists $key in default-control with checksum '$ref_control', not our computed $computed"
+[ "$ref_control" != "$stored" ] ||
+    fail "the reference lists the stored checksum $stored in the unmutated control too"
 echo "default74-reference: the reference lists $key with stored checksum $stored in image sha256:$mutated_sha"
