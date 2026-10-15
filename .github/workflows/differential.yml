@@ -59,6 +59,7 @@ on:
       - fuzz/shared/**
       - tests/oracle_differential_default74.rs
       - scripts/pinned-default74-reference.sh
+      - scripts/pinned-default74-read-controls.py
 
 concurrency:
   group: differential-${{ github.event.pull_request.number || github.ref }}
@@ -73,6 +74,33 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  # Replay an independently recorded positive observation, then deliberately
+  # damage each observation. A failed read alone is not integrity evidence:
+  # fsck passes both images, but only the exact mutated file must return EIO.
+  default74-read-controls:
+    name: default-74 read evidence rejection controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the digest-pinned independent read observations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact=11996897949
+          digest=cb7c08fc3c89dd4886d7c88af030d68dbbb4588f03d9c1b0981053af3e38836d
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" --jq '.digest')"
+          [ "$actual" = "sha256:$digest" ] || { echo "independent read artifact digest differs: $actual" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/default74-read.zip"
+          echo "$digest  $RUNNER_TEMP/default74-read.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/default74-read.zip" -d "$RUNNER_TEMP/default74-read"
+      - name: The live evidence grader accepts the recorded EIO and rejects invalid observations
+        run: python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default74-read"
+
   # Case default-74's expected checksums belong to one fixtures artifact, so
   # it is judged only over that artifact, fetched by run, id and digest and
   # refused on any mismatch. The run fails unless exactly that one test ran

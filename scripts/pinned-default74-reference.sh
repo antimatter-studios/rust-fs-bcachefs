@@ -29,6 +29,42 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$here" || exit 1
 
+fail() { echo "default74-reference: $*" >&2; exit 1; }
+
+# Replay the same final verdict over kept observations in CI. This entry
+# point deliberately shares the live job's grader; it does not run a tool,
+# mount a filesystem or manufacture an independent reference observation.
+grade_read_evidence() (
+    out="$1"
+    inum="$2"
+    read_status() { tr -d '\n' <"$out/read/$1.read.status" 2>/dev/null; }
+    {
+        echo "reference fusemount help status $(tr -d '\n' <"$out/read/fusemount-help.status")"
+        for cid in default-control default-74; do
+            echo "reference read of inode $inum in $cid: mount status $(tr -d '\n' <"$out/read/$cid.mount.status" 2>/dev/null), path $(head -n 1 "$out/read/$cid.path.txt" 2>/dev/null), read status $(read_status "$cid"), $(cut -d' ' -f1 "$out/read/$cid.read.txt" 2>/dev/null | head -n 1)"
+        done
+    } | tee -a "$out/evidence.txt"
+    [ -s "$out/read/default-control.path.txt" ] ||
+        fail "the reference mount of default-control has no inode $inum (read/default-control.mount.txt)"
+    [ "$(read_status default-control)" = 0 ] ||
+        fail "the reference could not read inode $inum in the unmutated control (status $(read_status default-control))"
+    [ -n "$(read_status default-74)" ] ||
+        fail "the reference made no read of inode $inum in default-74 (read/default-74.mount.txt)"
+    if [ "$(read_status default-74)" != 0 ]; then
+        echo "default74-reference: the reference's read of inode $inum fails on default-74 (status $(read_status default-74)): the changed stored checksum is observable on read"
+    elif [ "$(cut -d' ' -f1 "$out/read/default-74.read.txt")" != "$(cut -d' ' -f1 "$out/read/default-control.read.txt")" ]; then
+        echo "default74-reference: the reference reads inode $inum in default-74 with different bytes from the control"
+    else
+        echo "default74-reference: the reference reads inode $inum in default-74 without error, the control's bytes: the changed stored checksum is not observable on read"
+    fi | tee -a "$out/evidence.txt"
+)
+
+if [ "${1:-}" = --grade-read-evidence ]; then
+    [ "$#" = 3 ] || fail "--grade-read-evidence needs an evidence directory and inode"
+    grade_read_evidence "$2" "$3"
+    exit "$?"
+fi
+
 PIN_DIGEST="${PIN_DIGEST:?PIN_DIGEST names the pinned fixtures artifact digest}"
 # The verdicts the differential report recorded for default-74: the reference
 # passes both the fixture and its mutation. Anything else is a change in the
@@ -38,8 +74,6 @@ EXPECT_MUTATED_STATUS="${EXPECT_MUTATED_STATUS:-0}"
 REF_VERSION=1.39.7
 fixtures="$here/.vm-share/fixtures"
 out="$here/tmp/default74-reference"
-
-fail() { echo "default74-reference: $*" >&2; exit 1; }
 
 missing=
 for tool in docker python3 timeout sha256sum cargo; do
@@ -259,23 +293,4 @@ for cid in default-control default-74; do
         fusermount3 -u "$m" || umount "$m" || true
     ' || true
 done
-read_status() { tr -d '\n' <"$out/read/$1.read.status" 2>/dev/null; }
-{
-    echo "reference fusemount help status $(tr -d '\n' <"$out/read/fusemount-help.status")"
-    for cid in default-control default-74; do
-        echo "reference read of inode $inum in $cid: mount status $(tr -d '\n' <"$out/read/$cid.mount.status" 2>/dev/null), path $(head -n 1 "$out/read/$cid.path.txt" 2>/dev/null), read status $(read_status "$cid"), $(cut -d' ' -f1 "$out/read/$cid.read.txt" 2>/dev/null | head -n 1)"
-    done
-} | tee -a "$out/evidence.txt"
-[ -s "$out/read/default-control.path.txt" ] ||
-    fail "the reference mount of default-control has no inode $inum (read/default-control.mount.txt)"
-[ "$(read_status default-control)" = 0 ] ||
-    fail "the reference could not read inode $inum in the unmutated control (status $(read_status default-control))"
-[ -n "$(read_status default-74)" ] ||
-    fail "the reference made no read of inode $inum in default-74 (read/default-74.mount.txt)"
-if [ "$(read_status default-74)" != 0 ]; then
-    echo "default74-reference: the reference's read of inode $inum fails on default-74 (status $(read_status default-74)): the changed stored checksum is observable on read"
-elif [ "$(cut -d' ' -f1 "$out/read/default-74.read.txt")" != "$(cut -d' ' -f1 "$out/read/default-control.read.txt")" ]; then
-    echo "default74-reference: the reference reads inode $inum in default-74 with different bytes from the control"
-else
-    echo "default74-reference: the reference reads inode $inum in default-74 without error, the control's bytes: the changed stored checksum is not observable on read"
-fi | tee -a "$out/evidence.txt"
+grade_read_evidence "$out" "$inum"
