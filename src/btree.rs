@@ -274,6 +274,17 @@ impl Node {
                 "btree node holds no bset of its own sequence".into(),
             ));
         }
+        // Every sector the parent's pointer counts as written belongs to a
+        // bset of this node. A later bset that is missing, cut short or of
+        // another node's sequence leaves a valid prefix that is not the
+        // whole node, and the reference refuses it (#222).
+        if start < b.len() {
+            return Err(Error::Corrupt(format!(
+                "btree node data missing: expected {} sectors, found {}",
+                b.len().div_ceil(512),
+                start / 512
+            )));
+        }
         // Stable sort by position keeps bset order within a position; the
         // last one (newest bset) wins.
         all.sort_by(|a, b| a.1.pos.cmp(&b.1.pos).then(a.0.cmp(&b.0)));
@@ -876,6 +887,80 @@ mod tests {
                 .keys
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn a_torn_later_bset_cannot_satisfy_the_parents_written_sectors() {
+        for seq in [0, SEQ + 1] {
+            let mut b = node(15);
+            b[528..536].copy_from_slice(&seq.to_le_bytes());
+            assert!(
+                matches!(
+                    Node::parse(&b, MAGIC, 512, Some(SEQ)),
+                    Err(Error::Corrupt(_))
+                ),
+                "a valid first sector must not stand in for two written sectors"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_later_bset_headers_cannot_satisfy_the_parents_written_sectors() {
+        for extra in [1, 16, 39, 512] {
+            let mut b = node(15);
+            b.truncate(512);
+            b.resize(512 + extra, 0);
+            assert!(
+                matches!(
+                    Node::parse(&b, MAGIC, 512, Some(SEQ)),
+                    Err(Error::Corrupt(_))
+                ),
+                "{extra} bytes beyond the first record have no complete matching bset"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_multiple_bsets_and_their_block_padding_are_accepted() {
+        assert_eq!(
+            Node::parse(&node(15), MAGIC, 512, Some(SEQ))
+                .unwrap()
+                .keys
+                .len(),
+            2
+        );
+        let mut b = node(15);
+        b.truncate(512);
+        b[200..].fill(0xff);
+        assert_eq!(
+            Node::parse(&b, MAGIC, 512, Some(SEQ)).unwrap().keys.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_reference_case_requiring_61_sectors_but_finding_37_is_refused() {
+        // Reference-made default.img from CI run 38554478803, its extent
+        // node at byte 3014656, limited to the parent's 61 written sectors.
+        // Differential run 38579070302, seed 42, tore the bset at sector 37
+        // ("node offset 37/61: btree node data missing: expected 61
+        // sectors, found 37"; the reference exited 9). Four bytes of that
+        // bset's sequence stand in for the tear here.
+        let mut b = include_bytes!("../tests/data/default-extents-38554478803.bin").to_vec();
+        let magic = le64(&b, 16);
+        let seq = le64(&b, HEADER_BSET);
+        assert!(!Node::parse(&b, magic, 512, Some(seq))
+            .unwrap()
+            .keys
+            .is_empty());
+        b[18960..18964].copy_from_slice(&0xadd0_4627u32.to_le_bytes());
+        assert!(
+            matches!(
+                Node::parse(&b, magic, 512, Some(seq)),
+                Err(Error::Corrupt(_))
+            ),
+            "the original non-crashing reference case must not be accepted as a valid prefix"
         );
     }
 

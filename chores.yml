@@ -144,6 +144,11 @@ tasks:
     # 38023909461 (#135 on main 03421a9, 2026-10-10): 522 lines / 25027
     # bytes, two lines over 520 once #122's tests landed. 640 lines /
     # 32000 bytes leaves room for the tests the open pull requests add.
+    # MEASURED AGAIN on CI run 38697593937 (#223 at 914f5e9, 2026-10-15):
+    # 722 lines / 35421 bytes, two lines and 421 bytes over 720 / 35000
+    # once #222's tests were added. 800 lines / 40000 bytes leaves room
+    # for the tests the open pull requests add (#226's sixteen alone are
+    # about 22 lines).
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -155,7 +160,7 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 720 35000 -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 800 40000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 105'
