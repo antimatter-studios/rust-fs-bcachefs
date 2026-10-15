@@ -986,9 +986,16 @@ def replay(args):
         if got != (cls, structure, sig):
             failed.append(f"{cid}: expected {(cls, structure, sig)}, got {got}")
             continue
-        if sig == "check:missing_backpointer" and {"backpointers", "extents"} <= set(
-            settings.get("listings", "").split()
-        ):
+        if sig == "check:missing_backpointer":
+            # Without both listings there is nothing to corroborate from, and
+            # a pinned missing_backpointer must not pass uncorroborated.
+            if not {"backpointers", "extents"} <= set(
+                settings.get("listings", "").split()
+            ):
+                failed.append(
+                    f"{cid}: not corroborated: the pin does not list backpointers and extents"
+                )
+                continue
             why = corroborate(kept)
             if why:
                 failed.append(f"{cid}: not corroborated: {why}")
