@@ -79,7 +79,7 @@ States:
 | Additional metadata key lengths, snapshot fields, positions and values | Not supported for 23 measured disagreement classes | | #219 | `differential.yml` report 38579070302 |
 | Snapshot-tree links and skiplist-pointer consistency | Not supported for three measured disagreement classes | | #220 | `differential.yml` report 38579070302 |
 | Directory size, inode journal sequence and sector-count consistency | Not supported for four measured disagreement classes | | #221 | `differential.yml` report 38579070302 |
-| A node's written sectors checked against its parent's required coverage | Not supported for one measured torn-node class | | #222 | `differential.yml` report 38579070302 |
+| A btree node whose bsets end before the sectors its parent's pointer counts as written (a torn or missing later bset), refused as corrupt by the reader and the checker | Refused | Unreleased (#223) | #222 | `oracle_node_written.rs`, `btree.rs` unit tests |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)

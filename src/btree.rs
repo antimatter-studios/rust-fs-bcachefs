@@ -274,6 +274,17 @@ impl Node {
                 "btree node holds no bset of its own sequence".into(),
             ));
         }
+        // Every sector the parent's pointer counts as written belongs to a
+        // bset of this node. A later bset that is missing, cut short or of
+        // another node's sequence leaves a valid prefix that is not the
+        // whole node, and the reference refuses it (#222).
+        if start < b.len() {
+            return Err(Error::Corrupt(format!(
+                "btree node data missing: expected {} sectors, found {}",
+                b.len().div_ceil(512),
+                start / 512
+            )));
+        }
         // Stable sort by position keeps bset order within a position; the
         // last one (newest bset) wins.
         all.sort_by(|a, b| a.1.pos.cmp(&b.1.pos).then(a.0.cmp(&b.0)));
