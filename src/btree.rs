@@ -880,6 +880,55 @@ mod tests {
     }
 
     #[test]
+    fn a_torn_later_bset_cannot_satisfy_the_parents_written_sectors() {
+        for seq in [0, SEQ + 1] {
+            let mut b = node(15);
+            b[528..536].copy_from_slice(&seq.to_le_bytes());
+            assert!(
+                matches!(
+                    Node::parse(&b, MAGIC, 512, Some(SEQ)),
+                    Err(Error::Corrupt(_))
+                ),
+                "a valid first sector must not stand in for two written sectors"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_later_bset_headers_cannot_satisfy_the_parents_written_sectors() {
+        for extra in [1, 16, 39, 512] {
+            let mut b = node(15);
+            b.truncate(512);
+            b.resize(512 + extra, 0);
+            assert!(
+                matches!(
+                    Node::parse(&b, MAGIC, 512, Some(SEQ)),
+                    Err(Error::Corrupt(_))
+                ),
+                "{extra} bytes beyond the first record have no complete matching bset"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_multiple_bsets_and_their_block_padding_are_accepted() {
+        assert_eq!(
+            Node::parse(&node(15), MAGIC, 512, Some(SEQ))
+                .unwrap()
+                .keys
+                .len(),
+            2
+        );
+        let mut b = node(15);
+        b.truncate(512);
+        b[200..].fill(0xff);
+        assert_eq!(
+            Node::parse(&b, MAGIC, 512, Some(SEQ)).unwrap().keys.len(),
+            1
+        );
+    }
+
+    #[test]
     fn an_ignored_bset_is_still_checksummed() {
         let mut b = node(15);
         b[560] ^= 1; // inside the second bset's key (its record spans 512..592)
