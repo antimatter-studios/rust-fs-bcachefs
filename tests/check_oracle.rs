@@ -217,7 +217,7 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
 fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
     use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
     use fs_bcachefs::btree;
-    use fs_bcachefs::inode::Dirent;
+    use fs_bcachefs::inode::{Dirent, InodeV3Raw, FIELD_NAMES};
     use fs_bcachefs::write::Writer;
 
     /// A copy under /share, removed when dropped, pass or panic.
@@ -253,6 +253,29 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
             value: Vec::new(),
             ..d.clone()
         };
+        // The file's inode names the slot its dirent sits in; it follows
+        // the move, so the only damage is where the dirent now hashes.
+        let target = Dirent::from_key(&d).unwrap().inum;
+        let mut ino = {
+            let dev = FileDevice::open(&img.0).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            btree::walk(&dev, &sb, btree_id::INODES)
+                .unwrap()
+                .into_iter()
+                .find(|k| {
+                    k.pos.inode == 0 && k.pos.offset == target && k.key_type == key_type::INODE_V3
+                })
+                .expect("hello.txt's inode")
+        };
+        let mut raw = InodeV3Raw::parse(&ino.value).unwrap();
+        let at = 2 * 4 + FIELD_NAMES.iter().position(|&n| n == "dir_offset").unwrap();
+        assert_eq!(
+            raw.varints.get(at).copied(),
+            Some(d.pos.offset),
+            "hello.txt's inode does not name its dirent's slot"
+        );
+        raw.varints[at] = d.pos.offset + by;
+        ino.value = raw.encode();
         let moved = Bkey {
             pos: Bpos {
                 offset: d.pos.offset + by,
@@ -262,6 +285,7 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
         };
         let mut w = Writer::open(FileDevice::open_rw(&img.0).unwrap()).unwrap();
         w.insert(btree_id::DIRENTS, vec![at_slot, moved]).unwrap();
+        w.insert(btree_id::INODES, vec![ino]).unwrap();
         drop(w);
         img
     }
