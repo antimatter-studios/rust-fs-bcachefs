@@ -13,6 +13,8 @@
 #    uses (nothing is built, no source is fetched).
 #    scripts/differential-fuzz.py lays each case over a sparse copy of its
 #    fixture and runs the reference checker, `fsck -n`, under a time limit.
+#    An optional same-run independent native-read proof is strictly graded
+#    and bound to both physical image digests and the exact extent finding.
 # 3. CLASSIFY. Each case is both clean, both found something, found by the
 #    reference alone, found by this crate alone, a crash or hang of the
 #    reference, or a panic here. Each disagreement is keyed by its direction,
@@ -91,6 +93,10 @@ docker exec -e REF_VERSION="$REF_VERSION" "$ctr" bash -euc '
 # reference output are kept under $out/kept when judged without a crash.
 keep=()
 for id in ${DIFFERENTIAL_KEEP:-}; do keep+=(--keep "$id"); done
-python3 scripts/differential-fuzz.py judge "$out" "$fixtures" --container "$ctr" --jobs "$JOBS" --timeout 60 --version "$REF_VERSION" ${keep[@]+"${keep[@]}"}
+read_evidence=()
+if [ -n "${DIFFERENTIAL_READ_EVIDENCE:-}" ]; then
+    read_evidence=(--read-evidence "$DIFFERENTIAL_READ_EVIDENCE")
+fi
+python3 scripts/differential-fuzz.py judge "$out" "$fixtures" --container "$ctr" --jobs "$JOBS" --timeout 60 --version "$REF_VERSION" ${read_evidence[@]+"${read_evidence[@]}"} ${keep[@]+"${keep[@]}"}
 python3 scripts/differential-fuzz.py classify "$out" --baseline fuzz/differential-baseline.tsv \
-    --report "$out/report.md" --version "$REF_VERSION"
+    --report "$out/report.md" --version "$REF_VERSION" ${read_evidence[@]+"${read_evidence[@]}"}

@@ -61,6 +61,7 @@ on:
       - scripts/pinned-default74-reference.sh
       - scripts/pinned-default74-read-controls.py
       - scripts/pinned-default74-observation-controls.sh
+      - scripts/differential-read-classification-controls.py
 
 concurrency:
   group: differential-${{ github.event.pull_request.number || github.ref }}
@@ -170,10 +171,12 @@ jobs:
             tmp/default74-reference/kept/
             tmp/default74-reference/listing/
             tmp/default74-reference/read/
+            tmp/default74-reference/read-proof.json
           if-no-files-found: error
           retention-days: 30
 
   differential:
+    needs: [pinned-default74, default74-read-controls]
     name: differential (this crate vs the reference checker, damaged images)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -197,6 +200,13 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/default74-fixtures.zip"
           python3 tests/default74_native_proof.py "$DIFFERENTIAL_NATIVE74_ARCHIVE" "$RUNNER_TEMP/default74-fixtures.zip"
           echo "DIFFERENTIAL_NATIVE74_ARCHIVE=$DIFFERENTIAL_NATIVE74_ARCHIVE" >> "$GITHUB_ENV"
+      - name: Fetch the same-run independently graded physical-image read proof
+        uses: actions/download-artifact@v4
+        with:
+          name: default74-reference
+          path: ${{ runner.temp }}/native-read-proof
+      - name: Classification controls retain the existing classes
+        run: bash tests/scripts/differential-fuzz-classifies.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -263,6 +273,7 @@ jobs:
       # day's number puts it, so no two nights judge the same cases.
       - name: chore fuzz:differential
         env:
+          DIFFERENTIAL_READ_EVIDENCE: ${{ runner.temp }}/native-read-proof
           CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
           FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed }}
           EVENT: ${{ github.event_name }}

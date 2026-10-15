@@ -342,4 +342,7 @@ for cid in default-control default-74; do
     s=$?
     [ "$s" = 0 ] || fail "the reference read operation failed before grading (status $s)"
 done
-grade_read_evidence "$out" "$inum"
+grade_read_evidence "$out" "$inum" || fail "the strict native read proof failed"
+python3 -I scripts/differential-fuzz.py export-read-proof "$out" \
+    "$out/scratch/default-control.img" "$out/scratch/default-74.img" || fail "the native read manifest was not exported"
+python3 scripts/differential-read-classification-controls.py "$out" || fail "the bound-read classification controls failed"
