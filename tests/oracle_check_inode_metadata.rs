@@ -57,10 +57,13 @@ fn scratch(src: &str, test: &str) -> std::path::PathBuf {
     img
 }
 
+/// The keys of btree `id`, through the journal where the image needs it
+/// (aged-unclean), as the checker reads them.
 fn keys(img: &std::path::Path, id: u8) -> Vec<Bkey> {
     let dev = FileDevice::open(img).unwrap();
     let sb = Superblock::read(&dev).unwrap();
-    btree::walk(&dev, &sb, id).unwrap()
+    let replay = btree::journal_for(&dev, &sb).unwrap();
+    btree::walk_replayed(&dev, &sb, id, replay.as_ref()).unwrap()
 }
 
 fn lookup(img: &std::path::Path, path: &str) -> u64 {
