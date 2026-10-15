@@ -122,6 +122,8 @@ jobs:
       # The reference checker's own verdict on the same bytes: `fsck -n` on
       # the fixture unchanged and on default-74's mutation, in the
       # differential harness's container, failed unless each is expected.
+      # Then the reference reads the reported key's file through its own FUSE
+      # mount on both images, recording each read's status and hash.
       - name: The reference's verdicts on default-74
         env:
           OURS_LOG: ${{ runner.temp }}/default74.log
@@ -136,6 +138,7 @@ jobs:
             tmp/default74-reference/evidence.txt
             tmp/default74-reference/kept/
             tmp/default74-reference/listing/
+            tmp/default74-reference/read/
           if-no-files-found: error
           retention-days: 30
 
