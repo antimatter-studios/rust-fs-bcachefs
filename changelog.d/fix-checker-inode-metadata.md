@@ -4,3 +4,7 @@
   is not 0, an inode whose journal sequence is far past the newest the
   journal wrote, and an inode whose sector count is not what its extents
   add up to are reported rather than passed as clean.
+- **The checker reports a dirent away from its hash slot.** An entry that
+  a lookup from its name's hash slot cannot reach, because an empty slot
+  lies between, is reported as a hash table key at the wrong offset;
+  entries displaced past a collision or a whiteout stay valid.

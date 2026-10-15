@@ -403,7 +403,41 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             };
             let name = String::from_utf8_lossy(&d.name);
             match inode_seen(&c, slot.0) {
-                Some(dir) if dir.is_dir() => {}
+                Some(dir) if dir.is_dir() => {
+                    // Reachable from its name's hash slot along a run of
+                    // taken slots, as a lookup walks it (#221, src/fs.rs):
+                    // a collision or a whiteout between is valid, an empty
+                    // slot is not.
+                    let key = match crate::inode::dirent_folded_name(k) {
+                        Ok(Some(f)) => f,
+                        _ => d.name.clone(),
+                    };
+                    if let Some(at) = crate::inode::name_hash(dir.hash_type(), dir.hash_seed, &key)
+                    {
+                        let off = slot.1;
+                        let taken = |o: u64| {
+                            dirent_keys
+                                .get(&(slot.0, o))
+                                .and_then(|ks| nearest(&c, ks))
+                                .is_some_and(|k| {
+                                    matches!(k.key_type, key_type::DIRENT | key_type::HASH_WHITEOUT)
+                                })
+                        };
+                        let reachable = at <= off
+                            && off - at <= dirent_keys.len() as u64
+                            && (at..off).all(taken);
+                        if !reachable {
+                            add(
+                                "hash_table_key_wrong_offset",
+                                format!(
+                                    "dirent {name:?} in {} is at offset {off}, and its name \
+                                     hashes to {at} with an empty slot between",
+                                    d.dir
+                                ),
+                            );
+                        }
+                    }
+                }
                 Some(_) => add(
                     "dirent_in_non_directory",
                     format!("{name:?} in inode {}", d.dir),
