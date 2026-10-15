@@ -75,6 +75,11 @@ States:
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | 0.4.0 (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | 0.4.2 | #163 | `oracle_check_namespace.rs` |
 | `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent, or a piece of an uncompressed checksummed region, with no backpointer at its device sector plus its offset into the region; a bucket holding written data whose alloc key gives it another data type than user; on one device, a partly filled bucket with no fragmentation lru entry, an lru entry no bucket's fill gives, a bucket waiting for discard with no need_discard key, a need_discard key no such bucket gives, and the device's accounting of a data type out of step with its alloc keys | Supported | 0.4.2 | #163 | `oracle_check_alloc.rs` |
+| Differential damaged-image comparison with the reference checker | Partial: exact known defects tracked; kernel as second judge remains | Unreleased (#217) | #164 | `differential.yml`, `tests/scripts/differential-fuzz-classifies.sh` |
+| Additional metadata key lengths, snapshot fields, positions and values | Not supported for 23 measured disagreement classes | | #219 | `differential.yml` report 38579070302 |
+| Snapshot-tree links and skiplist-pointer consistency | Not supported for three measured disagreement classes | | #220 | `differential.yml` report 38579070302 |
+| Directory size, inode journal sequence and sector-count consistency | Not supported for four measured disagreement classes | | #221 | `differential.yml` report 38579070302 |
+| A node's written sectors checked against its parent's required coverage | Not supported for one measured torn-node class | | #222 | `differential.yml` report 38579070302 |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)

@@ -1,0 +1,68 @@
+# The known disagreements between this crate and the reference checker on
+# damaged images (#164): scripts/differential-fuzz.sh fails on any class of
+# disagreement not listed here. One class a line, tab-separated:
+#
+#   direction  structure  signature  note
+#
+# - direction: `ref-only` (the reference found something this crate called
+#   clean) or `ours-only` (this crate found something the reference did not).
+# - structure: what the case changed (`node`, `node-torn`, `jset`,
+#   `superblock`, `key-<field>`, ...), or `*` for any.
+# - signature: what was found, as the run's report prints it: the
+#   reference's first finding with its numbers folded to `#` for ref-only,
+#   this crate's finding for ours-only.
+# - note: the issue that tracks it, or why it is not a defect.
+#
+# A line is added only from a measured run's report, never by guess. When a
+# fix removes a class, its line goes in the same pull request.
+
+# Measured at 034ded6 in CI run 38579070302, reference checker 1.39.7.
+# 648 cases, eight clean controls: 97 reference-only cases in 46 classes.
+# Each exact class below is an unresolved checker defect tracked by its issue.
+# No wildcard entries; new classes, failed controls and crate panics still fail.
+ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
+ref-only	key-size	invalid bkey in btree_node btree=logged_ops level=#: u#s # type inode_alloc_cursor # len # ver # : m	#219: metadata key invariants
+ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#163: allocation metadata and allowed key types
+ref-only	key-snapshot	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
+ref-only	key-value	check_snapshot_trees...snapshot tree points to missing subvolume:	#220: snapshot metadata relationships
+ref-only	key-inode	check_alloc_info...entry in freespace btree for nonexistant dev:bucket #, fixing	#163: allocation metadata and allowed key types
+ref-only	key-size	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
+ref-only	node-torn	btree node read error at btree extents level #	#222: torn node written-sector coverage
+ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
+ref-only	key-type	invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max len # ver # : nr_in	#163: allocation metadata and allowed key types
+ref-only	key-snapshot	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#219: metadata key invariants
+ref-only	key-offset	check_alloc_info...bucket incorrectly set in freespace btree	#163: allocation metadata and allowed key types
+ref-only	key-size	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
+ref-only	key-size	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
+ref-only	key-offset	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume pos_min len # ver # : root	#219: metadata key invariants
+ref-only	node	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#163: allocation metadata and allowed key types
+ref-only	key-size	check_allocations...invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # 	#219: metadata key invariants
+ref-only	node	check_inodes...inode journal seq in future (currently at #)	#221: inode metadata consistency
+ref-only	node	check_allocations...bucket # gen # data type user has wrong stripe_sectors: got #, should be #, fixi	#163: allocation metadata and allowed key types
+ref-only	node	check_extents...incorrect i_sectors: got #, should be #	#221: inode metadata consistency
+ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type xattr # len # ver # : (type #):	#163: allocation metadata and allowed key types
+ref-only	key-value	check_extents...incorrect i_sectors: got #, should be #	#221: inode metadata consistency
+ref-only	key-size	check_alloc_info...hole in alloc btree missing in freespace btree	#163: allocation metadata and allowed key types
+ref-only	key-value	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type xattr #:u#_max len #	#219: metadata key invariants
+ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type accounting # len # ver # : nr_inodes 	#163: allocation metadata and allowed key types
+ref-only	key-snapshot	invalid bkey in btree_node btree=lru level=#: u#s # type set # len # ver #	#219: metadata key invariants
+ref-only	key-size	invalid bkey in btree_node btree=lru level=#: u#s # type set # len # ver #	#219: metadata key invariants
+ref-only	key-size	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type bucket_gens pos_min len # ver # : #	#219: metadata key invariants
+ref-only	key-inode	check_reconcile_work...backpointer should be set in (none)	#163: allocation metadata and allowed key types
+ref-only	key-snapshot	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
+ref-only	key-type	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type lru # len # ver # : idx #	#163: allocation metadata and allowed key types
+ref-only	key-value	accounting_read...accounting underflow for	#163: allocation metadata and allowed key types
+ref-only	key-size	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : inum # # 	#219: metadata key invariants
+ref-only	key-value	check_snapshots...snapshot with bad skiplist pointer #:	#220: snapshot metadata relationships
+ref-only	key-snapshot	invalid bkey in btree_node btree=need_discard level=#: u#s # type set # len # ver #	#219: metadata key invariants
+ref-only	key-size	check_allocations...invalid bkey in btree_node btree=dirents level=#: u#s # type dirent #:u#_max len	#219: metadata key invariants
+ref-only	key-inode	check_reconcile_work...extent should be set in (none)	#163: allocation metadata and allowed key types
+ref-only	key-inode	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume u#_max:# len # ver # : roo	#219: metadata key invariants
+ref-only	key-size	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
+ref-only	key-value	check_snapshots...snapshot points to missing/incorrect tree:	#220: snapshot metadata relationships
+ref-only	key-snapshot	invalid bkey in btree_node btree=freespace level=#: u#s # type set # len # ver #	#219: metadata key invariants
+ref-only	key-offset	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree pos_min len # ver 	#219: metadata key invariants
+ref-only	key-size	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#219: metadata key invariants
+ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
+ref-only	key-value	check_inodes...directory with nonzero i_size	#221: inode metadata consistency
+ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants

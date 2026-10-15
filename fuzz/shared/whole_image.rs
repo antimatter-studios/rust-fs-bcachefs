@@ -75,6 +75,15 @@ impl Overlay {
         out
     }
 
+    /// Every page laid over the fixture, `(byte offset, bytes)`, in order:
+    /// a case's change and whatever the writer wrote, which is all that
+    /// differs from the fixture (the differential harness hands exactly
+    /// these to the reference checker, laid over its own copy).
+    pub fn changed_pages(&self) -> Vec<(u64, Vec<u8>)> {
+        let pages = self.pages.lock().unwrap_or_else(|p| p.into_inner());
+        pages.iter().map(|(&p, b)| (p * WI_PAGE, b.clone())).collect()
+    }
+
     /// The reads logged so far.
     pub fn reads(&self) -> Vec<(u64, usize)> {
         match &self.log {
@@ -190,8 +199,20 @@ pub fn workload(dev: &std::sync::Arc<Overlay>, write: bool) -> Reach {
     reach
 }
 
-fn wi_walk<D: fs_core::BlockRead>(fs: &fs_bcachefs::Filesystem<D>) {
-    let _ = fs.usage();
+/// The bounded walk. Every error is an answer and the walk goes on past
+/// it; the first is returned, with the call that met it, for a caller
+/// that keeps a verdict (the differential harness: an image whose walk
+/// meets an error is one this crate found something wrong with).
+pub fn wi_walk<D: fs_core::BlockRead>(
+    fs: &fs_bcachefs::Filesystem<D>,
+) -> Option<(&'static str, fs_bcachefs::Error)> {
+    let mut first: Option<(&'static str, fs_bcachefs::Error)> = None;
+    let mut note = |call: &'static str, e: fs_bcachefs::Error| {
+        first.get_or_insert((call, e));
+    };
+    if let Err(e) = fs.usage() {
+        note("usage", e);
+    }
     let mut queue = vec![String::from("/")];
     let mut seen = 0;
     while let Some(path) = queue.pop() {
@@ -199,12 +220,26 @@ fn wi_walk<D: fs_core::BlockRead>(fs: &fs_bcachefs::Filesystem<D>) {
             break;
         }
         seen += 1;
-        let Ok(n) = fs.resolve(&path) else { continue };
-        let _ = fs.xattrs_at(n);
-        let Ok(i) = fs.inode_at(n) else { continue };
+        let n = match fs.resolve(&path) {
+            Ok(n) => n,
+            Err(e) => {
+                note("resolve", e);
+                continue;
+            }
+        };
+        if let Err(e) = fs.xattrs_at(n) {
+            note("xattrs", e);
+        }
+        let i = match fs.inode_at(n) {
+            Ok(i) => i,
+            Err(e) => {
+                note("inode", e);
+                continue;
+            }
+        };
         match i.mode & 0o170000 {
-            0o040000 => {
-                if let Ok(entries) = fs.readdir_at(n) {
+            0o040000 => match fs.readdir_at(n) {
+                Ok(entries) => {
                     for e in entries.iter().take(WI_WALK_ENTRIES) {
                         if let Ok(name) = std::str::from_utf8(&e.name) {
                             let sep = if path.ends_with('/') { "" } else { "/" };
@@ -212,14 +247,19 @@ fn wi_walk<D: fs_core::BlockRead>(fs: &fs_bcachefs::Filesystem<D>) {
                         }
                     }
                 }
-            }
+                Err(e) => note("readdir", e),
+            },
             0o100000 | 0o120000 => {
-                let _ = fs.read_range_at(n, 0, i.size.min(64 << 10) as usize);
-                let _ = fs.read_range_at(n, i.size / 2, 4096);
+                for (at, len) in [(0, i.size.min(64 << 10) as usize), (i.size / 2, 4096)] {
+                    if let Err(e) = fs.read_range_at(n, at, len) {
+                        note("read", e);
+                    }
+                }
             }
             _ => {}
         }
     }
+    first
 }
 
 fn wi_writes(dev: &std::sync::Arc<Overlay>) {

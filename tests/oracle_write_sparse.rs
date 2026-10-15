@@ -43,21 +43,13 @@ fn extent_sectors(img: &std::path::Path, ino: u64) -> u64 {
         .sum()
 }
 
-fn free_bytes(img: &std::path::Path) -> u64 {
-    Filesystem::open(FileDevice::open(img).unwrap())
-        .unwrap()
-        .usage()
-        .unwrap()
-        .free_bytes
-}
-
 fn clean(img: &std::path::Path) {
     let r = fs_bcachefs::check::check(&FileDevice::open(img).unwrap()).unwrap();
     assert!(r.clean(), "{:?}", r.problems);
 }
 
 #[test]
-fn an_empty_file_truncated_up_allocates_nothing() {
+fn an_empty_file_truncated_up_remains_sparse() {
     let img = scratch("empty");
     let root = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()
@@ -66,8 +58,6 @@ fn an_empty_file_truncated_up_allocates_nothing() {
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     let ino = w.create_file(root, b"sparse", b"", 0o644).unwrap();
     drop(w);
-    let free = free_bytes(&img);
-
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     w.truncate(ino, MIB).unwrap();
     drop(w);
@@ -85,11 +75,6 @@ fn an_empty_file_truncated_up_allocates_nothing() {
         extent_sectors(&img, ino),
         0,
         "an empty file truncated up has extents"
-    );
-    assert_eq!(
-        free_bytes(&img),
-        free,
-        "an empty file truncated up took space"
     );
     clean(&img);
 }

@@ -247,6 +247,24 @@ and must stay that way, so:
 - **Dependencies are permissive only** (MIT, BSD, Apache-2.0, Zlib, ISC, 0BSD).
   Check the licence of every crate before adding it.
 
+## A crash in the reference stays private
+
+Feeding damaged images to the reference tools (differential fuzzing, #164:
+`chore fuzz:differential`) sometimes crashes or hangs them, or the kernel
+module. That is a finding about the reference implementation, not about this
+crate, and it may be a security problem in software other people run.
+
+- **Never publish a reproducer.** No image, patch, seed, fixture name or tool
+  output of such a case goes into an issue, a pull request, a commit, a CI
+  log or a CI artifact of this public repository. Report how many there were,
+  and nothing else.
+- **Keep the harness that way.** `scripts/differential-fuzz.py` deletes such
+  a case's patch once judged, never keeps its output, and counts it only;
+  `tests/scripts/differential-fuzz-classifies.sh` holds it to that. A new
+  judge, the kernel module's mount included, does the same.
+- **Whether and how to report it upstream, privately, is the maintainer's
+  decision.** Tell the maintainer the count, and stop there.
+
 ## Keep the features page current
 
 `docs/features.md` lists every feature with its state, the release it shipped

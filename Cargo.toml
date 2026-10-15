@@ -26,6 +26,12 @@ name = "rust-fs-bcachefs"
 path = "src/cli/main.rs"
 required-features = ["cli"]
 
+# Differential fuzzing's emitting half (#164, scripts/differential-fuzz.sh):
+# its cases change keys through the writer, as the whole-image gate's do.
+[[example]]
+name = "differential"
+required-features = ["write"]
+
 [features]
 # Writing (src/write.rs): off by default, and nothing in the default build
 # can write to a device.
