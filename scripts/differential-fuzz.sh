@@ -87,6 +87,10 @@ docker exec -e REF_VERSION="$REF_VERSION" "$ctr" bash -euc '
     exit 1
 }
 
-python3 scripts/differential-fuzz.py judge "$out" "$fixtures" --container "$ctr" --jobs "$JOBS" --timeout 60
+# DIFFERENTIAL_KEEP names cases (space-separated) whose patch, mutation and
+# reference output are kept under $out/kept when judged without a crash.
+keep=()
+for id in ${DIFFERENTIAL_KEEP:-}; do keep+=(--keep "$id"); done
+python3 scripts/differential-fuzz.py judge "$out" "$fixtures" --container "$ctr" --jobs "$JOBS" --timeout 60 ${keep[@]+"${keep[@]}"}
 python3 scripts/differential-fuzz.py classify "$out" --baseline fuzz/differential-baseline.tsv \
     --report "$out/report.md" --version "$REF_VERSION"

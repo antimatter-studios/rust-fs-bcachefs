@@ -1,0 +1,13 @@
+# The pinned differential replay (#227): three non-crash disagreement classes
+# first measured in PR CI run 38718924048. Each is replayed from these exact
+# fixtures, its patch, mutation and reference output kept as an artifact, and
+# the run fails unless every case lands in exactly its class here. The fixtures
+# artifact expires 2026-10-22; after that the replay fails at the fetch.
+#! fixture_run 38714446443
+#! fixture_digest sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c
+#! cases 80
+#! first_seed 0
+# fixtures artifact 11963530352, from main at b23f1a198d3a7c9855f52f48ad84a88b85f2b7fc
+kernel-37	ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#219: metadata key invariants
+kernel-53	ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
+kernel-rootsnap-0	ref-only	key-offset	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#163: allocation metadata and allowed key types

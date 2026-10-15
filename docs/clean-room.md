@@ -1034,8 +1034,20 @@ one whose artifact digest differs. The three classes above reproduce with:
 
 Ordinary runs keep judging the newest green main run's fixtures, so new
 findings still surface. The artifact expires 2026-10-22T10:01:45Z (seven-day
-retention); the
-mutated images themselves are not kept, by the disclosure rule above.
+retention).
+
+A replay dispatch (`gh workflow run differential.yml -f replay=true`) takes
+the fixture run, digest, case count and seed from
+`fuzz/differential-replay.tsv`, which names the three cases (`kernel-37`,
+`kernel-53`, `kernel-rootsnap-0`) and each one's exact class. The judge keeps
+those cases only (`--keep`; no case is kept by default): each case's mutation
+patch, its `cases.tsv` row with this crate's verdict, and the reference's
+whole output. It keeps them only when the reference judged the case without
+crashing or hanging, so no crash or hang is kept, even as an artifact. The
+replay step then fails unless every named case was kept and lands in exactly
+its class. The kept cases are uploaded as the `differential-replay` artifact
+for 30 days. The fixture image plus the patch rebuilds the mutated image, so
+whole images are not stored.
 
 ## Confirmation
 

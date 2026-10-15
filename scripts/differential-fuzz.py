@@ -38,8 +38,10 @@ nothing that would reproduce it.
 
 import argparse
 import concurrent.futures
+import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -200,7 +202,24 @@ def judge_one(case, out, chunks, size, args):
     if text is not None:
         with open(ref + ".txt", "w", encoding="utf-8") as f:
             f.write(text)
+        if cid in args.keep:
+            keep_case(case, out, patch, status, text)
     return status
+
+
+def keep_case(case, out, patch, status, text):
+    """One named case, kept so its disagreement can be replayed: the
+    patch that damages the fixture, the mutation and this crate's verdict
+    from cases.tsv, and the reference's whole output. Only a case the
+    reference judged without crashing reaches here (DISCLOSURE above)."""
+    kept = os.path.join(out, "kept", case["id"])
+    os.makedirs(kept, exist_ok=True)
+    shutil.copyfile(patch, os.path.join(kept, "mutation.patch"))
+    with open(os.path.join(kept, "case.json"), "w", encoding="utf-8") as f:
+        json.dump(dict(case, reference_status=status), f, indent=2)
+        f.write("\n")
+    with open(os.path.join(kept, "reference.txt"), "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def judge(args):
@@ -386,6 +405,16 @@ def example(case, ref):
     return out
 
 
+def verdict_class(case, ref):
+    theirs, ours = ref["verdict"] == "found", case["ours"] == "found"
+    return {
+        (False, False): "both-clean",
+        (True, True): "both-found",
+        (True, False): "ref-only",
+        (False, True): "ours-only",
+    }[(theirs, ours)]
+
+
 def classify(args):
     out = args.out
     cases = read_cases(out)
@@ -409,13 +438,7 @@ def classify(args):
             # Counted, never named, even for a fixture unchanged.
             controls_crashed += case["structure"] == "control"
             continue
-        theirs, ours = ref["verdict"] == "found", case["ours"] == "found"
-        cls = {
-            (False, False): "both-clean",
-            (True, True): "both-found",
-            (True, False): "ref-only",
-            (False, True): "ours-only",
-        }[(theirs, ours)]
+        cls = verdict_class(case, ref)
         counts[cls] += 1
         if case["structure"] == "control" and cls != "both-clean":
             controls_bad.append(case)
@@ -556,6 +579,73 @@ def classify(args):
     return 0
 
 
+def read_replay(path):
+    """The pinned replay: `# key value` settings, then one
+    `case-id<TAB>class<TAB>structure<TAB>signature<TAB>note` per case."""
+    settings, expect = {}, []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if line.startswith("#!"):
+                key, _, value = line[2:].strip().partition(" ")
+                settings[key] = value.strip()
+                continue
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 4 or parts[1] not in ("ref-only", "ours-only"):
+                raise SystemExit(
+                    f"{path}:{n}: not `case-id<TAB>ref-only|ours-only<TAB>structure<TAB>signature[<TAB>note]`"
+                )
+            expect.append(tuple(parts[:4]))
+    return settings, expect
+
+
+def replay(args):
+    """Each pinned case was kept and still lands in exactly its expected
+    class: absent, crashed, unjudged or reclassified is a failure."""
+    settings, expect = read_replay(args.expect)
+    if args.settings:
+        for key in ("fixture_run", "fixture_digest", "cases", "first_seed"):
+            if key not in settings:
+                raise SystemExit(f"{args.expect}: no `#! {key}` line")
+            print(f"{key}={settings[key]}")
+        print("keep=" + " ".join(cid for cid, *_ in expect))
+        return 0
+    out = args.out
+    cases = {c["id"]: c for c in read_cases(out)}
+    normal = controls(out, list(cases.values()))
+    failed = []
+    for cid, cls, structure, sig in expect:
+        case = cases.get(cid)
+        if case is None:
+            failed.append(f"{cid}: not among the cases")
+            continue
+        kept = os.path.join(out, "kept", cid)
+        if not all(
+            os.path.isfile(os.path.join(kept, n))
+            for n in ("mutation.patch", "case.json", "reference.txt")
+        ):
+            failed.append(f"{cid}: not kept (crashed, hung or never judged?)")
+            continue
+        ref = judged(out, case, normal.get(case["fixture"]))
+        if ref is None or ref["verdict"] == "crashed":
+            failed.append(f"{cid}: the reference did not judge it")
+            continue
+        got_cls = verdict_class(case, ref)
+        got_sig = ref["signature"] if got_cls == "ref-only" else case["signature"]
+        got = (got_cls, case["structure"], got_sig)
+        if got != (cls, structure, sig):
+            failed.append(f"{cid}: expected {(cls, structure, sig)}, got {got}")
+            continue
+        print(f"differential replay: {cid} is {cls} / {structure}: {sig}")
+    if failed:
+        print("differential replay: FAILED: " + "; ".join(failed))
+        return 1
+    print(f"differential replay: all {len(expect)} pinned classes observed")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -569,13 +659,30 @@ def main():
     how.add_argument("--reference", help="a stand-in, given the image's path (tests)")
     j.add_argument("--jobs", type=int, default=4)
     j.add_argument("--timeout", type=int, default=60)
+    j.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        metavar="CASE_ID",
+        help="keep this case's patch, mutation and reference output under "
+        "OUT/kept/ when the reference judges it without crashing (repeatable; "
+        "none by default)",
+    )
     c = sub.add_parser("classify")
     c.add_argument("out")
     c.add_argument("--baseline", required=True)
     c.add_argument("--report", required=True)
     c.add_argument("--version", default="(unknown version)")
+    r = sub.add_parser("replay")
+    r.add_argument("out", nargs="?", default="")
+    r.add_argument("--expect", required=True)
+    r.add_argument(
+        "--settings",
+        action="store_true",
+        help="print the replay's fixture run, digest, cases, seed and case IDs",
+    )
     args = p.parse_args()
-    return judge(args) if args.command == "judge" else classify(args)
+    return {"judge": judge, "classify": classify, "replay": replay}[args.command](args)
 
 
 if __name__ == "__main__":
