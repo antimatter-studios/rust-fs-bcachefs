@@ -342,6 +342,10 @@ def judge_one(case, out, chunks, size, args):
         status, text = r.returncode, r.stdout.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         status, text = 124, ""
+    if cid in args.keep and args.listings and args.container:
+        listings = reference_listings(case, out, scratch, args)
+    else:
+        listings = {}
     os.remove(scratch)
     if crashed(status) or any(INTERNAL.search(l) for l in text.splitlines()):
         # Kept as a count and nothing else (DISCLOSURE above).
@@ -363,11 +367,47 @@ def judge_one(case, out, chunks, size, args):
             with open(ref + ".native-read-proof.json", "w") as f:
                 json.dump(read_match, f)
         if cid in args.keep:
-            keep_case(case, out, patch, status, text)
+            keep_case(case, out, patch, status, text, listings)
     return status
 
 
-def keep_case(case, out, patch, status, text):
+def reference_listings(case, out, scratch, args):
+    """The reference's own view of a kept case: `list -b BTREE` and a raw
+    `fsck -n` of the fixture unchanged and of the mutated image, each with
+    its status. A listing that crashes, hangs or reports an internal fault
+    is kept as its status alone (DISCLOSURE above)."""
+    cid = case["id"]
+    orig = os.path.join(out, "scratch", cid + ".orig.img")
+    shutil.copyfile(os.path.join(args.fixtures, case["fixture"]), orig)
+    got = {}
+    try:
+        for image, path in (("original", orig), ("mutated", scratch)):
+            inside = "/work/scratch/" + os.path.basename(path)
+            runs = [("fsck", ["fsck", "-n", inside])]
+            runs += [("list-" + b, ["list", "-b", b, inside]) for b in args.listings]
+            for name, argv in runs:
+                cmd = ["docker", "exec", args.container, "timeout", "-k", "5"]
+                cmd += [str(args.timeout), "bcachefs"] + argv
+                try:
+                    r = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        timeout=args.timeout + 30,
+                        check=False,
+                    )
+                    st, text = r.returncode, r.stdout.decode("utf-8", "replace")
+                except subprocess.TimeoutExpired:
+                    st, text = 124, ""
+                if crashed(st) or any(INTERNAL.search(l) for l in text.splitlines()):
+                    text = None
+                got[f"{image}.{name}"] = (st, text)
+    finally:
+        os.remove(orig)
+    return got
+
+
+def keep_case(case, out, patch, status, text, listings):
     """One named case, kept so its disagreement can be replayed: the
     patch that damages the fixture, the mutation and this crate's verdict
     from cases.tsv, and the reference's whole output. Only a case the
@@ -380,6 +420,12 @@ def keep_case(case, out, patch, status, text):
         f.write("\n")
     with open(os.path.join(kept, "reference.txt"), "w", encoding="utf-8") as f:
         f.write(text)
+    for name, (st, listing) in sorted(listings.items()):
+        with open(os.path.join(kept, name + ".status"), "w") as f:
+            f.write(f"{st}\n")
+        if listing is not None:
+            with open(os.path.join(kept, name + ".txt"), "w", encoding="utf-8") as f:
+                f.write(listing)
 
 
 def judge(args):
@@ -827,6 +873,64 @@ def read_replay(path):
     return settings, expect
 
 
+def listed_backpointer(kept, image, pos):
+    """The reference's own view of extent POS in IMAGE's kept listings: the
+    `dev:bucket:offset` of its pointer in `list -b extents`, and whether
+    `list -b backpointers` holds a backpointer naming POS at that same
+    `bucket=` with suboffset 0. None when the extent is not listed."""
+    head = re.compile(r"^u64s \d+ type extent " + re.escape(pos) + r" ")
+    ptr = None
+    with open(os.path.join(kept, image + ".list-extents.txt"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    for n, line in enumerate(lines):
+        if head.match(line):
+            for more in lines[n + 1 :]:
+                if more.startswith("u64s "):
+                    break
+                m = re.match(r"^\s+ptr: \S+ (\d+:\d+:\d+) ", more)
+                if m:
+                    ptr = m.group(1)
+                    break
+            break
+    if ptr is None:
+        return None
+    want = re.compile(
+        r"type backpointer .* bucket="
+        + re.escape(ptr)
+        + r" .*\bsuboffset=0 .*\bpos="
+        + re.escape(pos)
+        + r"$"
+    )
+    with open(
+        os.path.join(kept, image + ".list-backpointers.txt"), encoding="utf-8"
+    ) as f:
+        return ptr, any(want.search(line.rstrip()) for line in f)
+
+
+def corroborate(kept):
+    """A kept missing_backpointer case is corroborated (#230) only when the
+    reference's own listings show the named extent's backpointer present in
+    the unchanged image and absent, at the same pointer, in the mutated one.
+    Returns a reason it is not, or None."""
+    with open(os.path.join(kept, "case.json"), encoding="utf-8") as f:
+        case = json.load(f)
+    m = re.match(r"^extent (\S+): no backpointer at ", case.get("detail", ""))
+    if not m:
+        return f"its detail names no extent: {case.get('detail')!r}"
+    pos = m.group(1)
+    seen = {}
+    for image in ("original", "mutated"):
+        got = listed_backpointer(kept, image, pos)
+        if got is None:
+            return f"the reference's {image} extents listing has no extent {pos}"
+        seen[image] = got
+    if not seen["original"][1]:
+        return f"the reference's original listing has no backpointer for {pos} at {seen['original'][0]}"
+    if seen["mutated"][1]:
+        return f"the reference's mutated listing still has the backpointer for {pos} at {seen['mutated'][0]}"
+    return None
+
+
 def replay(args):
     """Each pinned case was kept and still lands in exactly its expected
     class: absent, crashed, unjudged or reclassified is a failure."""
@@ -837,11 +941,18 @@ def replay(args):
                 raise SystemExit(f"{args.expect}: no `#! {key}` line")
             print(f"{key}={settings[key]}")
         print("keep=" + " ".join(cid for cid, *_ in expect))
+        print("listings=" + settings.get("listings", ""))
         return 0
     out = args.out
     cases = {c["id"]: c for c in read_cases(out)}
     normal = controls(out, list(cases.values()))
     failed = []
+    # Clean is exit 0 *and* nothing printed beyond a clean image's lines:
+    # under -n the reference exits 0 after a repair it made in memory.
+    for fixture in settings.get("control_clean", "").split():
+        control = normal.get(fixture)
+        if control is None or control["status"] != 0 or control["notes"]:
+            failed.append(f"{fixture}: its unchanged control is not clean")
     for cid, cls, structure, sig in expect:
         case = cases.get(cid)
         if case is None:
@@ -854,6 +965,17 @@ def replay(args):
         ):
             failed.append(f"{cid}: not kept (crashed, hung or never judged?)")
             continue
+        listed = [
+            f"{image}.{name}.txt"
+            for image in ("original", "mutated")
+            for name in ["fsck"]
+            + ["list-" + b for b in settings.get("listings", "").split()]
+        ]
+        if settings.get("listings") and not all(
+            os.path.isfile(os.path.join(kept, n)) for n in listed
+        ):
+            failed.append(f"{cid}: the reference's listings were not all kept")
+            continue
         ref = judged(out, case, normal.get(case["fixture"]))
         if ref is None or ref["verdict"] == "crashed":
             failed.append(f"{cid}: the reference did not judge it")
@@ -864,6 +986,23 @@ def replay(args):
         if got != (cls, structure, sig):
             failed.append(f"{cid}: expected {(cls, structure, sig)}, got {got}")
             continue
+        if sig == "check:missing_backpointer":
+            # Without both listings there is nothing to corroborate from, and
+            # a pinned missing_backpointer must not pass uncorroborated.
+            if not {"backpointers", "extents"} <= set(
+                settings.get("listings", "").split()
+            ):
+                failed.append(
+                    f"{cid}: not corroborated: the pin does not list backpointers and extents"
+                )
+                continue
+            why = corroborate(kept)
+            if why:
+                failed.append(f"{cid}: not corroborated: {why}")
+                continue
+            print(
+                f"differential replay: {cid}: the reference's listings show the backpointer missing"
+            )
         print(f"differential replay: {cid} is {cls} / {structure}: {sig}")
     if failed:
         print("differential replay: FAILED: " + "; ".join(failed))
@@ -896,6 +1035,16 @@ def main():
         "OUT/kept/ when the reference judges it without crashing (repeatable; "
         "none by default)",
     )
+    j.add_argument(
+        "--listing",
+        dest="listings",
+        action="append",
+        default=[],
+        metavar="BTREE",
+        help="for each kept case, also keep the reference's `list -b BTREE` "
+        "and raw `fsck -n` of the fixture unchanged and of the mutated image "
+        "(repeatable; container only)",
+    )
     c = sub.add_parser("classify")
     c.add_argument("out")
     c.add_argument("--baseline", required=True)
@@ -914,7 +1063,15 @@ def main():
         action="store_true",
         help="print the replay's fixture run, digest, cases, seed and case IDs",
     )
+    k = sub.add_parser("corroborate")
+    k.add_argument("kept", help="a kept case directory with its listings")
     args = p.parse_args()
+    if args.command == "corroborate":
+        why = corroborate(args.kept)
+        print(
+            f"corroborate: {why or 'the backpointer is missing in the reference listings'}"
+        )
+        return 1 if why else 0
     return {
         "judge": judge,
         "classify": classify,

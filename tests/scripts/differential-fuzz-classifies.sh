@@ -64,6 +64,7 @@ img="\$1"
 note() { echo "\$(basename "\$img") has \$1k btree buckets and 4.75M marked in bitmap"; echo "  scheduling recovery pass btree_bitmap_gc (49)"; }
 case "\$(head -c 1 "\$img")" in
     c) cat "$tmp/clean.txt"; note 608 ;;
+    k) cat "$tmp/clean.txt" ;;
     r) cat "$tmp/clean.txt"; note 612; echo "checksum error at btree node 12 offset 0x40: repair success (rewriting node)" ;;
     e) echo "  u64s 7 type inode 0:4096:1"; echo "bad btree header at 7/24, fixing"; exit 9 ;;
     s) kill -SEGV \$\$ ;;
@@ -94,6 +95,13 @@ tiny-876543|876543|node|clean||a
 tiny-765432|765432|node|clean||h
 EOF
 
+# A second fixture whose unchanged control prints only a clean image's lines
+# (the reference's first byte `k`): its control is clean, so the replay passes.
+cp "$tmp/fixtures/tiny.img" "$tmp/fixtures/clean.img"
+printf 'k' | dd of="$tmp/fixtures/clean.img" conv=notrunc 2>/dev/null
+printf 'clean-control\tclean.img\t-\tcontrol\ta change\tclean\t\t\n' >>"$tmp/out/cases.tsv"
+: >"$tmp/out/patches/clean-control.patch"
+
 python3 "$PY" judge "$tmp/out" "$tmp/fixtures" --reference "$tmp/reference" --jobs 3 --timeout 2 \
     --keep tiny-1 --keep tiny-987654 --keep tiny-876543 --keep tiny-765432 \
     >"$tmp/judge.txt" 2>&1 || fail "the judge failed: $(cat "$tmp/judge.txt")"
@@ -123,6 +131,120 @@ grep -v '^tiny-987654' "$tmp/replay.tsv" >"$tmp/replay2.tsv"
 python3 "$PY" replay "$tmp/out" --expect "$tmp/replay2.tsv" >"$tmp/replay.txt" 2>&1 \
     && fail "the replay passed with a case in another class than expected"
 
+# A replay that names listings fails when a kept case lacks them (#230): a
+# stand-in reference produces none, so the listings never pass unseen.
+printf '#! listings backpointers extents\n' >"$tmp/replay3.tsv"
+grep -v '^#! listings' "$tmp/replay2.tsv" | sed 's/repair failure/repair success/' >>"$tmp/replay3.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay3.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay passed with the reference's listings missing"
+# The #230 pin names default-55 in its class, its listings and a clean control.
+pin="$REPO/fuzz/differential-replay-230.tsv"
+settings="$(python3 "$PY" replay --expect "$pin" --settings)" || fail "the #230 pin does not parse"
+for want in fixture_run=38680345154 cases=80 first_seed=0 keep=default-55 'listings=backpointers extents'; do
+    printf '%s\n' "$settings" | grep -qx "$want" || fail "the #230 pin lacks $want"
+done
+grep -qx $'default-55\tours-only\tnode\tcheck:missing_backpointer\t.*' "$pin" \
+    || fail "the #230 pin does not hold default-55 as ours-only check:missing_backpointer"
+grep -qx '#! control_clean default.img' "$pin" || fail "the #230 pin does not assert default.img's control clean"
+# A missing_backpointer case is corroborated by the reference's own listings
+# (#230): the lines below are those the reference printed for default-55 in
+# control run 38761923257. The extent's pointer stays at 0:236:20 while its
+# backpointer moved to 0:236:19 suboffset 65281, so the reference itself lists
+# no backpointer where this crate looked.
+k="$tmp/kept-bp"
+mkdir -p "$k"
+printf '{"id": "default-55", "detail": "extent 2147483894:1:U32_MAX: no backpointer at device sector 15124 offset 0"}\n' >"$k/case.json"
+for image in original mutated; do
+    printf '%s\n' 'u64s 7 type extent 2147483893:1:U32_MAX len 1 ver 0  : durability: 1 ' \
+        "  ptr: default-55.img 0:236:19 gen 0" \
+        'u64s 7 type extent 2147483894:1:U32_MAX len 1 ver 0  : durability: 1 ' \
+        '  crc32: c_size 1 size 1 offset 0 nonce 0 csum crc32c 0:ef1a78c7  compress none' \
+        "  ptr: default-55.img 0:236:20 gen 0" >"$k/$image.list-extents.txt"
+done
+printf '%s\n' 'u64s 9 type backpointer 0:991166464:0 len 0 ver 0  : bucket=0:236:20 btree=extents level=0 data_type=user suboffset=0 len=1 gen=0 pos=2147483894:1:U32_MAX' >"$k/original.list-backpointers.txt"
+printf '%s\n' 'u64s 9 type backpointer 0:991166209:0 len 0 ver 0  : bucket=0:236:19 btree=extents level=0 data_type=user suboffset=65281 len=1 gen=0 pos=2147483894:1:U32_MAX' >"$k/mutated.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    || fail "the reference's listings of default-55 did not corroborate its missing backpointer: $(cat "$tmp/corroborate.txt")"
+cp -R "$k" "$tmp/kept-bp-recorded"
+# The mutated image still listing the backpointer at the extent's pointer is
+# a false positive of this crate's lookup, and must not corroborate.
+cp "$k/original.list-backpointers.txt" "$k/mutated.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    && fail "a backpointer the reference still lists at the extent's pointer corroborated a missing one"
+grep -q 'mutated listing still has the backpointer for 2147483894:1:U32_MAX at 0:236:20' "$tmp/corroborate.txt" \
+    || fail "the uncorroborated reason is not named: $(cat "$tmp/corroborate.txt")"
+# An original that lacks the backpointer too cannot show it went missing.
+: >"$k/original.list-backpointers.txt"
+python3 "$PY" corroborate "$k" >"$tmp/corroborate.txt" 2>&1 \
+    && fail "a backpointer the original never listed corroborated a missing one"
+# The replay itself refuses a pinned missing_backpointer it cannot corroborate
+# (#230): a pin listing neither, only backpointers or only extents fails
+# uncorroborated, and so do the recorded listings with the original's
+# backpointer gone or the mutated one's still present. The recorded
+# default-55 listings, original present and mutated missing, pass. The case's
+# class is stood in; its listings and the corroboration are the real ones.
+r="$tmp/replay-bp"
+mkdir -p "$r/kept"
+cp -R "$tmp/kept-bp-recorded" "$r/kept/default-55"
+for f in mutation.patch reference.txt original.fsck.txt mutated.fsck.txt; do : >"$r/kept/default-55/$f"; done
+replay_bp() { # replay_bp <listings> [original|mutated]: a pin of default-55 with those listings
+    { printf '#! fixture_run 38680345154\n#! fixture_digest sha256:0\n#! cases 80\n#! first_seed 0\n'
+      [ -z "$1" ] || printf '#! listings %s\n' "$1"
+      printf 'default-55\tours-only\tnode\tcheck:missing_backpointer\t#230\n'; } >"$r/pin.tsv"
+    cp "$tmp/kept-bp-recorded/original.list-backpointers.txt" "$r/kept/default-55/original.list-backpointers.txt"
+    cp "$tmp/kept-bp-recorded/mutated.list-backpointers.txt" "$r/kept/default-55/mutated.list-backpointers.txt"
+    case "${2:-}" in
+    original) : >"$r/kept/default-55/original.list-backpointers.txt" ;;
+    mutated) cp "$tmp/kept-bp-recorded/original.list-backpointers.txt" "$r/kept/default-55/mutated.list-backpointers.txt" ;;
+    esac
+    python3 - "$PY" "$r" >"$tmp/replay-bp.txt" 2>&1 <<'PY'
+import argparse, importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("differential", sys.argv[1])
+d = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(d)
+case = {"id": "default-55", "fixture": "default.img", "structure": "node", "signature": "check:missing_backpointer"}
+d.read_cases = lambda out: [case]
+d.controls = lambda out, cases: {}
+d.judged = lambda out, case, normal=None: {"verdict": "clean", "signature": ""}
+d.verdict_class = lambda case, ref: "ours-only"
+r = sys.argv[2]
+sys.exit(d.replay(argparse.Namespace(expect=os.path.join(r, "pin.tsv"), settings=False, out=r)))
+PY
+}
+for listings in '' 'backpointers' 'extents'; do
+    replay_bp "$listings" && fail "a pinned missing_backpointer listing '${listings:-nothing}' passed uncorroborated"
+    grep -q 'default-55: not corroborated: the pin does not list backpointers and extents' "$tmp/replay-bp.txt" \
+        || fail "a pin listing '${listings:-nothing}' is not refused as uncorroborated: $(cat "$tmp/replay-bp.txt")"
+done
+replay_bp 'backpointers extents' \
+    || fail "the recorded default-55 listings did not pass the replay: $(cat "$tmp/replay-bp.txt")"
+grep -q "default-55: the reference's listings show the backpointer missing" "$tmp/replay-bp.txt" \
+    || fail "the replay did not corroborate default-55: $(cat "$tmp/replay-bp.txt")"
+replay_bp 'backpointers extents' original && fail "the replay passed with the original's backpointer missing"
+grep -q 'not corroborated: the reference.s original listing has no backpointer' "$tmp/replay-bp.txt" \
+    || fail "the missing original is not named: $(cat "$tmp/replay-bp.txt")"
+replay_bp 'backpointers extents' mutated && fail "the replay passed with the mutated backpointer still present"
+grep -q 'not corroborated: the reference.s mutated listing still has the backpointer' "$tmp/replay-bp.txt" \
+    || fail "the still-present mutated backpointer is not named: $(cat "$tmp/replay-bp.txt")"
+# A control is clean only when it exits 0 and prints no finding (#230): under
+# -n the reference exits 0 after a repair it made in memory, so an exit 0
+# alone must not let control_clean pass. The stand-in's control on tiny.img
+# exits 0 and prints the bitmap note and scheduled recovery pass the reference
+# prints on block4k; every other line it prints is a clean image's.
+grep -v '^#! listings' "$tmp/replay2.tsv" | sed 's/repair failure/repair success/' >"$tmp/replay4.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
+    || fail "the replay of a kept case in its class failed: $(cat "$tmp/replay.txt")"
+# The positive case: a control that prints only a clean image's lines is clean.
+cp "$tmp/replay4.tsv" "$tmp/replay5.tsv"
+printf '#! control_clean clean.img\n' >>"$tmp/replay5.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay5.tsv" >"$tmp/replay.txt" 2>&1 \
+    || fail "the replay refused a control that printed only a clean image's lines: $(cat "$tmp/replay.txt")"
+printf '#! control_clean tiny.img\n' >>"$tmp/replay4.tsv"
+python3 "$PY" replay "$tmp/out" --expect "$tmp/replay4.tsv" >"$tmp/replay.txt" 2>&1 \
+    && fail "the replay called a control clean that exits 0 and prints findings"
+grep -q 'tiny.img: its unchanged control is not clean' "$tmp/replay.txt" \
+    || fail "the control that is not clean is not named: $(cat "$tmp/replay.txt")"
+
 for id in tiny-987654 tiny-876543 tiny-765432; do
     [ ! -e "$tmp/out/ref/$id.txt" ] || fail "$id: the reference crashed, hung or faulted, and its output was kept"
     [ ! -e "$tmp/out/patches/$id.patch" ] || fail "$id: the reference crashed, hung or faulted, and its patch was kept"
@@ -138,7 +260,8 @@ classify() {
 classify && fail "a disagreement class missing from the baseline passed: $(cat "$tmp/stdout")"
 grep -q 'NEW ref-only / jset / bad btree header at #, fixing' "$tmp/stdout" ||
     fail "the new class is not named on stdout: $(cat "$tmp/stdout")"
-for want in '|both clean|1|' '|both found something|1|' "|the reference found something; this crate called it clean|2|" \
+# Both unchanged controls are counted: tiny-control and clean-control.
+for want in '|both clean|2|' '|both found something|1|' "|the reference found something; this crate called it clean|2|" \
     '|this crate found something; the reference did not|1|' '|the reference crashed, hung or faulted (counts only)|3|'; do
     tr -d ' ' <"$tmp/report.md" | grep -qF "$(printf '%s' "$want" | tr -d ' ')" || fail "the report does not count $want"
 done

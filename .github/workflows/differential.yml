@@ -41,6 +41,10 @@ on:
         type: boolean
         required: false
         default: false
+      replay_file:
+        description: "The pin file a replay reads (empty: fuzz/differential-replay.tsv)"
+        required: false
+        default: ""
   schedule:
     - cron: "30 4 * * *"
   pull_request:
@@ -55,7 +59,7 @@ on:
       - scripts/select-fixture-run-test.sh
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
-      - fuzz/differential-replay.tsv
+      - fuzz/differential-replay*.tsv
       - fuzz/shared/**
       - tests/oracle_differential_default74.rs
       - scripts/pinned-default74-reference.sh
@@ -72,6 +76,7 @@ permissions:
   contents: read
 
 env:
+  REPLAY_FILE: ${{ inputs.replay_file || 'fuzz/differential-replay.tsv' }}
   CARGO_TERM_COLOR: always
   CHORE_VERSION: "0.11.0"
 
@@ -235,7 +240,7 @@ jobs:
         if: inputs.replay
         run: |
           set -euo pipefail
-          python3 scripts/differential-fuzz.py replay --expect fuzz/differential-replay.tsv --settings >"$RUNNER_TEMP/replay.env"
+          python3 scripts/differential-fuzz.py replay --expect "$REPLAY_FILE" --settings >"$RUNNER_TEMP/replay.env"
           cat "$RUNNER_TEMP/replay.env"
           while IFS='=' read -r key value; do
             case "$key" in
@@ -244,6 +249,7 @@ jobs:
               cases) echo "CASES=$value" ;;
               first_seed) echo "FIRST_SEED=$value" ;;
               keep) echo "DIFFERENTIAL_KEEP=$value" ;;
+              listings) echo "DIFFERENTIAL_LISTINGS=$value" ;;
             esac
           done <"$RUNNER_TEMP/replay.env" >>"$GITHUB_ENV"
 
@@ -295,7 +301,7 @@ jobs:
       # its class is the failure this exists to report.
       - name: The pinned replay's classes were observed
         if: always() && inputs.replay
-        run: python3 scripts/differential-fuzz.py replay tmp/differential --expect fuzz/differential-replay.tsv
+        run: python3 scripts/differential-fuzz.py replay tmp/differential --expect "$REPLAY_FILE"
 
       # Only the replay's named cases, each judged without a crash; a crash
       # or hang never reaches tmp/differential/kept.
@@ -306,7 +312,7 @@ jobs:
           name: differential-replay
           path: |
             tmp/differential/kept/
-            fuzz/differential-replay.tsv
+            ${{ env.REPLAY_FILE }}
           if-no-files-found: error
           retention-days: 30
 
