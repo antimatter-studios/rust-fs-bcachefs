@@ -19,7 +19,8 @@ checks without repairing; writing is experimental. **[docs/features.md](docs/fea
 is the full list**: every feature, its state (supported, experimental,
 partial, refused, upcoming, or unobservable clean-room), the release it
 shipped in, its tracking issue and the test that checks it. Every pull
-request that changes behaviour updates it.
+request that changes behaviour records its row in
+[features.d/](features.d/README.md), which a release writes into it.
 
 A create that would need a btree node with no room left is refused before
 anything is written, until splitting full nodes lands. A kernel mount has not
