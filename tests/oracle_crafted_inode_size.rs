@@ -18,13 +18,8 @@ use fs_bcachefs::write::Writer;
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
-fn scratch(name: &str, test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-crafted-size-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(name: &str, test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("crafted-size").into_image(format!("{test}.img"));
     std::fs::copy(fixture(name), &img).unwrap();
     img
 }
@@ -37,7 +32,7 @@ fn keys(img: &std::path::Path, id: u8) -> Vec<Bkey> {
 
 /// A copy of `default` whose `/hello.txt` claims `size` bytes, and that
 /// file's inode number.
-fn hello_claiming(test: &str, size: u64) -> (std::path::PathBuf, u64) {
+fn hello_claiming(test: &str, size: u64) -> (common::ScratchImage, u64) {
     let img = scratch("default.img", test);
     let ino = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()

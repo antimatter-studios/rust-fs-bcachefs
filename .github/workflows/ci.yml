@@ -12,9 +12,22 @@ on:
   merge_group:
   # Callable so release.yml runs THIS gate rather than a copy of it.
   workflow_call:
-  # The full pipeline on demand, on any branch: the evidence for an
-  # oracle-only red before its fix is pushed. See AGENTS.md.
+    inputs:
+      reproducer:
+        description: Evidence path for a reusable invocation
+        type: string
+        default: full
+  # Dispatch selects focused evidence or explicitly runs the full gate.
   workflow_dispatch:
+    inputs:
+      reproducer:
+        description: Evidence path to run on this branch
+        type: choice
+        default: write-study-lifecycle
+        options:
+          - write-study-lifecycle
+          - crc128-native
+          - full
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -26,8 +39,26 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CHORE_VERSION: "0.11.0"
+  # Static contract declarations for mode-conditional jobs. Runtime ci-ok
+  # still requires every applicable job to succeed; these exemptions never
+  # authorize a failed, cancelled or unexpectedly skipped dependency.
+  CI_GATE_NON_GATING: "changes unit lint semver guest-write-study crc128-native"
 
 jobs:
+  guest-write-study:
+    name: guest write-study lifecycle (isolated, no fixtures or VM)
+    if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'write-study-lifecycle'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run only the write-study lifecycle regression
+        run: bash tests/scripts/guest-write-study-cleans-up.sh
+
+  crc128-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'crc128-native'
+    uses: ./.github/workflows/crc128-native-repro.yml
+
   # Does this run need the full pipeline? Pull requests, every layer of a
   # stack included, run the quick checks (unit, scripts, lint, semver). The
   # merge queue runs everything on the exact tree it is about to land, and
@@ -38,6 +69,7 @@ jobs:
   # true, and ci-ok accepts their skip when, and only when, it is false.
   changes:
     name: changes (does this need the full pipeline?)
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.c.outputs.code }}
@@ -66,9 +98,12 @@ jobs:
 
   unit:
     name: unit (no tools, no fixtures)
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Test images have scoped owners
+        run: python3 scripts/check-test-images.py
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -108,6 +143,7 @@ jobs:
 
   lint:
     name: lint (fmt, clippy, family-check, agents-core, ci-gate, licences)
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -461,6 +497,7 @@ jobs:
     # refusing a break the version in Cargo.toml does not declare. See
     # scripts/check-semver.sh for which baseline, and why.
     name: semver (public API against its baseline)
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -537,24 +574,20 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage]
+    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
     runs-on: ubuntu-latest
     steps:
-      - name: Every job ran and succeeded
+      - uses: actions/checkout@v4
+      - name: Verdict contract rejects failed, cancelled and unexpected skips
+        run: python3 scripts/ci-verdict.py --check-contract
+      - name: Independent subprocess controls for every verdict profile
+        run: python3 tests/scripts/ci-verdict-black-box.py
+      - name: Every applicable job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
-          # false only for a quick run (a pull request or a push to main):
-          # then, and only then, a FULL_JOBS skip is not a failure.
           CODE: ${{ needs.changes.outputs.code }}
+          EVENT: ${{ github.event_name }}
+          REPRODUCER: ${{ inputs.reproducer }}
+          # Retained as an independently checked declaration for ci-depth.
           FULL_JOBS: '["fixtures", "oracle", "test-arm64", "test-darwin", "suite-in-vm", "cli", "coverage"]'
-        run: |
-          set -euo pipefail
-          case "$CODE" in true|false) ;; *) echo "::error::missing full-pipeline decision"; exit 1 ;; esac
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "full pipeline: $CODE"
-          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" --argjson full "$FULL_JOBS" '[to_entries[] | select(.value.result != "success" and (($code == "false" and .value.result == "skipped" and (.key as $job | $full | index($job) != null)) | not)) | .key] | join(", ")')"
-          if [ -n "$bad" ]; then
-            echo "::error::not green: $bad (failed, cancelled or skipped)"
-            exit 1
-          fi
-          echo "all required jobs succeeded"
+        run: python3 scripts/ci-verdict.py

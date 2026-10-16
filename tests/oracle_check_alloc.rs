@@ -46,13 +46,8 @@ const DATA_BTREE: u8 = 3;
 const DATA_USER: u8 = 4;
 const DATA_NEED_DISCARD: u8 = 9;
 
-fn scratch(test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-alloc-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("check-alloc").into_image(format!("{test}.img"));
     std::fs::copy(fixture("default.img"), &img).unwrap();
     img
 }
@@ -238,7 +233,7 @@ fn a_data_bucket_whose_alloc_key_names_another_data_type_is_reported() {
 /// A file half a bucket long on a copy of `default`, checked clean: its
 /// bucket, and the fragmentation lru entry the writer gave the bucket, at
 /// `(1 << 61 | dirty * 2^31 / bucket_size) : bucket` (docs/clean-room.md).
-fn half_bucket_file(test: &str) -> (std::path::PathBuf, u64, Bpos) {
+fn half_bucket_file(test: &str) -> (common::ScratchImage, u64, Bpos) {
     let img = scratch(test);
     let dev = FileDevice::open(&img).unwrap();
     let bucket_size = u64::from(Superblock::read(&dev).unwrap().members().unwrap()[0].bucket_size);
@@ -359,11 +354,7 @@ fn a_piece_of_a_checksummed_region_whose_backpointer_is_gone_is_reported() {
     // backpointer sits at its region's sector << 16 plus its offset in the
     // region (the aged image: the piece at offset 136 of the region at
     // sector 26880 has its backpointer at 26880 << 16 | 136).
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-alloc-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::ScratchDir::new("check-alloc-piece-backpointer");
     let img = dir.join("piece-backpointer.img");
     std::fs::copy(fixture("aged.img"), &img).unwrap();
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
@@ -425,7 +416,7 @@ fn a_piece_of_a_checksummed_region_whose_backpointer_is_gone_is_reported() {
 /// `journal_seq_empty : bucket` with the sequence number word 6 of its alloc
 /// key (docs/clean-room.md, "Allocating space"; every need_discard bucket of
 /// the reference's fixtures has one there).
-fn waiting_bucket(test: &str) -> (std::path::PathBuf, u64, Bpos) {
+fn waiting_bucket(test: &str) -> (common::ScratchImage, u64, Bpos) {
     let img = scratch(test);
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(

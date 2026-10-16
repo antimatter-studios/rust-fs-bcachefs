@@ -196,9 +196,7 @@ fn the_checker_passes_the_casefold_set() {
 #[test]
 fn the_writer_refuses_to_change_a_casefolded_directory() {
     use fs_bcachefs::write::Writer;
-    let dir =
-        std::env::temp_dir().join(format!("rust-fs-bcachefs-casefold-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::ScratchDir::new("casefold");
     let img = dir.join("casefold.img");
     std::fs::copy(fixture("casefold.img"), &img).unwrap();
     let before = std::fs::read(&img).unwrap();

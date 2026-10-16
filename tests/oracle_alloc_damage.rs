@@ -27,11 +27,7 @@ const UNPACKED: BkeyFormat = BkeyFormat {
 
 #[test]
 fn every_file_reads_with_its_alloc_root_torn() {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-alloc-damage-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::ScratchDir::new("alloc-damage");
     let img = dir.join("alloc-torn.img");
     std::fs::copy(fixture("default.img"), &img).unwrap();
 

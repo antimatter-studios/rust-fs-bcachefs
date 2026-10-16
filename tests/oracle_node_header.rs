@@ -20,13 +20,9 @@ use std::io::{Seek, SeekFrom, Write};
 
 /// A copy of `default` with `damage` applied to its dirents root node,
 /// whose checksum is then recomputed.
-fn damaged(test: &str, damage: impl Fn(&mut [u8])) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-node-header-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn damaged(test: &str, damage: impl Fn(&mut [u8])) -> common::ScratchImage {
+    let img =
+        common::ScratchDir::new(&format!("node-header-{test}")).into_image(format!("{test}.img"));
     std::fs::copy(fixture("default.img"), &img).unwrap();
 
     let dev = FileDevice::open(&img).unwrap();

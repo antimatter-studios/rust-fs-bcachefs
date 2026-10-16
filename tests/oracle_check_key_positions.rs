@@ -40,15 +40,6 @@ const ACCOUNTING_KEY: u8 = 34;
 /// lister prints 6 as `btree`, with the btree's id in the byte below.
 const ACCT_BTREE: u64 = 6;
 
-/// A copy of a fixture, removed when the test ends however it ends.
-struct Scratch(std::path::PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        std::fs::remove_file(&self.0).ok();
-    }
-}
-
 /// Change the first key of type `kt` in btree `id` of a copy of `set` (the
 /// first that `pick` also accepts) with `change`, commit it with the
 /// writer's raw `insert`, and require the checker to report `kind` for it.
@@ -60,15 +51,10 @@ fn refused(
     change: impl FnOnce(&mut Bkey),
     kind: &str,
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-key-positions-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
     let test = format!("{set}-{id}-{kt}-{kind}");
-    let img = dir.join(format!("{test}.img"));
+    // Removed when the test ends however it ends.
+    let img = common::ScratchDir::new("check-key-positions").into_image(format!("{test}.img"));
     std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
-    let _gone = Scratch(img.clone());
 
     let before = check::check(&FileDevice::open(&img).unwrap()).expect("the checker runs");
     assert!(

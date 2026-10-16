@@ -51,13 +51,8 @@ const INTERIOR: u32 = u32::MAX - 1;
 const SV: u32 = u32::MAX - 3;
 const SNAP: u32 = u32::MAX - 2;
 
-fn scratch(src: &str, test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-snapshots-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(src: &str, test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("check-snapshots").into_image(format!("{test}.img"));
     std::fs::copy(fixture(src), &img).unwrap();
     img
 }

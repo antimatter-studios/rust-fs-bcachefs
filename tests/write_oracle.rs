@@ -15,7 +15,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::fixture;
+use common::{fixture, ScratchDir, ScratchImage};
 use fs_bcachefs::btree::{self, btree_id};
 use fs_bcachefs::superblock::Superblock;
 use fs_bcachefs::write::Writer;
@@ -34,15 +34,38 @@ fn require_guest() {
     );
 }
 
-/// A fresh copy of a fixture under /share, which the reference tools' chroot
-/// also sees at /share.
-fn scratch(fixture_name: &str, test: &str) -> PathBuf {
+/// The reference tools' chroot sees `dir` at the same absolute path: the
+/// test runner (scripts/test-scratch-run.sh, with FLTH_GUEST=1) bind-mounts
+/// the run's scratch root there. The same directory, not merely one of the
+/// same name, so an image path means the same thing on both sides.
+fn assert_seen_by_reference(dir: &ScratchDir) {
+    use std::os::unix::fs::MetadataExt;
+    let ours = std::fs::metadata(dir.path()).unwrap();
+    let inside = dir
+        .path()
+        .strip_prefix("/")
+        .map(|rel| Path::new(REF_ROOT).join(rel));
+    let same = matches!(
+        inside.as_ref().map(std::fs::metadata),
+        Ok(Ok(theirs)) if theirs.dev() == ours.dev() && theirs.ino() == ours.ino()
+    );
+    assert!(
+        same,
+        "{} is not visible inside {REF_ROOT}: run these tests through scripts/test-scratch-run.sh in the guest",
+        dir.path().display()
+    );
+}
+
+/// A fresh copy of a fixture in a private scratch directory, removed when
+/// the returned image is dropped, which the reference tools' chroot sees at
+/// the same path.
+fn scratch(fixture_name: &str, test: &str) -> ScratchImage {
     require_guest();
-    let dir = PathBuf::from("/share/write-oracle");
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
-    std::fs::copy(fixture(fixture_name), &img).unwrap();
-    img
+    let dir = ScratchDir::new("write-oracle");
+    assert_seen_by_reference(&dir);
+    let name = format!("{test}.img");
+    std::fs::copy(fixture(fixture_name), dir.join(&name)).unwrap();
+    dir.into_image(name)
 }
 
 fn reference(args: &[&str]) -> (bool, String) {

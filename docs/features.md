@@ -67,6 +67,13 @@ States:
 
 ## Checking
 
+Fixture producer FUSE lifecycle: owned mount IDs are detached even when the
+endpoint is disconnected; readiness requires a live daemon and a connected
+mount. Native refusals retain their stderr and exit status without retrying or
+rewriting the image (Unreleased #236, tracking #235). Lifecycle controls are in
+`tests/scripts/guest-build-fixtures-cleans-up.sh`; independent native crc128
+overwrite and full fixture/oracle CI validation remain required.
+
 | Feature | State | Since | Tracking | Checked by |
 |---|---|---|---|---|
 | `fsck.bcachefs`, check-only: nodes, key order, dirents, link counts, extents, data checksums; fsck(8) exit status | Supported | 0.4.0 (#39) | | `check_oracle.rs`, `oracle_check.rs` |

@@ -83,10 +83,13 @@ tasks:
   # ORACLE RAISED 2026-10-13: the merge-queue group for #201 on main after
   # #200 (run 38430029009) printed 425 lines / 19,617 bytes; about 30% over
   # that is 560 / 26,000.
+  # ORACLE RAISED 2026-10-16: the merge-queue group for the #224 + #236
+  # stack on main d40e479 (run 38932598267) printed 553 lines / 26,035
+  # bytes on macOS; about 30% over that is 720 / 34,000.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- cargo test --locked --lib --test fuzz_decoders -- --nocapture'
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 34'
 
   test:oracle:
@@ -110,7 +113,7 @@ tasks:
       # passing (#131), and a merge queue group that moves the lockfile would
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 560 26000 -- cargo test --locked --release --features write --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 62'
 
   test:scripts:
@@ -149,6 +152,9 @@ tasks:
     # once #222's tests were added. 800 lines / 40000 bytes leaves room
     # for the tests the open pull requests add (#226's sixteen alone are
     # about 22 lines).
+    # MEASURED AGAIN on CI run 38932598267 (the #224 + #236 stack on main
+    # d40e479, 2026-10-16): 812 lines / 40110 bytes, twelve lines and 110
+    # bytes over 800 / 40000. About 30% over that is 1060 / 52000.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -160,7 +166,7 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 800 40000 -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1060 52000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 105'
@@ -264,7 +270,7 @@ tasks:
       # 496 lines / 25,990 bytes on #212's run, whose changed fuzz lockfile
       # missed the cache and added a Downloaded and a Compiling line per
       # dependency, 43 lines. 520 holds a cold run and two more test binaries.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 520 40000 -- cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 520 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 81'
 
   check:semver:

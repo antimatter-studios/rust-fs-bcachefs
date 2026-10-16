@@ -24,15 +24,90 @@
 set -euo pipefail
 # One deadline per step, five minutes unless the step says otherwise
 # (scripts/guest-watchdog.sh).
+owned_watchdog=
+[ -n "${WATCHDOG_PID:-}" ] || owned_watchdog=yes
 # shellcheck source=scripts/guest-watchdog.sh
-source /repo/scripts/guest-watchdog.sh
+source "${BCACHEFS_STUDY_WATCHDOG:-/repo/scripts/guest-watchdog.sh}"
+[ -z "$owned_watchdog" ] || owned_watchdog="${WATCHDOG_PID:-}"
 
-ROOT=/srv/ref-trixie
-out=/share/fixtures/write-study
-work=/var/tmp/write-study
-mnt=/mnt/study
-rm -rf "$out" "$ROOT$work"
-mkdir -p "$out" "$ROOT$work" "$ROOT$mnt"
+ROOT="${BCACHEFS_REF_ROOT:-/srv/ref-trixie}"
+out="${BCACHEFS_STUDY_OUT:-/share/fixtures/write-study}"
+scratch='' owner='' fuse_pid='' tool_pid=''
+
+stop_fuse() {
+    if [ -n "$fuse_pid" ]; then
+        kill -KILL -- "-$fuse_pid" "$fuse_pid" 2>/dev/null || true
+        wait "$fuse_pid" 2>/dev/null || true
+        fuse_pid=
+    fi
+    if mountpoint -q "$ROOT$mnt"; then
+        fusermount3 -uz "$ROOT$mnt" 2>/dev/null || umount -l "$ROOT$mnt" 2>/dev/null || return 1
+        ! mountpoint -q "$ROOT$mnt" || return 1
+    fi
+}
+
+cleanup() {
+    local status=$?
+    local cleanup_status=0
+    local unmounted=yes
+    trap - EXIT
+    trap '' HUP INT TERM
+    if [ -n "$tool_pid" ]; then
+        kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true
+        wait "$tool_pid" 2>/dev/null || true
+    fi
+    if [ -n "${mnt:-}" ] && ! stop_fuse; then
+        echo "write-study: owned mount is still busy; retained $scratch" >&2
+        unmounted=no
+        cleanup_status=1
+    fi
+    if [ "$unmounted" = yes ] && [ -n "$scratch" ] && [ -f "$scratch/.owner" ] &&
+        [ "$(cat "$scratch/.owner")" = "$owner" ]; then
+        # Retry once on this verified, private path: rm can remove .owner
+        # before a directory error, so rechecking that marker would leak it.
+        # Both failures are guarded so the watchdog is still stopped below.
+        if ! rm -rf -- "$scratch" && ! rm -rf -- "$scratch"; then
+            echo "write-study: owned scratch cleanup failed; retained $scratch" >&2
+            cleanup_status=1
+        fi
+    fi
+    if [ -n "$owned_watchdog" ]; then
+        kill "$owned_watchdog" 2>/dev/null || true
+        wait "$owned_watchdog" 2>/dev/null || true
+    fi
+    # Cleanup errors fail a successful operation, never replace its failure
+    # (including the signal-specific status captured by the EXIT trap).
+    if [ "$status" -eq 0 ]; then
+        status=$cleanup_status
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Foreground reference calls and copies are waitable, so a signal can stop
+# their exact child before removing the images it might still be using.
+run_owned() {
+    local status=0
+    # A separate session contains any wrapper children as well as the tool.
+    setsid -- "$@" &
+    tool_pid=$!
+    wait "$tool_pid" || status=$?
+    tool_pid=
+    return "$status"
+}
+bcachefs-ref() { run_owned bcachefs-ref "$@"; }
+cp() { run_owned cp "$@"; }
+
+mkdir -p "$out" "$ROOT/var/tmp"
+scratch="$(mktemp -d "$ROOT/var/tmp/write-study.XXXXXXXX")"
+work="${scratch#"$ROOT"}"
+mnt="$work/mnt"
+owner="write-study:$$:$work"
+printf '%s\n' "$owner" >"$scratch/.owner"
+mkdir "$ROOT$mnt"
 
 # Every btree the reference lister knows by name (S1's list); one that does
 # not exist on this version is reported by the lister and skipped.
@@ -41,7 +116,8 @@ snapshots lru freespace need_discard backpointers bucket_gens snapshot_trees
 deleted_inodes logged_ops reconcile_work subvolume_children accounting"
 
 mount_rw() { # IMAGE
-    (bcachefs-ref fusemount -f -o rw,noatime "$1" "$mnt" >"$ROOT$work/fuse.log" 2>&1 &)
+    setsid -- bcachefs-ref fusemount -f -o rw,noatime "$1" "$mnt" >"$ROOT$work/fuse.log" 2>&1 &
+    fuse_pid=$!
     for _ in $(seq 1 60); do
         mountpoint -q "$ROOT$mnt" && return 0
         sleep 1
@@ -54,12 +130,7 @@ mount_rw() { # IMAGE
 settle() { # IMAGE NAME
     sync
     sleep 2
-    pkill -KILL -f "bcachefs fusemount" || true
-    for _ in $(seq 1 30); do
-        pgrep -f "bcachefs fusemount" >/dev/null || break
-        sleep 1
-    done
-    fusermount3 -uz "$ROOT$mnt" 2>/dev/null || umount -l "$ROOT$mnt" 2>/dev/null || true
+    stop_fuse
     if ! bcachefs-ref fsck -y "$1" >"$out/$2.settle.txt" 2>&1 ||
         grep -q 'errors fixed\|errors this recovery' "$out/$2.settle.txt"; then
         echo "write-study: settling $2 was not a clean replay:" >&2
@@ -336,4 +407,3 @@ for step in \
     dump "$img" "$name"
     cp --sparse=always "$ROOT$img" "$out/$name.img"
 done
-rm -rf "${ROOT:?}$work"

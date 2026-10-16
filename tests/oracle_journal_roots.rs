@@ -64,11 +64,7 @@ fn on_every_clean_fixture_the_superblock_and_the_journal_record_the_same_roots()
 
 #[test]
 fn a_superblock_root_that_names_another_btrees_node_is_read_through_the_journal() {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-journal-roots-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::ScratchDir::new("journal-roots");
     let img = dir.join("subvolumes-root.img");
     std::fs::copy(fixture("default.img"), &img).unwrap();
 

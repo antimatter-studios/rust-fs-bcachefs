@@ -1,0 +1,49 @@
+name: crc128 native reproducer
+
+# Diagnostic red/green path on the existing implementation branch. This is
+# additional evidence; it never substitutes for the full fixture/oracle gate.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CHORE_VERSION: "0.11.0"
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  crc128-native:
+    name: crc128 overwrite (reference FUSE, harness guest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Owned FUSE lifecycle and refusal controls
+        run: bash tests/scripts/guest-build-fixtures-cleans-up.sh
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: Reproduce only the native crc128 overwrite
+        run: nice -n 10 bash scripts/repro-crc128-overwrite.sh
+      - name: The harness session stopped its VM
+        if: always()
+        run: '! chore vm:status'
+      - name: Keep native transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crc128-native-transcripts
+          path: .vm-share/crc128-native-repro/*.txt
+          if-no-files-found: error
+          retention-days: 7

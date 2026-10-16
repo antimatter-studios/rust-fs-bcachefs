@@ -18,13 +18,8 @@ use fs_bcachefs::Filesystem;
 use fs_core::{BlockRead, FileDevice};
 use std::io::{Seek, SeekFrom, Write};
 
-fn scratch(name: &str, test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-journal-window-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(name: &str, test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("journal-window").into_image(format!("{test}.img"));
     std::fs::copy(fixture(name), &img).unwrap();
     img
 }

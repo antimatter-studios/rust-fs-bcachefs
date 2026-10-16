@@ -29,11 +29,7 @@ fn expected() -> Vec<u8> {
 
 #[test]
 fn a_write_to_a_file_with_preallocated_space_keeps_that_space_zeros() {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-write-unwritten-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::ScratchDir::new("write-unwritten");
     let img = dir.join("kernel-prealloc.img");
     std::fs::copy(fixture("kernel-prealloc.img"), &img).unwrap();
 

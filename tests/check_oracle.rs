@@ -3,8 +3,12 @@
 //! it fails naming that. Nothing skips. Wherever the reference finds a
 //! problem, this crate's checker must find one too.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use common::{ScratchDir, ScratchImage};
 
 use fs_bcachefs::bkey::{self, BkeyFormat};
 use fs_bcachefs::btree::{btree_id, NodePtr};
@@ -24,7 +28,35 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-fn damaged(name: &str, damage: impl FnOnce(&mut Vec<u8>, u64)) -> PathBuf {
+/// The chroot the reference tools live in (scripts/vm-setup.sh).
+const REF_ROOT: &str = "/srv/ref-trixie";
+
+/// The reference tools' chroot sees `dir` at the same absolute path: the
+/// test runner (scripts/test-scratch-run.sh, with FLTH_GUEST=1) bind-mounts
+/// the run's scratch root there. The same directory, not merely one of the
+/// same name, so an image path means the same thing on both sides.
+fn assert_seen_by_reference(dir: &ScratchDir) {
+    use std::os::unix::fs::MetadataExt;
+    let ours = std::fs::metadata(dir.path()).unwrap();
+    let inside = dir
+        .path()
+        .strip_prefix("/")
+        .map(|rel| Path::new(REF_ROOT).join(rel));
+    let same = matches!(
+        inside.as_ref().map(std::fs::metadata),
+        Ok(Ok(theirs)) if theirs.dev() == ours.dev() && theirs.ino() == ours.ino()
+    );
+    assert!(
+        same,
+        "{} is not visible inside {REF_ROOT}: run these tests through scripts/test-scratch-run.sh in the guest",
+        dir.path().display()
+    );
+}
+
+/// A damaged copy of the fixture in a private scratch directory, removed
+/// when the returned image is dropped, which the reference tools' chroot
+/// sees at the same path.
+fn damaged(name: &str, damage: impl FnOnce(&mut Vec<u8>, u64)) -> ScratchImage {
     assert!(
         Path::new("/usr/local/bin/bcachefs-ref").exists(),
         "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
@@ -50,10 +82,11 @@ fn damaged(name: &str, damage: impl FnOnce(&mut Vec<u8>, u64)) -> PathBuf {
     let node = NodePtr::from_key(&k).unwrap().ptrs[0].offset * 512;
     let mut b = std::fs::read(&src).unwrap();
     damage(&mut b, node);
-    std::fs::create_dir_all("/share/check-oracle").unwrap();
-    let p = PathBuf::from(format!("/share/check-oracle/{name}.img"));
-    std::fs::write(&p, &b).unwrap();
-    p
+    let dir = ScratchDir::new("check-oracle");
+    assert_seen_by_reference(&dir);
+    let file = format!("{name}.img");
+    std::fs::write(dir.join(&file), &b).unwrap();
+    dir.into_image(file)
 }
 
 /// Whether the reference checker found anything: a failing status, or an
@@ -101,8 +134,9 @@ fn where_the_reference_finds_damage_this_checker_does_too() {
             img.display()
         );
     }
-    // And on an undamaged copy, both are clean. A copy under /share: the
-    // reference tools run in a chroot that sees /share and not /repo.
+    // And on an undamaged copy, both are clean. A scratch copy: the
+    // reference tools run in a chroot that sees the run's scratch root and
+    // /share, not /repo.
     let clean = damaged("undamaged", |_, _| {});
     let (theirs, text) = reference_finds_a_problem(&clean);
     assert!(
@@ -126,21 +160,22 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
     use fs_bcachefs::write::Writer;
     use fs_bcachefs::Filesystem;
 
-    /// A copy of fixture `src` under /share, with the inode at `path`
-    /// changed by `change` through the writer. By path: inode numbers
+    /// A copy of fixture `src` in a private scratch directory, with the
+    /// inode at `path` changed by `change` through the writer. By path: inode numbers
     /// differ from one build of the fixtures to the next.
     fn rewritten(
         name: &str,
         src: &str,
         path: &str,
         change: impl FnOnce(&mut InodeV3Raw),
-    ) -> PathBuf {
+    ) -> ScratchImage {
         assert!(
             Path::new("/usr/local/bin/bcachefs-ref").exists(),
             "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
         );
-        std::fs::create_dir_all("/share/check-oracle").unwrap();
-        let p = PathBuf::from(format!("/share/check-oracle/{name}.img"));
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let p = dir.into_image(format!("{name}.img"));
         std::fs::copy(fixture(src), &p).unwrap();
         let ino = Filesystem::open(FileDevice::open(&p).unwrap())
             .unwrap()
@@ -220,27 +255,20 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
     use fs_bcachefs::inode::{Dirent, InodeV3Raw, FIELD_NAMES};
     use fs_bcachefs::write::Writer;
 
-    /// A copy under /share, removed when dropped, pass or panic.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    /// A copy of `default` under /share with `hello.txt`'s dirent moved
-    /// `by` slots on and a key of type `left` in its own slot.
-    fn displaced(name: &str, by: u64, left: u8) -> Scratch {
+    /// A copy of `default` in a private scratch directory, removed when
+    /// dropped, with `hello.txt`'s dirent moved `by` slots on and a key of
+    /// type `left` in its own slot.
+    fn displaced(name: &str, by: u64, left: u8) -> ScratchImage {
         assert!(
             Path::new("/usr/local/bin/bcachefs-ref").exists(),
             "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
         );
-        std::fs::create_dir_all("/share/check-oracle").unwrap();
-        let img = Scratch(PathBuf::from(format!("/share/check-oracle/{name}.img")));
-        std::fs::copy(fixture("default.img"), &img.0).unwrap();
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("{name}.img"));
+        std::fs::copy(fixture("default.img"), &img).unwrap();
         let d = {
-            let dev = FileDevice::open(&img.0).unwrap();
+            let dev = FileDevice::open(&img).unwrap();
             let sb = Superblock::read(&dev).unwrap();
             btree::walk(&dev, &sb, btree_id::DIRENTS)
                 .unwrap()
@@ -257,7 +285,7 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
         // the move, so the only damage is where the dirent now hashes.
         let target = Dirent::from_key(&d).unwrap().inum;
         let mut ino = {
-            let dev = FileDevice::open(&img.0).unwrap();
+            let dev = FileDevice::open(&img).unwrap();
             let sb = Superblock::read(&dev).unwrap();
             btree::walk(&dev, &sb, btree_id::INODES)
                 .unwrap()
@@ -288,7 +316,7 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
         // The writer's insert leaves each btree's key and byte counters as
         // they were, so they move here by what these keys add and remove.
         let counters = {
-            let dev = FileDevice::open(&img.0).unwrap();
+            let dev = FileDevice::open(&img).unwrap();
             let sb = Superblock::read(&dev).unwrap();
             let all = btree::walk(&dev, &sb, ACCOUNTING).unwrap();
             [(btree_id::DIRENTS, &dirents), (btree_id::INODES, &inodes)]
@@ -315,7 +343,7 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut w = Writer::open(FileDevice::open_rw(&img.0).unwrap()).unwrap();
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         w.insert(btree_id::DIRENTS, dirents).unwrap();
         w.insert(btree_id::INODES, inodes).unwrap();
         w.insert(ACCOUNTING, counters).unwrap();
@@ -353,33 +381,33 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
     }
 
     let away = displaced("dirent-wrong-offset", 5, key_type::DELETED);
-    let (theirs, text) = reference_finds_a_problem(&away.0);
+    let (theirs, text) = reference_finds_a_problem(&away);
     assert!(
         theirs && text.contains("hash table key at wrong offset"),
         "{}: the reference did not report the dirent at a wrong offset, so this \
          case proves nothing:\n{text}",
-        away.0.display()
+        away.display()
     );
     assert!(
-        wrong_offset(&away.0),
+        wrong_offset(&away),
         "{}: the reference found a dirent at a wrong offset this checker did not \
          name as hash_table_key_wrong_offset:\n{text}",
-        away.0.display()
+        away.display()
     );
 
     let past = displaced("dirent-past-whiteout", 1, key_type::HASH_WHITEOUT);
-    let (theirs, text) = reference_finds_a_problem(&past.0);
+    let (theirs, text) = reference_finds_a_problem(&past);
     assert!(
         !theirs,
         "{}: the reference found a problem in a dirent reachable over a \
          whiteout:\n{text}",
-        past.0.display()
+        past.display()
     );
     assert!(
-        !wrong_offset(&past.0),
+        !wrong_offset(&past),
         "{}: the reference calls a dirent reachable over a whiteout clean, and \
          this checker reported it at a wrong offset",
-        past.0.display()
+        past.display()
     );
 }
 
@@ -413,20 +441,22 @@ fn where_the_reference_finds_snapshot_damage_this_checker_names_it() {
     const SV: u64 = u32::MAX as u64 - 3;
     const SNAP: u32 = u32::MAX - 2;
 
-    /// A copy of fixture `src` under /share, with the key at `0:offset` of
-    /// btree `id` changed by `change` through the writer.
+    /// A copy of fixture `src` in a private scratch directory, removed when
+    /// dropped, with the key at `0:offset` of btree `id` changed by `change`
+    /// through the writer.
     fn rewritten(
         name: &str,
         src: &str,
         (id, key_type, offset): (u8, u8, u64),
         change: impl FnOnce(&mut Vec<u8>),
-    ) -> PathBuf {
+    ) -> ScratchImage {
         assert!(
             Path::new("/usr/local/bin/bcachefs-ref").exists(),
             "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
         );
-        std::fs::create_dir_all("/share/check-oracle").unwrap();
-        let p = PathBuf::from(format!("/share/check-oracle/{name}.img"));
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let p = dir.into_image(format!("{name}.img"));
         std::fs::copy(fixture(src), &p).unwrap();
         let dev = FileDevice::open(&p).unwrap();
         let sb = Superblock::read(&dev).unwrap();
@@ -525,8 +555,9 @@ fn both_checkers_reject_a_snapshot_key_with_a_nonzero_snapshot_field() {
         Path::new("/usr/local/bin/bcachefs-ref").exists(),
         "the reference checker is not here: run `chore test:vm`"
     );
-    std::fs::create_dir_all("/share/check-oracle").unwrap();
-    let img = PathBuf::from("/share/check-oracle/snapshot-field-nonzero.img");
+    let dir = ScratchDir::new("check-oracle");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("snapshot-field-nonzero.img");
     std::fs::copy(fixture("default.img"), &img).unwrap();
     let (control_bad, text) = reference_finds_a_problem(&img);
     assert!(!control_bad, "the unchanged control must be clean:\n{text}");
@@ -576,8 +607,9 @@ fn both_checkers_reject_a_bucket_gens_key_with_a_nonzero_size() {
         Path::new("/usr/local/bin/bcachefs-ref").exists(),
         "the reference checker is not here: run `chore test:vm`"
     );
-    std::fs::create_dir_all("/share/check-oracle").unwrap();
-    let img = PathBuf::from("/share/check-oracle/bucket-gens-size-nonzero.img");
+    let dir = ScratchDir::new("check-oracle");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("bucket-gens-size-nonzero.img");
     std::fs::copy(fixture("kernel.img"), &img).unwrap();
     let (control_bad, text) = reference_finds_a_problem(&img);
     assert!(!control_bad, "the unchanged control must be clean:\n{text}");

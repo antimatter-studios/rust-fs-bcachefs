@@ -50,11 +50,7 @@ fn torn_extent_nodes_are_refused_without_rejecting_complete_multiple_bsets() {
         assert_eq!(&bytes[136..144], &bytes[next + 16..next + 24]);
         multiple_bsets += 1;
 
-        let dir = std::env::temp_dir().join(format!(
-            "rust-fs-bcachefs-node-written-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = common::ScratchDir::new(&format!("node-written-{set}"));
         let damaged = dir.join(format!("{set}.img"));
         std::fs::copy(&path, &damaged).unwrap();
         // The first bset and its checksum stay intact; the next bset no

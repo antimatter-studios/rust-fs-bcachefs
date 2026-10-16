@@ -60,15 +60,10 @@ enum Change {
 /// of `set` (the first that `pick` also accepts), commit it with the
 /// writer's raw `insert`, and require the checker to report `kind` for it.
 fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Change, kind: &str) {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-key-fields-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
     let test = format!("{set}-{id}-{kt}-{kind}");
-    let img = dir.join(format!("{test}.img"));
+    // Removed when the test ends however it ends.
+    let img = common::ScratchDir::new("check-key-fields").into_image(format!("{test}.img"));
     std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
-    let _gone = Scratch(img.clone());
 
     let before = check::check(&FileDevice::open(&img).unwrap()).expect("the checker runs");
     assert!(
@@ -112,16 +107,6 @@ fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Chan
         "{test}: the key at {pos} was not reported as {kind}: {:?}",
         after.problems
     );
-}
-
-/// A copy of a fixture, removed when the test ends however it ends: the
-/// guest's temporary directory holds a few of them, not sixteen.
-struct Scratch(std::path::PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        std::fs::remove_file(&self.0).ok();
-    }
 }
 
 fn any(_: &Bkey) -> bool {

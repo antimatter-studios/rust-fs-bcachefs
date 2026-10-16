@@ -17,6 +17,7 @@ set -euo pipefail
 
 [ "${FLTH_GUEST:-}" = 1 ] ||
     { echo "guest-suite.sh runs INSIDE the harness VM ('chore test:vm')." >&2; exit 1; }
+export FLTH_GUEST=1
 
 cd /repo
 # FS_CORE_CALLER names this repository: run directly rather than through
@@ -24,12 +25,14 @@ cd /repo
 FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-run.sh \
     fs-bcachefs /share rust-fs-core -- bash -c '
         set -euo pipefail
-        EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib --test fuzz_decoders "$@"
-        cargo test --locked --release --features write --test "oracle_*" --test capi "$@"
+        # Each cargo test runs in its own scratch root, removed on any exit.
+        run=/repo/scripts/test-scratch-run.sh
+        EXPECT_OVERFLOW_CHECKS=1 bash "$run" cargo test --locked --lib --test fuzz_decoders --test scratch_dir "$@"
+        bash "$run" cargo test --locked --release --features write --test "oracle_*" --test capi "$@"
         # The checker against the reference checker, which only exists in
         # here; the writer makes some of its damaged images.
-        cargo test --locked --release --features write --test check_oracle "$@"
+        bash "$run" cargo test --locked --release --features write --test check_oracle "$@"
         # The write path, judged by the reference tools that only exist in
         # here; one test at a time, since they share one mount point.
-        RUST_TEST_THREADS=1 cargo test --locked --release --features write --test write_oracle "$@"
+        RUST_TEST_THREADS=1 bash "$run" cargo test --locked --release --features write --test write_oracle "$@"
     ' guest-suite "$@"

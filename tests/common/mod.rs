@@ -147,3 +147,113 @@ pub fn manifest(set: &str) -> Vec<Entry> {
     assert!(!out.is_empty(), "{set}.json holds no entries");
     out
 }
+
+/// A private directory removed on return or unwind. The test runner sets a
+/// run-owned root so it can also clean up after an abort or terminated child.
+/// Direct cargo invocations fall back to Cargo's target scratch directory.
+pub struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    pub fn new(tag: &str) -> ScratchDir {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        assert!(
+            !tag.is_empty()
+                && tag
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "scratch tags must be nonempty filename components"
+        );
+        let root = std::env::var_os("FS_BCACHEFS_TEST_SCRATCH_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
+        std::fs::create_dir_all(&root).unwrap();
+        loop {
+            let path = root.join(format!(
+                "rust-fs-bcachefs-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return ScratchDir { path },
+                // Never remove an existing path: it may belong to a live test.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("cannot create scratch directory {}: {e}", path.display()),
+            }
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub fn join(&self, name: impl AsRef<std::path::Path>) -> PathBuf {
+        let name = name.as_ref();
+        assert!(
+            !name.as_os_str().is_empty()
+                && name
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "scratch paths must stay below their owner"
+        );
+        self.path.join(name)
+    }
+
+    /// A private copy of a fixture, inside this directory.
+    pub fn copy_fixture(&self, name: &str) -> PathBuf {
+        let dst = self.join(name);
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        std::fs::copy(fixture(name), &dst).unwrap();
+        dst
+    }
+
+    /// Transfer the directory's lifetime with a path returned by a helper.
+    pub fn into_image(self, name: impl AsRef<std::path::Path>) -> ScratchImage {
+        let path = self.join(name);
+        ScratchImage { path, _owner: self }
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            let message = format!(
+                "cannot remove owned scratch directory {}: {e}",
+                self.path.display()
+            );
+            if std::thread::panicking() {
+                eprintln!("{message}");
+            } else {
+                panic!("{message}");
+            }
+        }
+    }
+}
+
+/// An image path that keeps its containing directory alive in the caller.
+pub struct ScratchImage {
+    path: PathBuf,
+    _owner: ScratchDir,
+}
+
+impl ScratchImage {
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::path::Path> for ScratchImage {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl std::ops::Deref for ScratchImage {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}

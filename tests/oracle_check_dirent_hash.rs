@@ -21,29 +21,9 @@ use fs_bcachefs::write::Writer;
 use fs_core::FileDevice;
 
 /// A damaged copy of a fixture, removed when dropped.
-struct Scratch(std::path::PathBuf);
-
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn scratch(test: &str) -> Scratch {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-dirent-hash-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = Scratch(dir.join(format!("{test}.img")));
-    std::fs::copy(fixture("default.img"), &*img).unwrap();
+fn scratch(test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("check-dirent-hash").into_image(format!("{test}.img"));
+    std::fs::copy(fixture("default.img"), &img).unwrap();
     img
 }
 
