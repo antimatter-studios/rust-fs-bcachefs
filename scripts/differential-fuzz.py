@@ -29,6 +29,12 @@ cases: a note the reference prints on the unchanged fixture (block4k's
 bitmap note, say) is that fixture's normal, not something a case found.
 Its exit status is that fixture's normal status, too.
 
+A same-run native-read manifest may additionally corroborate one exact
+extent-data finding. The strict live read grader verifies the independent
+observations; the judge hashes the actual physical mutation and control.
+Neither case IDs nor seeds establish a match. fsck output/status remain
+unchanged, and the report names the native read as the finding's channel.
+
 DISCLOSURE (AGENTS.md). A case on which the reference crashed, hung or
 reported an internal fault is a finding about the reference, not this
 crate. Its output is never kept, its patch is deleted as soon as it is
@@ -38,6 +44,7 @@ nothing that would reproduce it.
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -45,7 +52,9 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from collections import Counter, OrderedDict
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import default74_native_proof as native74
@@ -118,6 +127,137 @@ def read_cases(out):
 
 # ---------------------------------------------------------------- judge
 
+# One independently observed read, not a baseline allowance. Every byte of
+# the physical images and every field of the finding must match this proof.
+READ_BINDING = {
+    "reference": "1.39.7",
+    "fixture_pin": "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e",
+    "control_sha256": "70e75cfbe82c927f6914689a0142c0e37e99cae289819d86fbacf62f6ee78342",
+    "mutated_sha256": "3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb",
+    "fixture": "default.img",
+    "structure": "node",
+    "ours": "found",
+    "signature": "check:extent_data",
+    "detail": "extent 2147483904:1:U32_MAX: extent data: checksum mismatch (stored 0x11ba7, computed 0xa2f1ba7)",
+    "inode": "2147483904",
+    "key": "2147483904:1:U32_MAX",
+    "stored": "0x11ba7",
+    "computed": "0xa2f1ba7",
+    "path": "many/file-0242.txt",
+    "control_read_sha256": "fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d",
+}
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def proof_context():
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    if not run:
+        raise ValueError("native read proof requires the current CI run")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    return {"head": head, "run": run}
+
+
+def proof_files(root):
+    files = [root / "evidence.txt"]
+    for directory in ("read", "listing", "kept"):
+        files.extend(p for p in (root / directory).rglob("*") if p.is_file())
+    return {str(p.relative_to(root)): sha256(p) for p in sorted(files)}
+
+
+def grade_native_read(root):
+    # The strict live grader appends its verdict. Grade a copy so revalidation
+    # cannot alter the observations or invalidate their manifest digests.
+    with tempfile.TemporaryDirectory(prefix="native-read-grade-") as temporary:
+        copy = Path(temporary) / "proof"
+        copy.mkdir()
+        shutil.copyfile(root / "evidence.txt", copy / "evidence.txt")
+        for directory in ("read", "listing"):
+            shutil.copytree(root / directory, copy / directory)
+        subprocess.run(
+            [
+                "bash",
+                str(Path(__file__).with_name("pinned-default74-reference.sh")),
+                "--grade-read-evidence",
+                str(copy),
+                READ_BINDING["inode"],
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+
+def export_read_proof(args):
+    root = Path(args.out)
+    grade_native_read(root)
+    if (sha256(args.control), sha256(args.mutated)) != (
+        READ_BINDING["control_sha256"],
+        READ_BINDING["mutated_sha256"],
+    ):
+        raise ValueError("native read physical images differ")
+    proof = {
+        "schema": 1,
+        "context": proof_context(),
+        "binding": READ_BINDING,
+        "observations": proof_files(root),
+    }
+    (root / "read-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
+    return 0
+
+
+def load_read_proof(directory, version):
+    if not directory:
+        return None
+    try:
+        root = Path(directory)
+        proof = json.loads((root / "read-proof.json").read_text())
+        if (
+            proof["schema"] != 1
+            or proof["context"] != proof_context()
+            or proof["binding"] != READ_BINDING
+            or version != READ_BINDING["reference"]
+            or proof["observations"] != proof_files(root)
+        ):
+            raise ValueError("stale or mismatched native read manifest")
+        grade_native_read(root)
+        return proof
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
+        print(f"differential: native read proof refused: {error}", file=sys.stderr)
+        return None
+
+
+def native_read_matches(case, proof, mutated, control):
+    return bool(
+        proof
+        and all(
+            case.get(k) == READ_BINDING[k]
+            for k in ("fixture", "structure", "ours", "signature", "detail")
+        )
+        and mutated == READ_BINDING["mutated_sha256"]
+        and control == READ_BINDING["control_sha256"]
+    )
+
+
+def bound_native_read(case, image, control_sha256, proof):
+    if native_read_matches(
+        case, proof, READ_BINDING["mutated_sha256"], control_sha256
+    ) and native_read_matches(case, proof, sha256(image), control_sha256):
+        return proof
+    return None
+
 
 def nonzero_chunks(path):
     """The fixture's non-zero MiB chunks and its size: a copy writes these
@@ -166,6 +306,12 @@ def judge_one(case, out, chunks, size, args):
     read_binding = native74.bind(
         case, os.path.join(args.fixtures, case["fixture"]), scratch, patch, args.version
     )
+    read_match = bound_native_read(
+        case,
+        scratch,
+        getattr(args, "control_sha256", None),
+        getattr(args, "read_proof", None),
+    )
     if args.container:
         cmd = [
             "docker",
@@ -211,6 +357,11 @@ def judge_one(case, out, chunks, size, args):
         if read_binding:
             with open(ref + ".read.json", "w") as f:
                 json.dump(read_binding, f)
+        # The same-run read proof is a second channel beside the canonical
+        # retained-artifact binding: its own file, written only on a match.
+        if read_match:
+            with open(ref + ".native-read-proof.json", "w") as f:
+                json.dump(read_match, f)
         if cid in args.keep:
             keep_case(case, out, patch, status, text)
     return status
@@ -236,12 +387,18 @@ def judge(args):
     for d in ("scratch", "ref"):
         os.makedirs(os.path.join(out, d), exist_ok=True)
     cases = read_cases(out)
+    args.read_proof = load_read_proof(args.read_evidence, args.version)
     by_fixture = OrderedDict()
     for c in cases:
         by_fixture.setdefault(c["fixture"], []).append(c)
     broken = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for fixture, group in by_fixture.items():
+            args.control_sha256 = (
+                sha256(os.path.join(fixtures, fixture))
+                if args.read_proof and fixture == READ_BINDING["fixture"]
+                else None
+            )
             chunks, size = nonzero_chunks(os.path.join(fixtures, fixture))
             for status in pool.map(
                 lambda c, chunks=chunks, size=size: judge_one(
@@ -329,7 +486,7 @@ def read_ref(out, cid):
         return status, f.read()
 
 
-def judged(out, case, normal=None):
+def judged(out, case, normal=None, proof=None):
     """The reference's verdict on a case. `normal` is its fixture's control,
     `{"lines": folded notes, "status": exit status}`: a note it printed there
     is not a finding here, and neither is the same exit status."""
@@ -341,6 +498,9 @@ def judged(out, case, normal=None):
         return {"verdict": "crashed", "status": status}
     normal = normal or {"lines": frozenset(), "status": 0}
     lines = findings(text, normal["lines"])
+    # The offline checker's own verdict, taken before any corroborating
+    # channel adds a finding: it is reported as fsck's, never as ours.
+    fsck_verdict = "found" if lines or status not in (0, normal["status"]) else "clean"
     read_path = os.path.join(out, "ref", case["id"] + ".read.json")
     if not lines and status == 0 and os.path.isfile(read_path):
         with open(read_path) as f:
@@ -352,12 +512,29 @@ def judged(out, case, normal=None):
                 "Independent reference FUSE read: exact extent returns EIO; "
                 + native74.SOURCE
             ]
-    return {
+    result = {
         "verdict": "found" if lines or status not in (0, normal["status"]) else "clean",
         "status": status,
         "lines": lines,
         "signature": signature(lines, status),
+        "fsck_verdict": fsck_verdict,
     }
+    marker = Path(out) / "ref" / (case["id"] + ".native-read-proof.json")
+    if (
+        proof
+        and marker.is_file()
+        and native_read_matches(
+            case, proof, READ_BINDING["mutated_sha256"], READ_BINDING["control_sha256"]
+        )
+    ):
+        try:
+            matched = json.loads(marker.read_text()) == proof
+        except (ValueError, OSError):
+            matched = False
+        if matched:
+            result["verdict"] = "found"
+            result["channel"] = "native reference FUSE read: exact extent returned EIO"
+    return result
 
 
 def controls(out, cases):
@@ -418,9 +595,15 @@ def example(case, ref):
         out.append(f"  - the reference (exit {ref['status']}):")
         out.append("")
         out.append("    ```")
-        out.extend("    " + l for l in ref["lines"][:12])
-        if len(ref["lines"]) > 12:
-            out.append(f"    ... {len(ref['lines']) - 12} more lines")
+        # The head names the key; the tail names the error the reference
+        # counted, which a long key dump would otherwise push out of view.
+        lines = list(ref["lines"])
+        head, tail = lines[:12], lines[12:]
+        out.extend("    " + l for l in head)
+        if len(tail) > 8:
+            out.append(f"    ... {len(tail) - 8} more lines")
+            tail = tail[-8:]
+        out.extend("    " + l for l in tail)
         out.append("    ```")
     return out
 
@@ -443,12 +626,13 @@ def classify(args):
     classes = OrderedDict()  # key -> [cases]
     controls_bad, panics, unjudged, controls_crashed = [], [], 0, 0
     normal = controls(out, cases)
+    proof = load_read_proof(args.read_evidence, args.version)
     for case in cases:
         if case["ours"] == "panicked":
             counts["ours-panicked"] += 1
             panics.append(case)
             continue
-        ref = judged(out, case, normal.get(case["fixture"]))
+        ref = judged(out, case, normal.get(case["fixture"]), proof)
         if ref is None:
             unjudged += 1
             continue
@@ -499,6 +683,14 @@ def classify(args):
         ]
     if unjudged:
         report.append(f"| not judged (the judge did not finish) | {unjudged} |")
+    corroborated = [c for c in cases if c.get("ref", {}).get("channel")]
+    if corroborated:
+        report += ["", "## Independent native data-read findings", ""]
+        for case in corroborated:
+            ref = case["ref"]
+            report.append(
+                f"- `{case['id']}`: {ref['channel']}; fsck remains {ref['fsck_verdict']} (exit {ref['status']}). Physical images, healthy read hash, key/inode/path and checksum tuple match the same-run manifest; raw fsck output is retained under ref/."
+            )
     noted = [(f, n) for f, n in normal.items() if n["notes"] or n["status"] != 0]
     if noted:
         report += [
@@ -693,6 +885,7 @@ def main():
     how.add_argument("--reference", help="a stand-in, given the image's path (tests)")
     j.add_argument("--jobs", type=int, default=4)
     j.add_argument("--timeout", type=int, default=60)
+    j.add_argument("--read-evidence")
     j.add_argument("--version", default="(unknown version)")
     j.add_argument(
         "--keep",
@@ -708,6 +901,11 @@ def main():
     c.add_argument("--baseline", required=True)
     c.add_argument("--report", required=True)
     c.add_argument("--version", default="(unknown version)")
+    c.add_argument("--read-evidence")
+    e = sub.add_parser("export-read-proof")
+    e.add_argument("out")
+    e.add_argument("control")
+    e.add_argument("mutated")
     r = sub.add_parser("replay")
     r.add_argument("out", nargs="?", default="")
     r.add_argument("--expect", required=True)
@@ -717,7 +915,12 @@ def main():
         help="print the replay's fixture run, digest, cases, seed and case IDs",
     )
     args = p.parse_args()
-    return {"judge": judge, "classify": classify, "replay": replay}[args.command](args)
+    return {
+        "judge": judge,
+        "classify": classify,
+        "replay": replay,
+        "export-read-proof": export_read_proof,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

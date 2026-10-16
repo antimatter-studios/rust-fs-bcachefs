@@ -38,6 +38,10 @@ required-features = ["write"]
 write = []
 # The tools carry the write verbs, marked experimental in their help.
 cli = ["dep:clap", "rust-fs-core/cli", "write"]
+# Tests whose expected bytes belong to one exact fixtures artifact. Only the
+# differential workflow's pinned job enables it, after checking the artifact's
+# digest; the ordinary tiers build fresh fixtures and never compile them.
+pinned-fixtures = ["write"]
 
 [dependencies]
 # Block-device trait surface shared with the sister fs-* drivers.
@@ -78,3 +82,10 @@ panic = "unwind"  # required for catch_unwind at the FFI boundary
 [profile.dev]
 opt-level = 1
 panic = "unwind"
+
+# Case default-74's stored and computed checksums hold only for fixtures
+# artifact sha256:9f112ded...; differential.yml's pinned job runs it there.
+[[test]]
+name = "pinned_differential_default74"
+path = "tests/oracle_differential_default74.rs"
+required-features = ["pinned-fixtures"]

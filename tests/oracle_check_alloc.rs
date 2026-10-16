@@ -655,7 +655,10 @@ fn an_xattr_key_in_the_dirents_btree_is_reported() {
     let img = scratch("dirents-xattr");
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(
-        !report.problems.iter().any(|p| p.kind == "invalid_bkey"),
+        !report
+            .problems
+            .iter()
+            .any(|p| p.kind == "bkey_invalid_type_for_btree"),
         "the unchanged fixture already reports an invalid key: {:?}",
         report.problems
     );
@@ -686,10 +689,76 @@ fn an_xattr_key_in_the_dirents_btree_is_reported() {
         report
             .problems
             .iter()
-            .any(|p| p.kind == "invalid_bkey" && p.detail.contains(&dirent.pos.to_string())),
+            .any(|p| p.kind == "bkey_invalid_type_for_btree"
+                && p.detail.contains(&dirent.pos.to_string())),
         "the xattr key in dirents at {} was not reported: {:?}",
         dirent.pos,
         report.problems
     );
+    std::fs::remove_file(&img).ok();
+}
+
+/// One offender is one finding (#219): the xattr key in dirents was once
+/// reported twice, as `invalid_bkey` by the walk and as
+/// `bkey_invalid_type_for_btree` by the key-field check. A second, distinct
+/// offender in the same btree keeps its own finding, and the unchanged
+/// fixture reports neither.
+#[test]
+fn an_xattr_in_dirents_is_one_finding_beside_a_distinct_offender() {
+    const TYPE_KINDS: &[&str] = &["invalid_bkey", "bkey_invalid_type_for_btree"];
+    let img = scratch("dirents-xattr-once");
+    let dirents: Vec<Bkey> = keys(&img, btree_id::DIRENTS)
+        .into_iter()
+        .filter(|k| k.key_type == key_type::DIRENT)
+        .collect();
+    assert!(dirents.len() >= 2, "the fixture has two dirents");
+    let (xattr_at, sized_at) = (dirents[0].pos, dirents[1].pos);
+
+    let control = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        !control
+            .problems
+            .iter()
+            .any(|p| TYPE_KINDS.contains(&p.kind) || p.kind == "bkey_size_nonzero"),
+        "the unchanged fixture already reports a dirents key: {:?}",
+        control.problems
+    );
+
+    let mut xattr = dirents[0].clone();
+    xattr.key_type = key_type::XATTR;
+    let mut sized = dirents[1].clone();
+    sized.size = 1;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(btree_id::DIRENTS, vec![xattr, sized]).unwrap();
+    drop(w);
+
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    let at = |pos: Bpos| {
+        report
+            .problems
+            .iter()
+            .filter(|p| p.detail.contains(&pos.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let xattr_findings = at(xattr_at);
+    assert_eq!(
+        xattr_findings.len(),
+        1,
+        "the xattr key in dirents at {xattr_at} is one finding: {:?}",
+        report.problems
+    );
+    assert!(
+        TYPE_KINDS.contains(&xattr_findings[0].kind),
+        "the xattr key in dirents is reported as a wrong key type: {:?}",
+        xattr_findings
+    );
+    let sized_findings = at(sized_at);
+    assert_eq!(
+        sized_findings.len(),
+        1,
+        "the sized dirent at {sized_at} is its own finding: {:?}",
+        report.problems
+    );
+    assert_eq!(sized_findings[0].kind, "bkey_size_nonzero");
     std::fs::remove_file(&img).ok();
 }

@@ -57,6 +57,11 @@ on:
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay.tsv
       - fuzz/shared/**
+      - tests/oracle_differential_default74.rs
+      - scripts/pinned-default74-reference.sh
+      - scripts/pinned-default74-read-controls.py
+      - scripts/pinned-default74-observation-controls.sh
+      - scripts/differential-read-classification-controls.py
 
 concurrency:
   group: differential-${{ github.event.pull_request.number || github.ref }}
@@ -71,7 +76,107 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  # Replay an independently recorded positive observation, then deliberately
+  # damage each observation. A failed read alone is not integrity evidence:
+  # fsck passes both images, but only the exact mutated file must return EIO.
+  default74-read-controls:
+    name: default-74 read evidence rejection controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the digest-pinned independent read observations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact=11996897949
+          digest=cb7c08fc3c89dd4886d7c88af030d68dbbb4588f03d9c1b0981053af3e38836d
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" --jq '.digest')"
+          [ "$actual" = "sha256:$digest" ] || { echo "independent read artifact digest differs: $actual" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/default74-read.zip"
+          echo "$digest  $RUNNER_TEMP/default74-read.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/default74-read.zip" -d "$RUNNER_TEMP/default74-read"
+      - name: The live evidence grader accepts the recorded EIO and rejects invalid observations
+        run: python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default74-read"
+      - name: The pinned job reads exactly one complete observation from its test's log
+        run: bash scripts/pinned-default74-observation-controls.sh
+
+  # Case default-74's expected checksums belong to one fixtures artifact, so
+  # it is judged only over that artifact, fetched by run, id and digest and
+  # refused on any mismatch. The run fails unless exactly that one test ran
+  # and passed. The artifact expires 2026-10-22; the fetch fails after that.
+  pinned-default74:
+    name: pinned default-74 (#219, fixtures sha256:9f112ded)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PIN_RUN: "38741040375"
+      PIN_ARTIFACT: "11977252185"
+      PIN_DIGEST: "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e"
+      PIN_TARBALL: "27b15c9dffa3240b2ec3f3f3a84221c255c210b157f5888d2285f4e358025869"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Fetch the pinned fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PIN_RUN/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
+          [ -n "$artifact" ] || { echo "run $PIN_RUN has no fixtures artifact (expired?)" >&2; exit 1; }
+          [ "$artifact" = "$PIN_ARTIFACT $PIN_DIGEST" ] || { echo "run $PIN_RUN fixtures artifact is $artifact, not $PIN_ARTIFACT $PIN_DIGEST" >&2; exit 1; }
+          gh run download "$PIN_RUN" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
+          [ "$tarball" = "$PIN_TARBALL" ] || { echo "fixtures.tar.gz is sha256:$tarball, not sha256:$PIN_TARBALL" >&2; exit 1; }
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
+          printf '%s\n' "$PIN_DIGEST" > .vm-share/fixtures-pin
+      - name: The default-74 regression runs over them
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 -- --show-output 2>&1 | tee "$RUNNER_TEMP/default74.log"
+          grep -q '^test the_default_74_extent_data_mismatch_is_in_the_image \.\.\. ok$' "$RUNNER_TEMP/default74.log" || { echo "the default-74 test did not run and pass" >&2; exit 1; }
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/default74.log" || { echo "expected exactly one executed test" >&2; exit 1; }
+      # The reference checker's own verdict on the same bytes: `fsck -n` on
+      # the fixture unchanged and on default-74's mutation, in the
+      # differential harness's container, failed unless each is expected.
+      # Then the reference reads the reported key's file through its own FUSE
+      # mount on both images, recording each read's status and hash.
+      - name: The reference's verdicts on default-74
+        env:
+          OURS_LOG: ${{ runner.temp }}/default74.log
+        run: scripts/pinned-default74-reference.sh
+      # Only cases judged without a crash are kept (the script's header).
+      - name: Keep the reference's verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: default74-reference
+          path: |
+            tmp/default74-reference/evidence.txt
+            tmp/default74-reference/kept/
+            tmp/default74-reference/listing/
+            tmp/default74-reference/read/
+            tmp/default74-reference/read-proof.json
+          if-no-files-found: error
+          retention-days: 30
+
   differential:
+    needs: [pinned-default74, default74-read-controls]
     name: differential (this crate vs the reference checker, damaged images)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -95,6 +200,13 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/default74-fixtures.zip"
           python3 tests/default74_native_proof.py "$DIFFERENTIAL_NATIVE74_ARCHIVE" "$RUNNER_TEMP/default74-fixtures.zip"
           echo "DIFFERENTIAL_NATIVE74_ARCHIVE=$DIFFERENTIAL_NATIVE74_ARCHIVE" >> "$GITHUB_ENV"
+      - name: Fetch the same-run independently graded physical-image read proof
+        uses: actions/download-artifact@v4
+        with:
+          name: default74-reference
+          path: ${{ runner.temp }}/native-read-proof
+      - name: Classification controls retain the existing classes
+        run: bash tests/scripts/differential-fuzz-classifies.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -161,6 +273,7 @@ jobs:
       # day's number puts it, so no two nights judge the same cases.
       - name: chore fuzz:differential
         env:
+          DIFFERENTIAL_READ_EVIDENCE: ${{ runner.temp }}/native-read-proof
           CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
           FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed }}
           EVENT: ${{ github.event_name }}

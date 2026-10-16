@@ -1150,6 +1150,69 @@ snapshot, so neither rule belongs to a key type or a btree alone: the
 checker judges exactly the observed pairs of btree and key type, and every
 other pair is an open question until an oracle is seen to answer it.
 
+### A key's position and its value's lengths (S3, #219)
+
+The same report shows four more refusals, each after one change:
+
+- A subvolume moved to offset 0 (`POS_MIN`), or to inode U64_MAX, was
+  refused with "invalid pos" (`subvol_pos_bad`). Every subvolume the
+  fixtures hold is at `0:id` with an id of 1 or more, so the checker
+  refuses a subvolume at offset 0 or at any inode other than 0. The inode
+  rule is the one step past what was observed (only U64_MAX was tried). A
+  differential run that tried another inode and saw the reference accept
+  it would show this as a class only this crate finds.
+- A snapshot_tree moved to offset 0 was refused with "bad pos"
+  (`snapshot_tree_pos_bad`).
+- The lister prints an accounting key whose inode is `6 << 56 | id << 48`
+  as `btree btree=NAME`, with the btree of that id: logged_ops (17) and
+  subvolume_children (19), with offset and snapshot 0. One such key moved
+  to snapshot 1, and one whose inode also had `0xff0000` set, were refused
+  with "junk at end of accounting key" (`accounting_key_junk_at_end`).
+  Other kinds of accounting key were not seen changed this way and are
+  not judged.
+- An xattr whose value's first word was set to all ones was refused with
+  "value too small (5 < 8225)" (`xattr_val_size_too_small`): a name of
+  255 bytes and a value of 65535, after the 4-byte header, need 8225 words
+  where the value has 5. The checker refuses an xattr whose header's two
+  lengths, with the header, are longer than its value (the layout in
+  `src/xattr.rs`).
+- Differential run 38753768243 changed a dirent of `kernel-rootsnap.img`
+  (seed 10) into an xattr; the reference deleted it with "invalid key type
+  for btree dirents (xattr)" (`bkey_invalid_type_for_btree`). The checker
+  refuses that one pair, an xattr in the dirents btree; other pairs of key
+  type and btree were not seen and are not judged.
+
+The inode node case of the same report (a re-stamped node, `default.img`
+seed 44) is still open: the report cuts off the reference's reason.
+
+### A pinned extent checksum and the reference's data read (S3, S8, #219)
+
+[Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)
+records two different observations from the reference tools 1.39.7. Its
+checker accepts both the unchanged image and the changed image with status
+0. Through its FUSE mount, inode 2147483904 in the unchanged image reads
+successfully with SHA-256
+`fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d`;
+the same inode in the changed image returns `Input/output error`.
+
+This observation is bound to fixtures artifact 11977252185 from run
+38741040375, digest
+`sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`.
+The changed image has SHA-256
+`3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb`.
+The reference's extent listing names key `2147483904:1:U32_MAX`, with
+stored CRC32C `0x11ba7`; the unchanged image lists `0xa2f1ba7`, matching
+the independently computed checksum. Artifact 11996897949 retains the
+listing and read observations.
+
+`scripts/pinned-default74-reference.sh` requires that exact fixture,
+physical image, extent, inode and checksum binding, the recorded control
+bytes, and the changed image's EIO. Its CI controls reject successful
+reads, timeouts, permission failures, missing observations and mismatched
+identity. The differential class remains open under #219; this evidence
+establishes the distinction between the reference checker's acceptance
+and its data reader's integrity refusal for this one pinned case.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

@@ -3,8 +3,8 @@
 //!
 //! Checked: the superblock and its checksum; every btree this reader knows,
 //! node by node (magic, sequence, checksums, key order, keys inside each
-//! node's range); a size or a snapshot on a key whose btree allows
-//! neither; every directory entry against the inode it names (it
+//! node's range); a size, a snapshot, a position or value lengths a key's
+//! btree does not allow; every directory entry against the inode it names (it
 //! exists, its type agrees, its directory is a directory); every inode's
 //! link count against the entries that name it; every extent against its
 //! inode (it exists, the extent does not start past the end of the file,
@@ -1205,20 +1205,11 @@ fn walk_checked(
                 last = Some(k.pos);
                 // check_key_fields covers the bucket_gens size refusal from
                 // differential run 38814891184 ("size != 0") with the same
-                // code and message, so it is reported once.
+                // code and message, so it is reported once. It also reports
+                // an xattr key in dirents (differential runs 38753768243 and
+                // 38814891184) as bkey_invalid_type_for_btree, the one code
+                // for that offender (#219).
                 check_key_fields(id, k, r);
-                // Differential run 38814891184 (kernel-rootsnap-10): the
-                // reference refuses an xattr key in the dirents btree as an
-                // invalid bkey.
-                if id == btree_id::DIRENTS && k.key_type == crate::bkey::key_type::XATTR {
-                    r.add(
-                        "invalid_bkey",
-                        format!(
-                            "btree {name}: key {} is an xattr, which dirents does not hold",
-                            k.pos
-                        ),
-                    );
-                }
             }
             Some(keys)
         }
@@ -1231,16 +1222,22 @@ fn walk_checked(
 
 /// What the reference refuses in a key's own fields (#219): a size on a
 /// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
-/// and a snapshot on a key of a btree that is not snapshotted ("nonzero
-/// snapshot", `bkey_snapshot_nonzero`). Each pair of btree and key type
-/// below is one differential run 38579070302 saw the reference refuse; a
-/// pair nobody observed is not judged (docs/clean-room.md).
+/// a snapshot on a key of a btree that is not snapshotted ("nonzero
+/// snapshot", `bkey_snapshot_nonzero`), a subvolume or snapshot_tree at a
+/// position it cannot have, an accounting key holding more than its kind
+/// and btree, and an xattr whose lengths run past its value. Each pair of
+/// btree and key type below is one differential run 38579070302 saw the
+/// reference refuse; a pair nobody observed is not judged
+/// (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const FREESPACE: u8 = 11;
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
     const KEY_SNAPSHOT_TREE: u8 = 31;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
+    /// An accounting key's kind, the top byte of its inode; the lister
+    /// prints 6 as `btree`, with the btree's id in the byte below.
+    const ACCT_BTREE: u64 = 6;
     const SIZE_ZERO: &[(u8, u8)] = &[
         (btree_id::INODES, key_type::INODE_V3),
         (btree_id::DIRENTS, key_type::DIRENT),
@@ -1274,5 +1271,59 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 k.pos, k.pos.snapshot
             ),
         );
+    }
+    let v = &k.value;
+    match (id, k.key_type) {
+        // A subvolume is at `0:id` ("Snapshots and subvolumes"): one at
+        // offset 0, or at another inode, is "invalid pos".
+        (SUBVOLUMES, KEY_SUBVOLUME) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
+            "subvol_pos_bad",
+            format!("btree {name}: subvolume at {}, not at 0:id", k.pos),
+        ),
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE) if k.pos.offset == 0 => r.add(
+            "snapshot_tree_pos_bad",
+            format!("btree {name}: snapshot_tree at {}, offset 0", k.pos),
+        ),
+        // A `btree` accounting key is its kind and the btree's id in the
+        // top two bytes of its inode; a bit below them, or a snapshot, is
+        // "junk at end of accounting key".
+        (ACCOUNTING, KEY_ACCOUNTING)
+            if k.pos.inode >> 56 == ACCT_BTREE
+                && (k.pos.inode & ((1 << 48) - 1) != 0 || k.pos.snapshot != 0) =>
+        {
+            r.add(
+                "accounting_key_junk_at_end",
+                format!(
+                    "btree {name}: accounting key {} holds more than its btree",
+                    k.pos
+                ),
+            )
+        }
+        // An xattr's header gives its name's and its value's lengths
+        // (src/xattr.rs); together they must fit the key's value.
+        (btree_id::XATTRS, key_type::XATTR)
+            if v.len() >= 4
+                && 4 + usize::from(v[1]) + usize::from(u16::from_le_bytes([v[2], v[3]]))
+                    > v.len() =>
+        {
+            r.add(
+                "xattr_val_size_too_small",
+                format!(
+                    "btree {name}: xattr {} has a {}-byte name and a {}-byte value in {} bytes",
+                    k.pos,
+                    v[1],
+                    u16::from_le_bytes([v[2], v[3]]),
+                    v.len()
+                ),
+            )
+        }
+        // An xattr belongs in the xattrs btree; differential run
+        // 38753768243 saw the reference delete one found in dirents as
+        // "invalid key type for btree dirents (xattr)".
+        (btree_id::DIRENTS, key_type::XATTR) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is an xattr", k.pos),
+        ),
+        _ => {}
     }
 }
