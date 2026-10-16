@@ -26,9 +26,10 @@
 # at seed 0, 80 cases a fixture, no longer found them.
 # #219's six position, accounting and xattr-length classes were removed by
 # #229 the same way.
+# #220's three snapshot-link classes were removed by #224 once a run at
+# seed 0, 80 cases a fixture, no longer found them.
 ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
 ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#163: allocation metadata and allowed key types
-ref-only	key-value	check_snapshot_trees...snapshot tree points to missing subvolume:	#220: snapshot metadata relationships
 ref-only	key-inode	check_alloc_info...entry in freespace btree for nonexistant dev:bucket #, fixing	#163: allocation metadata and allowed key types
 ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max len # ver # : nr_in	#163: allocation metadata and allowed key types
@@ -41,9 +42,7 @@ ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type
 ref-only	key-inode	check_reconcile_work...backpointer should be set in (none)	#163: allocation metadata and allowed key types
 ref-only	key-type	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type lru # len # ver # : idx #	#163: allocation metadata and allowed key types
 ref-only	key-value	accounting_read...accounting underflow for	#163: allocation metadata and allowed key types
-ref-only	key-value	check_snapshots...snapshot with bad skiplist pointer #:	#220: snapshot metadata relationships
 ref-only	key-inode	check_reconcile_work...extent should be set in (none)	#163: allocation metadata and allowed key types
-ref-only	key-value	check_snapshots...snapshot points to missing/incorrect tree:	#220: snapshot metadata relationships
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
 
 # Measured on main 91a47a2 in CI run 38698985871, reference checker 1.39.7.

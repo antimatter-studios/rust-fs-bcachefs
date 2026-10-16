@@ -45,6 +45,10 @@ on:
         description: "The pin file a replay reads (empty: fuzz/differential-replay.tsv)"
         required: false
         default: ""
+      keep:
+        description: "Case IDs to keep, space-separated (e.g. default-74): each one's patch, mutation and reference output, judged against the fixture_run given"
+        required: false
+        default: ""
   schedule:
     - cron: "30 4 * * *"
   pull_request:
@@ -267,7 +271,14 @@ jobs:
         run: |
           set -euo pipefail
           read -r run artifact_id digest < <(bash scripts/select-fixture-run.sh "$GITHUB_REPOSITORY" "$FIXTURE_RUN" "$FIXTURE_DIGEST")
-          gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
+          # The artifact the selector named, by id, and only if its bytes
+          # are the digest it was selected by.
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/fixtures.zip"
+          if ! printf '%s  %s\n' "${digest#sha256:}" "$RUNNER_TEMP/fixtures.zip" | sha256sum --check --status; then
+            echo "run $run artifact $artifact_id archive differs from $digest; no fallback" >&2
+            exit 1
+          fi
+          unzip -q "$RUNNER_TEMP/fixtures.zip" -d "$RUNNER_TEMP/fixtures"
           tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
@@ -282,6 +293,7 @@ jobs:
           DIFFERENTIAL_READ_EVIDENCE: ${{ runner.temp }}/native-read-proof
           CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
           FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed }}
+          DIFFERENTIAL_KEEP: ${{ inputs.replay && env.DIFFERENTIAL_KEEP || inputs.keep }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -303,13 +315,14 @@ jobs:
         if: always() && inputs.replay
         run: python3 scripts/differential-fuzz.py replay tmp/differential --expect "$REPLAY_FILE"
 
-      # Only the replay's named cases, each judged without a crash; a crash
-      # or hang never reaches tmp/differential/kept.
+      # Only the replay's (or the keep input's) named cases, each judged
+      # without a crash; a crash or hang never reaches tmp/differential/kept,
+      # so a named case that crashed fails here rather than going missing.
       - name: Keep the replayed cases
-        if: always() && inputs.replay
+        if: always() && (inputs.replay || inputs.keep != '')
         uses: actions/upload-artifact@v4
         with:
-          name: differential-replay
+          name: ${{ inputs.replay && 'differential-replay' || 'differential-kept' }}
           path: |
             tmp/differential/kept/
             ${{ env.REPLAY_FILE }}
