@@ -8,3 +8,6 @@
   a lookup from its name's hash slot cannot reach, because an empty slot
   lies between, is reported as a hash table key at the wrong offset;
   entries displaced past a collision or a whiteout stay valid.
+- **The checker reports a bucket_gens key with a size.** A bucket_gens
+  key whose size is not 0 is reported as `bkey_size_nonzero`, as the
+  reference checker refuses it.

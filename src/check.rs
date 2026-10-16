@@ -1202,6 +1202,14 @@ fn walk_checked(
                     );
                 }
                 last = Some(k.pos);
+                // Differential run 38814891184: the reference refuses a
+                // bucket_gens key with a size ("size != 0").
+                if id == BUCKET_GENS && k.key_type == KEY_BUCKET_GENS && k.size != 0 {
+                    r.add(
+                        "bkey_size_nonzero",
+                        format!("btree {name}: key {} has size {}", k.pos, k.size),
+                    );
+                }
             }
             Some(keys)
         }
