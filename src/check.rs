@@ -1205,20 +1205,11 @@ fn walk_checked(
                 last = Some(k.pos);
                 // check_key_fields covers the bucket_gens size refusal from
                 // differential run 38814891184 ("size != 0") with the same
-                // code and message, so it is reported once.
+                // code and message, so it is reported once. It also reports
+                // an xattr key in dirents (differential runs 38753768243 and
+                // 38814891184) as bkey_invalid_type_for_btree, the one code
+                // for that offender (#219).
                 check_key_fields(id, k, r);
-                // Differential run 38814891184 (kernel-rootsnap-10): the
-                // reference refuses an xattr key in the dirents btree as an
-                // invalid bkey.
-                if id == btree_id::DIRENTS && k.key_type == crate::bkey::key_type::XATTR {
-                    r.add(
-                        "invalid_bkey",
-                        format!(
-                            "btree {name}: key {} is an xattr, which dirents does not hold",
-                            k.pos
-                        ),
-                    );
-                }
             }
             Some(keys)
         }
