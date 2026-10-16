@@ -270,7 +270,11 @@ tasks:
       # 496 lines / 25,990 bytes on #212's run, whose changed fuzz lockfile
       # missed the cache and added a Downloaded and a Compiling line per
       # dependency, 43 lines. 520 holds a cold run and two more test binaries.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 520 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      # Raised again (2026-10-16): the agent-core v7 pull request's merge-queue
+      # run 38968265210 printed 557 lines / 28,786 bytes, its fuzz lockfile
+      # moving to rust-fs-core 0.3.12 missing the cache the same way. About
+      # 30% over that is 720 lines; the bytes still fit 40,000.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 81'
 
   check:semver:
