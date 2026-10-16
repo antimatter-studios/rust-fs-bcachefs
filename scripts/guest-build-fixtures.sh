@@ -12,18 +12,118 @@
 #   NAME.fsck.txt     the reference checker's verdict (must be clean)
 #
 # The reference tools are reached only through `bcachefs-ref`, the wrapper
-# scripts/vm-setup.sh installs. Nothing here mounts: the formatter populates
-# the image from a directory itself.
+# scripts/vm-setup.sh installs. The aged sets use its FUSE mount; the fresh
+# sets are populated by the formatter from a directory.
 set -euo pipefail
 # One deadline per step, five minutes unless the step says otherwise
 # (scripts/guest-watchdog.sh).
+owned_watchdog=
+[ -n "${WATCHDOG_PID:-}" ] || owned_watchdog=yes
 # shellcheck source=scripts/guest-watchdog.sh
-source /repo/scripts/guest-watchdog.sh
+source "${BCACHEFS_FIXTURE_WATCHDOG:-/repo/scripts/guest-watchdog.sh}"
+[ -z "$owned_watchdog" ] || owned_watchdog="${WATCHDOG_PID:-}"
 
-out=/share/fixtures
-work=/share/fixtures-work
-rm -rf "$out" "$work"
-mkdir -p "$out" "$work"
+ROOT="${BCACHEFS_REF_ROOT:-/srv/ref-trixie}"
+out="${BCACHEFS_FIXTURE_OUT:-/share/fixtures}"
+scratch='' owner='' fuse_pid='' fuse_id='' fuse_attempt=0 tool_pid=''
+
+# Read the kernel table without stat/canonicalization: a dead FUSE endpoint
+# returns ENOTCONN to mountpoint/stat while its mount still occupies the path.
+fuse_mount_identity() {
+    findmnt --kernel --noheadings --raw --nocanonicalize \
+        --mountpoint "$ROOT$mnt" --output ID
+}
+
+# Only the child sessions and the private mount started here are stopped.
+fuse_kill() {
+    local current
+    if [ -n "$fuse_pid" ]; then
+        kill -KILL -- "-$fuse_pid" "$fuse_pid" 2>/dev/null || true
+        for _ in {1..50}; do
+            kill -0 "$fuse_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$fuse_pid" 2>/dev/null; then
+            echo "fixtures: owned FUSE process $fuse_pid did not stop" >&2
+            return 1
+        fi
+        wait "$fuse_pid" 2>/dev/null || true
+        fuse_pid=
+    fi
+    current="$(fuse_mount_identity)" || current=
+    if [ -n "$current" ]; then
+        if [ -z "$fuse_id" ] || [ "$current" != "$fuse_id" ]; then
+            echo "fixtures: mount identity changed; refusing to detach $ROOT$mnt" >&2
+            return 1
+        fi
+        timeout --kill-after=1s 5s fusermount3 -uz "$ROOT$mnt" ||
+            timeout --kill-after=1s 5s umount -l "$ROOT$mnt" || return 1
+        if fuse_mount_identity >/dev/null; then
+            echo "fixtures: owned mount $fuse_id was not detached" >&2
+            return 1
+        fi
+    fi
+    fuse_id=
+}
+
+cleanup() {
+    local status=$? unmounted=yes
+    trap - EXIT
+    trap '' HUP INT TERM
+    if [ -n "$tool_pid" ]; then
+        # The nested write study needs its TERM trap to release its own root.
+        kill -TERM -- "-$tool_pid" "$tool_pid" 2>/dev/null || true
+        for _ in {1..50}; do
+            kill -0 -- "-$tool_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true
+        wait "$tool_pid" 2>/dev/null || true
+    fi
+    if [ -n "${mnt:-}" ] && ! fuse_kill; then
+        echo "fixtures: owned mount is still busy; retained $scratch" >&2
+        unmounted=no
+        status=1
+    fi
+    if [ "$unmounted" = yes ] && [ -n "$scratch" ] && [ -f "$scratch/.owner" ] &&
+        [ "$(cat "$scratch/.owner")" = "$owner" ]; then
+        rm -rf -- "$scratch" || status=1
+    fi
+    if [ -n "$owned_watchdog" ]; then
+        kill "$owned_watchdog" 2>/dev/null || true
+        wait "$owned_watchdog" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+run_owned() {
+    local status=0
+    # Explicit stdin preserves heredocs even though this is an async child.
+    setsid -- "$@" <&0 &
+    tool_pid=$!
+    wait "$tool_pid" || status=$?
+    tool_pid=
+    return "$status"
+}
+bcachefs-ref() { run_owned bcachefs-ref "$@"; }
+cp() { run_owned cp "$@"; }
+python3() { run_owned python3 "$@"; }
+timeout() { run_owned timeout "$@"; }
+
+# Both host and chroot see this invocation's files, without binding or
+# sweeping shared paths. Published fixtures are deliberately outside it.
+mkdir -p "$out" "$ROOT/var/tmp"
+scratch="$(mktemp -d "$ROOT/var/tmp/fixture-build.XXXXXXXX")"
+owner="fixture-build:$$:$scratch"
+printf '%s\n' "$owner" >"$scratch/.owner"
+work="$scratch/work"
+age_dir="${scratch#"$ROOT"}/age"
+mnt="${scratch#"$ROOT"}/mnt"
+mkdir "$work" "$ROOT$age_dir" "$ROOT$mnt"
 
 # A deterministic source tree: the same bytes on every run, so a fixture
 # that changes means the formatter changed, not the input.
@@ -109,7 +209,7 @@ for entry in "${sets[@]}"; do
     step "$name ($opts)"
     truncate -s 64M "$img"
     # shellcheck disable=SC2086
-    bcachefs-ref format -q $opts --source="$src" "$img" > "$out/$name.format.txt" 2>&1
+    bcachefs-ref format -q $opts --source="${src#"$ROOT"}" "$img" > "$out/$name.format.txt" 2>&1
     manifest "$src" "$out/$name.json"
     bcachefs-ref show-super "$img" > "$out/$name.super.txt" 2>&1
     for b in inodes dirents extents; do
@@ -137,7 +237,7 @@ for i in range(30000):
         f.write(b"%d\n" % i)
 PY
 truncate -s 256M "$out/large.img"
-bcachefs-ref format -q --source="$large_src" "$out/large.img" > "$out/large.format.txt" 2>&1
+bcachefs-ref format -q --source="${large_src#"$ROOT"}" "$out/large.img" > "$out/large.format.txt" 2>&1
 manifest "$large_src" "$out/large.json"
 bcachefs-ref show-super "$out/large.img" > "$out/large.super.txt" 2>&1
 for b in inodes dirents; do
@@ -167,36 +267,49 @@ rm -rf "$large_src"
 # The manifest is taken through the mount, after the last write was synced,
 # and taken again from a read-only mount of the replayed image; the two
 # must be identical, or the set fails.
-ROOT=/srv/ref-trixie
-age_dir="$ROOT/var/tmp/age"
-mnt=/mnt/aged
-mkdir -p "$age_dir" "$ROOT$mnt"
-
 fuse_mount() { # IMAGE OPTIONS LOG
-    (bcachefs-ref fusemount -f -o "$2" "$1" "$mnt" >"$3" 2>&1 &)
-    for _ in $(seq 1 60); do
-        mountpoint -q "$ROOT$mnt" && return 0
-        sleep 1
+    local status=0 deadline=$((SECONDS + 60))
+    fuse_kill || return 1
+    fuse_attempt=$((fuse_attempt + 1))
+    setsid -- bcachefs-ref fusemount -f -o "$2" "$1" "$mnt" >"$3" 2>&1 &
+    fuse_pid=$!
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        fuse_id="$(fuse_mount_identity)" || fuse_id=
+        if ! kill -0 "$fuse_pid" 2>/dev/null; then
+            wait "$fuse_pid" || status=$?
+            fuse_pid=
+            echo "the reference mount exited: status=$status image=$1" >&2
+            break
+        fi
+        if [ -n "$fuse_id" ] && timeout --kill-after=1s 2s mountpoint -q "$ROOT$mnt"; then
+            return 0
+        fi
+        sleep 0.1
     done
     echo "the reference implementation did not mount $1:" >&2
+    # Keep the complete native stderr even after private scratch is removed.
+    cp -- "$3" "$out/${scratch##*/}.fuse-$fuse_attempt.stderr.txt" || return 1
     grep -v '^\[<0>\]' "$3" | tail -n 30 >&2
-    exit 1
-}
-# The way the burst's mount ends: the daemon is killed, so the filesystem
-# is never shut down, whatever the daemon would have done on unmount.
-fuse_kill() {
-    pkill -KILL -f "bcachefs fusemount" || true
-    for _ in $(seq 1 30); do
-        pgrep -f "bcachefs fusemount" >/dev/null || break
-        sleep 1
-    done
-    fusermount3 -uz "$ROOT$mnt" 2>/dev/null || umount -l "$ROOT$mnt" 2>/dev/null || true
+    fuse_kill || return 1
+    return 1
 }
 fuse_unmount() {
+    local current
     sync
-    fusermount3 -u "$ROOT$mnt"
+    current="$(fuse_mount_identity)" || current=
+    if [ -z "$fuse_id" ] || [ "$current" != "$fuse_id" ]; then
+        echo "fixtures: mount identity changed before graceful unmount" >&2
+        return 1
+    fi
+    timeout --kill-after=1s 5s fusermount3 -u "$ROOT$mnt"
     for _ in $(seq 1 60); do
-        pgrep -f "bcachefs fusemount" >/dev/null || return 0
+        if ! kill -0 "$fuse_pid" 2>/dev/null; then
+            wait "$fuse_pid" 2>/dev/null || true
+            fuse_pid=
+            ! fuse_mount_identity >/dev/null || return 1
+            fuse_id=
+            return 0
+        fi
         sleep 1
     done
     echo "the FUSE daemon did not exit" >&2
@@ -204,7 +317,7 @@ fuse_unmount() {
 }
 
 step "aged (mounted and aged by the reference implementation)"
-img=/var/tmp/age/aged.img
+img="$age_dir/aged.img"
 rm -f "$ROOT$img"
 truncate -s 256M "$ROOT$img"
 bcachefs-ref format -q "$img" > "$out/aged.format.txt" 2>&1
@@ -280,7 +393,7 @@ fi
 # 32k on 64M and 128k on 256M), so an extent can outgrow crc64.
 echo "== crc128 (--encoded_extent_max=1M --compression=lz4, 1G)"
 truncate -s 1G "$out/crc128.img"
-bcachefs-ref format -q --encoded_extent_max=1M --compression=lz4 --source="$src" \
+bcachefs-ref format -q --encoded_extent_max=1M --compression=lz4 --source="${src#"$ROOT"}" \
     "$out/crc128.img" >"$out/crc128.format.txt" 2>&1
 manifest "$src" "$out/crc128.json"
 bcachefs-ref show-super "$out/crc128.img" >"$out/crc128.super.txt" 2>&1
@@ -303,12 +416,12 @@ fi
 # of it overwritten. crc128-overwrite.txt records the steps; nothing here
 # fails the build.
 echo "== crc128-overwrite (a crc128 extent partly overwritten, through the mount)"
-img=/var/tmp/age/crc128-overwrite.img
+img="$age_dir/crc128-overwrite.img"
 rm -f "$ROOT$img"
 truncate -s 1G "$ROOT$img"
 bcachefs-ref format -q --encoded_extent_max=1M "$img" >"$out/crc128-overwrite.format.txt" 2>&1
 {
-    if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+    if fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"; then
         python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
 import os, random, sys
 with open(os.path.join(sys.argv[1], "f"), "wb") as f:
@@ -320,7 +433,7 @@ PY
         bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.written.settle.txt" 2>&1 ||
             echo "settle written: exit $?"
         bcachefs-ref list -b extents "$img" >"$out/crc128-overwrite.written.extents.txt" 2>&1 || true
-        if (fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"); then
+        if fuse_mount "$img" rw,noatime "$work/fuse-crc128.log"; then
             python3 - "$ROOT$mnt" <<'PY' || echo "overwrite: exit $?"
 import os, sys
 with open(os.path.join(sys.argv[1], "f"), "r+b") as f:
@@ -357,7 +470,7 @@ sed 's/^/crc128-overwrite: /' "$out/crc128-overwrite.txt"
 # step's outcome, poison.<step>.extents.txt the lister's view after it,
 # and poison.img is the image after the last.
 echo "== poison (a corrupted data sector, read and then moved by the reference)"
-img=/var/tmp/age/poison.img
+img="$age_dir/poison.img"
 rm -f "$ROOT$img"
 truncate -s 64M "$ROOT$img"
 bcachefs-ref format -q --background_compression=lz4 "$img" >"$out/poison.format.txt" 2>&1
@@ -371,7 +484,7 @@ poison_settle() { # STEP
 }
 {
     echo "## write (reconcile_enabled=0)"
-    if (fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"); then
+    if fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"; then
         python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
 import os, sys
 m = sys.argv[1]
@@ -408,14 +521,14 @@ else:
     print("no pointer found for inode", ino)
 PY
         echo "## read through the mount (reconcile_enabled=0)"
-        if (fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"); then
+        if fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-poison.log"; then
             cat "$ROOT$mnt/victim" >/dev/null 2>&1 && echo "victim: read" || echo "victim: read failed ($?)"
             cmp -s "$ROOT$mnt/intact" <(yes 'an intact file' | head -n 100) && echo "intact: read" ||
                 echo "intact: differs"
             poison_settle read
         fi
         echo "## mount with reconcile on, for 30 seconds"
-        if (fuse_mount "$img" rw,noatime "$work/fuse-poison.log"); then
+        if fuse_mount "$img" rw,noatime "$work/fuse-poison.log"; then
             sleep 30
             cat "$ROOT$mnt/victim" >/dev/null 2>&1 && echo "victim: read" || echo "victim: read failed ($?)"
             poison_settle moved
@@ -433,7 +546,7 @@ cp --sparse=always "$ROOT$img" "$out/poison.img"
 # Tried once on three devices so the lister shows whether, and how, the
 # reference writes one. No test reads these images.
 echo "== probe: erasure coding on three devices"
-ec=/var/tmp/age/ec
+ec="$age_dir/ec"
 {
     for i in 0 1 2; do
         rm -f "$ROOT$ec-$i.img"
@@ -441,7 +554,7 @@ ec=/var/tmp/age/ec
     done
     bcachefs-ref format -q --erasure_code --replicas=2 "$ec-0.img" "$ec-1.img" "$ec-2.img" ||
         echo "format: exit $?"
-    if (fuse_mount "$ec-0.img:$ec-1.img:$ec-2.img" rw,noatime "$work/fuse-ec.log"); then
+    if fuse_mount "$ec-0.img:$ec-1.img:$ec-2.img" rw,noatime "$work/fuse-ec.log"; then
         python3 -c 'import random,sys; sys.stdout.buffer.write(random.Random(9).randbytes(8 << 20))' \
             >"$ROOT$mnt/data" || echo "write: exit $?"
         sync
@@ -491,7 +604,7 @@ for i, l in enumerate(lines[:-2]):
         break
 PY
 } >"$out/probe-ec.txt" 2>&1 || echo "the probe stopped: exit $?" >>"$out/probe-ec.txt"
-rm -f "$ROOT$ec"-*.img
+for i in 0 1 2; do rm -f "$ROOT$ec-$i.img"; done
 
 # THE REFUSED SETS: what this reader must recognise and refuse with a clear
 # error rather than misread. An encrypted filesystem (its master key stored
@@ -499,7 +612,7 @@ rm -f "$ROOT$ec"-*.img
 # two-device filesystem. Only the superblock printer's view is recorded.
 step "encrypted (--encrypted --no_passphrase)"
 truncate -s 64M "$out/encrypted.img"
-bcachefs-ref format -q --encrypted --no_passphrase --source="$src" "$out/encrypted.img" \
+bcachefs-ref format -q --encrypted --no_passphrase --source="${src#"$ROOT"}" "$out/encrypted.img" \
     > "$out/encrypted.format.txt" 2>&1
 bcachefs-ref show-super "$out/encrypted.img" > "$out/encrypted.super.txt" 2>&1
 step "multi (two devices)"
@@ -545,7 +658,7 @@ PY
     for opt in --casefold --casefold=1; do
         echo "## format $opt --source"
         truncate -s 64M "$out/casefold.img"
-        if bcachefs-ref format -q "$opt" --source="$cf_src" "$out/casefold.img" 2>&1; then
+        if bcachefs-ref format -q "$opt" --source="${cf_src#"$ROOT"}" "$out/casefold.img" 2>&1; then
             cf_opt="$opt"
             break
         fi
@@ -564,11 +677,11 @@ PY
             echo "fsck: clean" || echo "fsck: exit $?"
 
         echo "## through the mount ($cf_opt)"
-        cf_img=/var/tmp/age/casefold-mount.img
+        cf_img="$age_dir/casefold-mount.img"
         rm -f "$ROOT$cf_img"
         truncate -s 64M "$ROOT$cf_img"
         bcachefs-ref format -q "$cf_opt" "$cf_img"
-        if (fuse_mount "$cf_img" rw,noatime "$work/fuse-casefold.log"); then
+        if fuse_mount "$cf_img" rw,noatime "$work/fuse-casefold.log"; then
             m="$ROOT$mnt"
             printf 'mixed\n' >"$m/Hello.TXT"
             mkdir "$m/MiXeD" && printf 'inner\n' >"$m/MiXeD/Inner.md"
@@ -598,7 +711,7 @@ PY
 sed 's/^/casefold: /' "$out/casefold.txt"
 # The write study's before/after pairs (#20): its own script, its own
 # directory under fixtures/.
-bash /repo/scripts/guest-write-study.sh
+run_owned bash "${BCACHEFS_FIXTURE_STUDY:-/repo/scripts/guest-write-study.sh}"
 
 # PROBES: open questions this build cannot settle on purpose, but can
 # record. Snapshots and subvolumes (#12), casefolded directories (#54) and
@@ -612,13 +725,13 @@ bash /repo/scripts/guest-write-study.sh
 # build: a probe that finds nothing is a recorded answer, not a skipped
 # step, and the image is not read by any test until a reader for it exists.
 step "probes (subvolume, snapshot, casefold, reflink through the reference mount)"
-probe_img=/var/tmp/age/probe.img
+probe_img="$age_dir/probe.img"
 rm -f "$ROOT$probe_img"
 truncate -s 64M "$ROOT$probe_img"
 bcachefs-ref format -q "$probe_img" > "$out/probe.format.txt" 2>&1
 {
     echo "## mount"
-    if (fuse_mount "$probe_img" rw,noatime "$work/fuse-probe.log"); then
+    if fuse_mount "$probe_img" rw,noatime "$work/fuse-probe.log"; then
         m="$ROOT$mnt"
         mkdir -p "$m/sub" && echo "probe" > "$m/sub/file"
         echo "## subvolume create (bcachefs subvolume create $mnt/subvol)"
@@ -701,7 +814,7 @@ bcachefs-ref fsck -y "$probe_img" > "$out/probe.replay.txt" 2>&1 || true
 # snapshot and snapshot-tree keys every image holds: the field names a
 # fabricated snapshot is written in. Then one attempt at a second snapshot
 # key, on a copy, and what the reference checker says of the result.
-kvdb_img=/var/tmp/age/probe-kvdb.img
+kvdb_img="$age_dir/probe-kvdb.img"
 {
     echo "## kvdb read-only"
     timeout 120 bcachefs-ref kvdb "$probe_img" \
@@ -731,14 +844,16 @@ kvdb_img=/var/tmp/age/probe-kvdb.img
         "update subvolumes 0:1:0 snapshot=4294967294" \
         "set subvolumes 0:2:0 subvolume root=4096 snapshot=4294967293 creation_parent=1 fs_parent=1"; do
         echo "## kvdb --rw: $c"
-        timeout 120 bcachefs-ref kvdb --rw "$kvdb_img" -c "$c" 2>&1 | grep -v -E '^(Using|starting|  with|recovering|Journal keys|[a-z_]+\.\.\. done|going read-write|clean shutdown)' || true
+        timeout 120 bcachefs-ref kvdb --rw "$kvdb_img" -c "$c" >"$work/kvdb-command.txt" 2>&1 || true
+        grep -v -E '^(Using|starting|  with|recovering|Journal keys|[a-z_]+\.\.\. done|going read-write|clean shutdown)' "$work/kvdb-command.txt" || true
     done
     echo "## kvdb read-only, after: the keys, and the root inode as each leaf sees it"
     timeout 120 bcachefs-ref kvdb "$kvdb_img" -c "list subvolumes" -c "list snapshots" \
         -c "list snapshot_trees" -c "snapshot 4294967293" -c "get -k inodes 0:4096" \
         -c "snapshot 4294967294" -c "get -k inodes 0:4096" 2>&1 || echo "exit $?"
     echo "## the reference checker on the whole snapshot"
-    bcachefs-ref fsck -n "$kvdb_img" 2>&1 | tail -n 40 || true
+    bcachefs-ref fsck -n "$kvdb_img" >"$work/kvdb-fsck.txt" 2>&1 || true
+    tail -n 40 "$work/kvdb-fsck.txt" || true
 } > "$out/probe.kvdb.txt" 2>&1
 rm -f "$ROOT$kvdb_img"
 bcachefs-ref show-super "$probe_img" > "$out/probe.super.txt" 2>&1 || true
@@ -772,5 +887,4 @@ bcachefs-ref version > "$out/reference-version.txt" 2>&1 || true
         bcachefs-ref $cmd --help
     done
 } >"$out/reference-help.txt" 2>&1 || true
-rm -rf "$work"
 ls -l "$out"

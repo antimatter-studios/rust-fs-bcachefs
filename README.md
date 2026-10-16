@@ -53,6 +53,14 @@ what could not be learned that way is listed there as an open question.
 Every tier runs through rust-fs-core's `tier.sh`, quiet and output-budgeted,
 with an executed-test floor from `test-floor.sh`.
 
+Mutable image copies have scoped owners and live below one private scratch
+root per test command. The unit, oracle, coverage and guest commands use
+`scripts/test-scratch-run.sh` to remove that root after success, failure or
+termination. A later run recovers marked roots whose supervisor and children
+have died. Fixtures remain inputs, outside those roots. Set `CARGO_TARGET_DIR`
+to a fast build disk to choose the scratch location too. Use the same wrapper
+for a direct `cargo test` invocation so aborted tests also get run cleanup.
+
 ## Building
 
 ```sh

@@ -46,6 +46,9 @@ while True:
     expected = expanded
 assert full == expected, (full, expected)
 assert {"unit", "lint", "semver"}.isdisjoint(full), "quick jobs are never exempt"
+focused = {"guest-write-study", "crc128-native"}
+assert focused <= set(jobs)
+assert events["workflow_call"]["inputs"]["reproducer"]["default"] == "full"
 
 for event, ref, decision in [
     ("pull_request", "refs/pull/1/merge", "false"),
@@ -62,13 +65,17 @@ for event, ref, decision in [
         assert result.returncode == 0, result.stderr
         assert output.read_text().splitlines() == ["code=" + decision], (event, result.stdout)
 
-def verdict(code, results):
-    env = dict(os.environ, CODE=code, NEEDS=json.dumps(results), FULL_JOBS=json.dumps(sorted(full)))
+def verdict(code, results, event=None, reproducer=None):
+    event = event or ("workflow_dispatch" if code == "true" else "pull_request")
+    if reproducer is None:
+        reproducer = "full" if event == "workflow_dispatch" else ""
+    env = dict(os.environ, CODE=code, NEEDS=json.dumps(results), FULL_JOBS=json.dumps(sorted(full)),
+               EVENT=event, REPRODUCER=reproducer)
     return subprocess.run(["bash", "-c", aggregate["run"]], env=env,
-                          capture_output=True, text=True)
+                          cwd=Path(sys.argv[1]).resolve().parents[2], capture_output=True, text=True)
 
-success = {n: {"result": "success"} for n in jobs["ci-ok"]["needs"]}
-quick = {n: {"result": "skipped" if n in full else "success"} for n in success}
+success = {n: {"result": "skipped" if n in focused else "success"} for n in jobs["ci-ok"]["needs"]}
+quick = {n: {"result": "skipped" if n in full | focused else "success"} for n in success}
 for code, results in [("true", success), ("false", quick)]:
     result = verdict(code, results)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -76,7 +83,7 @@ for code, results in [("true", success), ("false", quick)]:
 for code in ["", "invalid"]:
     assert verdict(code, success).returncode != 0, "a missing decision must fail closed"
 assert verdict("true", quick).returncode != 0, "a full run with skipped full jobs must fail"
-for name in success:
+for name in success.keys() - focused:
     for state in ["failure", "cancelled", "skipped"]:
         bad = dict(success)
         bad[name] = {"result": state}
@@ -85,5 +92,22 @@ for name in success:
             bad = dict(quick)
             bad[name] = {"result": state}
             assert verdict("false", bad).returncode != 0, ("quick", name, state)
+for selected, reproducer in [("guest-write-study", "write-study-lifecycle"),
+                             ("crc128-native", "crc128-native")]:
+    isolated = {n: {"result": "success" if n == selected else "skipped"} for n in success}
+    assert verdict("", isolated, "workflow_dispatch", reproducer).returncode == 0
+    for name in isolated:
+        for state in ["success", "failure", "cancelled", "skipped"]:
+            if state == isolated[name]["result"]:
+                continue
+            bad = dict(isolated)
+            bad[name] = {"result": state}
+            assert verdict("", bad, "workflow_dispatch", reproducer).returncode != 0, (selected, name, state)
+for results, code in [(success, "true"), (quick, "false")]:
+    for name in focused:
+        for state in ["success", "failure", "cancelled"]:
+            bad = dict(results)
+            bad[name] = {"result": state}
+            assert verdict(code, bad).returncode != 0, (code, name, state)
 print("ci-depth: all checks passed")
 PY

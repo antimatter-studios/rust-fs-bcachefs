@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::fixture;
+use common::ScratchDir;
 use fs_bcachefs::bkey::{key_type, Bkey};
 use fs_bcachefs::btree::{self, btree_id};
 use fs_bcachefs::extent::DataExtent;
@@ -52,13 +52,8 @@ fn buckets(img: &std::path::Path) -> BTreeMap<u64, (u8, u64)> {
 
 #[test]
 fn a_file_held_by_pieces_of_checksummed_regions_is_rewritten() {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-write-pieces-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join("aged.img");
-    std::fs::copy(fixture("aged.img"), &img).unwrap();
+    let dir = ScratchDir::new("write-pieces");
+    let img = dir.copy_fixture("aged.img");
 
     let (ino, mut want) = {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();

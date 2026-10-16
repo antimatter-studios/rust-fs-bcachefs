@@ -18,13 +18,8 @@ use fs_bcachefs::write::Writer;
 use fs_bcachefs::{Error, Filesystem};
 use fs_core::FileDevice;
 
-fn scratch(name: &str, test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-refused-local-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(name: &str, test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("refused-local").into_image(format!("{test}.img"));
     std::fs::copy(fixture(name), &img).unwrap();
     img
 }

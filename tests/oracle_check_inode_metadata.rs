@@ -51,30 +51,10 @@ const AGED_SECTORS_FILE: &str = "/many/f02467";
 /// A damaged copy of a fixture, removed when dropped: the guest's temporary
 /// directory is small, and copies left behind filled it before the next
 /// suite (`oracle_write_pieces`) could make its own.
-struct Scratch(std::path::PathBuf);
-
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn scratch(src: &str, test: &str) -> Scratch {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-check-inode-metadata-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(src: &str, test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("check-inode-metadata").into_image(format!("{test}.img"));
     std::fs::copy(fixture(src), &img).unwrap();
-    Scratch(img)
+    img
 }
 
 /// The keys of btree `id`, through the journal where the image needs it

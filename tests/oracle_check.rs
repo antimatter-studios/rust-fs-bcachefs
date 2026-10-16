@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use common::{fixture, SETS};
 use fs_bcachefs::bkey::{self, BkeyFormat};
@@ -26,14 +26,17 @@ fn every_fixture_is_clean() {
     }
 }
 
-/// A damaged copy of a fixture in the system's temporary directory.
-pub fn damaged(set: &str, what: &str, damage: impl FnOnce(&mut Vec<u8>, &Superblock)) -> PathBuf {
+/// A damaged copy of a fixture in a scratch directory it owns.
+pub fn damaged(
+    set: &str,
+    what: &str,
+    damage: impl FnOnce(&mut Vec<u8>, &Superblock),
+) -> common::ScratchImage {
     let mut b = std::fs::read(fixture(&format!("{set}.img"))).unwrap();
     let sb = Superblock::read(&FileDevice::open(fixture(&format!("{set}.img"))).unwrap()).unwrap();
     damage(&mut b, &sb);
-    let dir = std::env::temp_dir().join(format!("rust-fs-bcachefs-check-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(format!("{set}-{what}.img"));
+    let p = common::ScratchDir::new(&format!("check-{set}-{what}"))
+        .into_image(format!("{set}-{what}.img"));
     std::fs::write(&p, &b).unwrap();
     p
 }
@@ -59,7 +62,7 @@ pub fn root_node_at(sb: &Superblock, id: u8) -> u64 {
     NodePtr::from_key(&k).unwrap().ptrs[0].offset * 512
 }
 
-fn kinds(p: &PathBuf) -> Vec<&'static str> {
+fn kinds(p: &Path) -> Vec<&'static str> {
     let r = check(&FileDevice::open(p).unwrap()).unwrap();
     r.problems.iter().map(|p| p.kind).collect()
 }
@@ -103,7 +106,7 @@ fn damaged_file_data_is_found() {
 #[test]
 fn a_damaged_superblock_is_found() {
     let p = damaged("default", "superblock", |b, _| b[4096 + 0x48] ^= 0xff);
-    assert_eq!(kinds(&p), vec!["superblock_copy"], "{p:?}");
+    assert_eq!(kinds(&p), vec!["superblock_copy"], "{:?}", &*p);
 }
 
 /// With every copy damaged there is nothing to check from, and the report
@@ -115,7 +118,7 @@ fn a_superblock_with_no_readable_copy_is_reported() {
             b[(sector * 512) as usize + 0x48] ^= 0xff;
         }
     });
-    assert_eq!(kinds(&p), vec!["superblock"], "{p:?}");
+    assert_eq!(kinds(&p), vec!["superblock"], "{:?}", &*p);
 }
 
 /// Every image the reference kernel module wrote, and the reference checker

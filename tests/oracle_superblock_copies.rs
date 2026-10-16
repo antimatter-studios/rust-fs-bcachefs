@@ -14,11 +14,8 @@ use fs_bcachefs::superblock::{Superblock, SB_HEADER_BYTES, SB_OFFSET};
 use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
-fn scratch(test: &str) -> std::path::PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("rust-fs-bcachefs-sb-copies-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("sb-copies").into_image(format!("{test}.img"));
     std::fs::copy(fixture("default.img"), &img).unwrap();
     img
 }

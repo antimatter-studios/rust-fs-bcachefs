@@ -19,13 +19,8 @@ use fs_core::FileDevice;
 
 const MIB: u64 = 1 << 20;
 
-fn scratch(test: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rust-fs-bcachefs-write-sparse-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let img = dir.join(format!("{test}.img"));
+fn scratch(test: &str) -> common::ScratchImage {
+    let img = common::ScratchDir::new("write-sparse").into_image(format!("{test}.img"));
     std::fs::copy(fixture("default.img"), &img).unwrap();
     img
 }
