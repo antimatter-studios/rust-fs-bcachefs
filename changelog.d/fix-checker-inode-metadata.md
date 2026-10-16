@@ -11,3 +11,5 @@
 - **The checker reports a bucket_gens key with a size.** A bucket_gens
   key whose size is not 0 is reported as `bkey_size_nonzero`, as the
   reference checker refuses it.
+- **The checker reports an xattr key in the dirents btree.** Such a key
+  is reported as `invalid_bkey`, as the reference checker refuses it.

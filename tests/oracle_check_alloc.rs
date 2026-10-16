@@ -649,3 +649,47 @@ fn a_sized_bucket_gens_key_is_reported() {
     );
     std::fs::remove_file(&img).ok();
 }
+
+#[test]
+fn an_xattr_key_in_the_dirents_btree_is_reported() {
+    let img = scratch("dirents-xattr");
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        !report.problems.iter().any(|p| p.kind == "invalid_bkey"),
+        "the unchanged fixture already reports an invalid key: {:?}",
+        report.problems
+    );
+
+    let dirent = keys(&img, btree_id::DIRENTS)
+        .into_iter()
+        .find(|k| k.key_type == key_type::DIRENT)
+        .expect("the fixture has a dirent");
+    let mut bad = dirent.clone();
+    bad.key_type = key_type::XATTR;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(btree_id::DIRENTS, vec![bad]).unwrap();
+    drop(w);
+
+    let stored = keys(&img, btree_id::DIRENTS)
+        .into_iter()
+        .find(|k| k.pos == dirent.pos)
+        .expect("the changed dirents key reads back");
+    assert_eq!(
+        stored.key_type,
+        key_type::XATTR,
+        "the stored key keeps its type"
+    );
+    assert_eq!(stored.value, dirent.value, "the value is preserved");
+
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == "invalid_bkey" && p.detail.contains(&dirent.pos.to_string())),
+        "the xattr key in dirents at {} was not reported: {:?}",
+        dirent.pos,
+        report.problems
+    );
+    std::fs::remove_file(&img).ok();
+}
