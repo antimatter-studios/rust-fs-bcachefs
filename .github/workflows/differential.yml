@@ -48,6 +48,9 @@ on:
       - .github/workflows/differential.yml
       - scripts/differential-fuzz.sh
       - scripts/differential-fuzz.py
+      - scripts/default74_native_proof.py
+      - tests/default74_native_proof.py
+      - tests/data/default-74-38840695392.patch
       - scripts/select-fixture-run.sh
       - scripts/select-fixture-run-test.sh
       - examples/differential.rs
@@ -80,6 +83,18 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - name: Retained default-74 native read contract and rejection controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIFFERENTIAL_NATIVE74_ARCHIVE: ${{ runner.temp }}/default74-native.zip
+        run: |
+          set -euo pipefail
+          # Existing observations only: no second capture producer. Expired or
+          # substituted artifacts fail, naming the exact required artifact.
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/12011667570/zip" > "$DIFFERENTIAL_NATIVE74_ARCHIVE"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/default74-fixtures.zip"
+          python3 tests/default74_native_proof.py "$DIFFERENTIAL_NATIVE74_ARCHIVE" "$RUNNER_TEMP/default74-fixtures.zip"
+          echo "DIFFERENTIAL_NATIVE74_ARCHIVE=$DIFFERENTIAL_NATIVE74_ARCHIVE" >> "$GITHUB_ENV"
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
