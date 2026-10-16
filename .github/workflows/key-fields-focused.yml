@@ -1,0 +1,65 @@
+name: key fields focused
+
+# One bounded route for #226; this does not replace any full CI gate.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/key-fields-focused.yml
+      - scripts/guest-key-fields-focused.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CHORE_VERSION: "0.11.0"
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  key-fields-focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: Pinned siblings
+        run: chore siblings
+      - name: Retained physical image binding and rejection controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/12011667570/zip" > "$RUNNER_TEMP/native.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/fixtures.zip"
+          python3 tests/default74_native_proof.py "$RUNNER_TEMP/native.zip" "$RUNNER_TEMP/fixtures.zip"
+          mkdir -p "$RUNNER_TEMP/fixture-archive" .vm-share
+          unzip -q "$RUNNER_TEMP/fixtures.zip" -d "$RUNNER_TEMP/fixture-archive"
+          tar -xzf "$RUNNER_TEMP/fixture-archive/fixtures.tar.gz" -C .vm-share
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: Unchanged size/snapshot cases and native key refusals
+        run: |
+          set -euo pipefail
+          vm=../fs-linux-test-harness/scripts/vm.sh
+          trap '"$vm" down' EXIT
+          share="$("$vm" share)"
+          bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
+            "$vm" run 'cd /repo && bash scripts/guest-key-fields-focused.sh'
+      - name: Keep the focused log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: key-fields-focused
+          path: tmp/logs/key-fields-focused.log
+          if-no-files-found: error
+      - name: The guest is down
+        if: always()
+        run: '! ../fs-linux-test-harness/scripts/vm.sh status'
