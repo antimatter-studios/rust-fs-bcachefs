@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "rust-fs-core"
-version = "0.3.11"
+version = "0.3.12"
 
 [[package]]
 name = "rustc_version"
