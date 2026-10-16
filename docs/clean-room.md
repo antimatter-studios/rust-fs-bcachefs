@@ -676,13 +676,14 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    reference tool makes them in the kernel oracle's VM. Still open: what
    the low half of a snapshot key's first word and of a subvolume key's
    first word hold (2 and 0 seen; the lister prints `live` and, for a
-   snapshot of a subvolume, `snapshot`), and the skiplist's use. S1
-   efec39c (9.4.2, 9.4.3) says what a snapshot node holds: its parent, up
-   to two children, its depth, and a skiplist of three ancestor ids for
-   quick ancestor queries, with a 128-bit bitmap of near ancestors; trees
-   are grouped under `snapshot_tree` entries naming the root snapshot and
-   the master subvolume. Which words of the key hold which is still to be
-   observed.
+   snapshot of a subvolume, `snapshot`), and where the 128-bit bitmap of
+   near ancestors sits. S1 efec39c (9.4.2, 9.4.3) says what a snapshot
+   node holds: its parent, up to two children, its depth, and a skiplist
+   of three ancestor ids for quick ancestor queries, with a 128-bit bitmap
+   of near ancestors; trees are grouped under `snapshot_tree` entries
+   naming the root snapshot and the master subvolume. The words holding
+   the depth, the skiplist and a tree's two fields are observed (#220):
+   see "Snapshots and subvolumes -- read".
 6. **Encryption (nonces, ChaCha20/Poly1305), erasure coding, reflink,
    multiple devices and replicas**: not seen in any fixture read by this
    crate. (inline_data, xattrs and crc128: seen and read, see above.)
@@ -913,10 +914,17 @@ extents btrees is kept as `kernel.<btree>.txt`.
   `creation_parent` in its low half and `fs_parent` in its high half.
 - Snapshots (btree 9, key type 22) at `0:id`: the first word's high half
   is the parent (0 for a tree's root), the second word the two children,
-  the third `subvol` in its low half and `tree` in its high half. Taking
+  the third `subvol` in its low half and `tree` in its high half, the
+  fourth the depth in its low half and the first skiplist entry in its
+  high half, the fifth the other two entries (`sv` and `snap`: `depth 1
+  skiplist 4294967294 4294967294 4294967294`; each tree's root: `depth 0
+  skiplist 0 0 0`). Taking
   the snapshot made 4294967294 the interior parent of the two leaves
   4294967292 (`sv`) and 4294967293 (`snap`); the keys written before it
   are at 4294967294.
+- Snapshot trees (btree 15, key type 31) at `0:id`: the value's one word
+  holds the master subvolume in its low half and the root snapshot in its
+  high half (tree 2: `subvol 2 root snapshot 4294967294`).
 - A dirent of type 16 (`subvol`) names a subvolume: the low half of its
   first word is the subvolume and the high half its parent (the lister's
   `sv -> 1 -> 2`).
@@ -931,6 +939,33 @@ extents btrees is kept as `kernel.<btree>.txt`.
   number, mode and SHA-256 the kernel's mount reported
   (`tests/oracle_kernel.rs`). The writer and the checker still read one
   snapshot, the root subvolume's.
+- Links checked (#220): a snapshot tree's master subvolume is in the
+  subvolumes btree; a snapshot's tree is in the snapshot_trees btree and
+  its root is the root the snapshot's parents lead to; a skiplist entry is
+  0, the snapshot, or one of its ancestors. A parent cycle, or a parent the
+  snapshots btree does not have, leads to no root, and the walk is
+  bounded. The rules come from S1's prose (9.4.2: snapshots form trees,
+  each with a `snapshot_tree` entry for its root and its master
+  subvolume; 9.4.3 and 9.4.4: a skiplist of ancestors, at or above the
+  snapshot; the recovery pass list: a tree's master subvolume is a real
+  subvolume) and from the reference checker's findings on damaged images
+  (S3): "snapshot tree points to missing subvolume", "snapshot with bad
+  skiplist pointer" and "snapshot points to missing/incorrect tree".
+  `tests/check_oracle.rs` has the reference judge each damaged image the
+  checker is held to, a parent cycle included (CI run 38699997306).
+
+- Snapshot key positions (S3, #219/#220): the retained report from CI run
+  38749903964, job 116473259222, at `cb33c4ea03cbe0c7a6ff720f8a3e7aa2983f079e`
+  records `default.img` seed 51. Its snapshot key at
+  `0:4294967295:4294967294` keeps the root snapshot's value unchanged;
+  the reference rejects its nonzero snapshot field with
+  `bkey_snapshot_nonzero`, and this checker reports it under the same
+  code from its key-field checks (#226). The snapshot ID belongs in the
+  offset; the key's snapshot field must be zero.
+  `oracle_check_snapshots.rs` checks the unchanged value and the stored
+  mutation; `check_oracle.rs` requires both a clean native control and
+  the native nonzero-snapshot finding. Current-head CI is still required;
+  no differential baseline entry is added or broadened.
 
 ### First differential checker baseline (S3, #164)
 
@@ -957,6 +992,9 @@ They remain known defects; a fixing PR removes an entry after the same
 oracle comparison confirms its class is gone. New triples, invalid controls
 and crate panics still fail the differential run. The two reference crashes
 or faults were counted only, with their identities and data excluded.
+
+Removed since, each by the pull request that fixed it after a run at seed 0
+no longer found it: #220's three snapshot-link classes (#224).
 
 ### Rebuilt-fixture differential control (S3, #227)
 

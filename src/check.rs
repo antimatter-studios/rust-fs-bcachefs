@@ -9,7 +9,9 @@
 //! link count against the entries that name it; every extent against its
 //! inode (it exists, the extent does not start past the end of the file,
 //! it does not overlap the extent before it); every data extent's checksum;
-//! that every key is at a snapshot the snapshots btree has; every xattr
+//! that every key is at a snapshot the snapshots btree has; every snapshot
+//! tree against its master subvolume, every snapshot against its tree's
+//! root and its skiplist against its ancestors; every xattr
 //! against its inode (it exists, the xattr is reachable from its name's
 //! hash slot); every inode's back-reference to the entry naming it; every
 //! inode's has-options flag against its option fields; every directory's
@@ -48,7 +50,7 @@ use crate::extent::DataExtent;
 use crate::inode::{Dirent, Inode, InodeV3Raw, INODE_HAS_OPTIONS, OPTION_FIELDS, ROOT_INO};
 use crate::journal::{self, Replay};
 use crate::superblock::Superblock;
-use crate::util::le64;
+use crate::util::{le32, le64};
 use fs_core::BlockRead;
 
 /// The snapshots and subvolumes btrees (S1 11.3) and their key types (S1
@@ -57,6 +59,17 @@ const SUBVOLUMES: u8 = 8;
 const SNAPSHOTS: u8 = 9;
 const KEY_SUBVOLUME: u8 = 21;
 const KEY_SNAPSHOT: u8 = 22;
+/// The snapshot_trees btree and its key type, at `0:tree`: the master
+/// subvolume in the low half of the value's word, the root snapshot in the
+/// high half. In a snapshot's value, `tree` is the high half of the third
+/// word, and the three skiplist entries follow the depth, from the high
+/// half of the fourth word (S3 + S4: the lister beside the key bytes of
+/// the kernel image, docs/clean-room.md).
+const SNAPSHOT_TREES: u8 = 15;
+const KEY_SNAPSHOT_TREE: u8 = 31;
+const TREE_ROOT: usize = 4;
+const SNAP_TREE: usize = 20;
+const SNAP_SKIPLIST: usize = 28;
 /// The bucket_gens btree, and its key type: 256 buckets' generations a
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
@@ -278,6 +291,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
         out
     };
+    snapshot_links(&trees, &parents, &subvolumes, &mut r);
     // Each subvolume's snapshot, and the root directories it holds; with no
     // subvolumes btree, the root inode's snapshot alone.
     let mut views: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
@@ -1067,6 +1081,102 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     Ok(r)
 }
 
+/// The links between the snapshot btrees (#220): each snapshot tree names
+/// a subvolume the subvolumes btree has; each snapshot names a tree the
+/// snapshot_trees btree has, whose root is the root its parents lead to;
+/// and each entry of a snapshot's skiplist is none (0), the snapshot, or
+/// one of its ancestors (S1 9.4.4: entries at or above it). A parent cycle, or a parent the snapshots btree does not
+/// have, leads to no root: the walk is bounded, and the snapshot is in no
+/// tree.
+fn snapshot_links(
+    trees: &BTreeMap<u8, Vec<Bkey>>,
+    parents: &BTreeMap<u32, u32>,
+    subvolumes: &BTreeMap<u32, (u64, u32)>,
+    r: &mut Report,
+) {
+    let Some(tree_keys) = trees.get(&SNAPSHOT_TREES) else {
+        return;
+    };
+    // Each tree's master subvolume and root snapshot.
+    let snapshot_trees: BTreeMap<u32, (u32, u32)> = tree_keys
+        .iter()
+        .filter(|k| k.key_type == KEY_SNAPSHOT_TREE && k.value.len() >= 8)
+        .map(|k| {
+            (
+                k.pos.offset as u32,
+                (le32(&k.value, 0), le32(&k.value, TREE_ROOT)),
+            )
+        })
+        .collect();
+    for (id, (subvol, _)) in &snapshot_trees {
+        if !subvolumes.contains_key(subvol) {
+            r.add(
+                "snapshot_tree_to_missing_subvol",
+                format!(
+                    "snapshot tree {id} names subvolume {subvol}, which the subvolumes btree does not have"
+                ),
+            );
+        }
+    }
+    // A snapshot's parents, nearest first, and the root they end at: none
+    // when they repeat, go deeper than any tree, or name a snapshot the
+    // btree does not have.
+    let ancestors = |snap: u32| -> (Vec<u32>, Option<u32>) {
+        let mut out = Vec::new();
+        let mut at = snap;
+        loop {
+            match parents.get(&at) {
+                Some(0) => return (out, Some(at)),
+                Some(&p) if p != snap && !out.contains(&p) && out.len() < MAX_SNAPSHOT_DEPTH => {
+                    out.push(p);
+                    at = p;
+                }
+                _ => return (out, None),
+            }
+        }
+    };
+    for k in trees.get(&SNAPSHOTS).into_iter().flatten() {
+        if k.key_type != KEY_SNAPSHOT || k.value.len() < SNAP_SKIPLIST + 12 {
+            continue;
+        }
+        let snap = k.pos.offset as u32;
+        let (above, root) = ancestors(snap);
+        let tree = le32(&k.value, SNAP_TREE);
+        match (snapshot_trees.get(&tree), root) {
+            (None, _) => r.add(
+                "snapshot_to_bad_snapshot_tree",
+                format!(
+                    "snapshot {snap} names tree {tree}, which the snapshot_trees btree does not have"
+                ),
+            ),
+            (Some(_), None) => r.add(
+                "snapshot_to_bad_snapshot_tree",
+                format!(
+                    "snapshot {snap} names tree {tree}, but its parents lead to no root: a cycle, \
+                     or a parent the snapshots btree does not have"
+                ),
+            ),
+            (Some(&(_, want)), Some(root)) if want != root => r.add(
+                "snapshot_to_bad_snapshot_tree",
+                format!(
+                    "snapshot {snap} names tree {tree}, whose root is {want}, but its own root is {root}"
+                ),
+            ),
+            _ => {}
+        }
+        let bad: Vec<u32> = (0..3)
+            .map(|i| le32(&k.value, SNAP_SKIPLIST + 4 * i))
+            .filter(|&s| s != 0 && s != snap && !above.contains(&s))
+            .collect();
+        if !bad.is_empty() {
+            r.add(
+                "snapshot_bad_skiplist",
+                format!("snapshot {snap}: skiplist entries {bad:?} are not among its ancestors {above:?}"),
+            );
+        }
+    }
+}
+
 /// The sizes of each inode's extents, by `(inode, snapshot)`, and the
 /// snapshots each inode's extents btree keys are at.
 #[derive(Default)]
@@ -1325,5 +1435,138 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: key {} is an xattr", k.pos),
         ),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bkey::Bpos;
+
+    /// A key at `0:offset`, as the snapshot btrees file theirs.
+    fn key(key_type: u8, offset: u64, value: Vec<u8>) -> Bkey {
+        Bkey {
+            key_type,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: Bpos {
+                inode: 0,
+                offset,
+                snapshot: 0,
+            },
+            value,
+        }
+    }
+
+    /// A snapshot tree's value: master subvolume, then root snapshot.
+    fn tree(subvol: u32, root: u32) -> Vec<u8> {
+        [subvol.to_le_bytes(), root.to_le_bytes()].concat()
+    }
+
+    /// A snapshot's value naming `tree`, with `skiplist`.
+    fn snapshot(tree: u32, skiplist: [u32; 3]) -> Vec<u8> {
+        let mut v = vec![0u8; SNAP_SKIPLIST + 12];
+        v[SNAP_TREE..SNAP_TREE + 4].copy_from_slice(&tree.to_le_bytes());
+        for (i, s) in skiplist.iter().enumerate() {
+            let at = SNAP_SKIPLIST + 4 * i;
+            v[at..at + 4].copy_from_slice(&s.to_le_bytes());
+        }
+        v
+    }
+
+    /// The kinds `snapshot_links` reports for these btrees.
+    fn kinds(
+        trees: &[(u32, Vec<u8>)],
+        snapshots: &[(u32, Vec<u8>)],
+        parents: &[(u32, u32)],
+        subvolumes: &[u32],
+    ) -> Vec<&'static str> {
+        let mut btrees = BTreeMap::new();
+        btrees.insert(
+            SNAPSHOT_TREES,
+            trees
+                .iter()
+                .map(|(id, v)| key(KEY_SNAPSHOT_TREE, u64::from(*id), v.clone()))
+                .collect(),
+        );
+        btrees.insert(
+            SNAPSHOTS,
+            snapshots
+                .iter()
+                .map(|(id, v)| key(KEY_SNAPSHOT, u64::from(*id), v.clone()))
+                .collect(),
+        );
+        let parents = parents.iter().copied().collect();
+        let subvolumes = subvolumes.iter().map(|&s| (s, (0, 0))).collect();
+        let mut r = Report::default();
+        snapshot_links(&btrees, &parents, &subvolumes, &mut r);
+        r.problems.iter().map(|p| p.kind).collect()
+    }
+
+    /// Tree 1 of subvolume 1, rooted at 100, with 99 under it; 99's
+    /// skiplist names its parent.
+    #[test]
+    fn consistent_snapshot_links_are_clean() {
+        let clean = kinds(
+            &[(1, tree(1, 100))],
+            &[(100, snapshot(1, [0; 3])), (99, snapshot(1, [100, 0, 0]))],
+            &[(100, 0), (99, 100)],
+            &[1],
+        );
+        assert!(clean.is_empty(), "{clean:?}");
+        // Without a snapshot_trees btree there is nothing to link.
+        let mut r = Report::default();
+        snapshot_links(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new(), &mut r);
+        assert!(r.problems.is_empty());
+    }
+
+    #[test]
+    fn each_broken_snapshot_link_is_named() {
+        let parents = [(100, 0), (99, 100)];
+        let snaps = |skip: u32| [(100, snapshot(1, [0; 3])), (99, snapshot(1, [skip, 0, 0]))];
+        // A tree whose master subvolume the subvolumes btree lacks.
+        assert_eq!(
+            kinds(&[(1, tree(7, 100))], &snaps(100), &parents, &[1]),
+            ["snapshot_tree_to_missing_subvol"]
+        );
+        // A skiplist entry that is not an ancestor.
+        assert_eq!(
+            kinds(&[(1, tree(1, 100))], &snaps(42), &parents, &[1]),
+            ["snapshot_bad_skiplist"]
+        );
+        // A snapshot naming a tree the btree does not have.
+        assert_eq!(
+            kinds(
+                &[(1, tree(1, 100))],
+                &[(100, snapshot(2, [0; 3]))],
+                &[(100, 0)],
+                &[1]
+            ),
+            ["snapshot_to_bad_snapshot_tree"]
+        );
+        // A tree whose root is not the root the snapshot's parents reach.
+        assert_eq!(
+            kinds(
+                &[(1, tree(1, 100))],
+                &[(50, snapshot(1, [0; 3]))],
+                &[(50, 0)],
+                &[1]
+            ),
+            ["snapshot_to_bad_snapshot_tree"]
+        );
+        // A parent cycle reaches no root.
+        assert_eq!(
+            kinds(
+                &[(1, tree(1, 100))],
+                &[(98, snapshot(1, [0; 3])), (99, snapshot(1, [0; 3]))],
+                &[(98, 99), (99, 98)],
+                &[1]
+            ),
+            [
+                "snapshot_to_bad_snapshot_tree",
+                "snapshot_to_bad_snapshot_tree"
+            ]
+        );
     }
 }

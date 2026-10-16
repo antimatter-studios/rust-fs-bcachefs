@@ -390,3 +390,242 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
 fn the_inode_cases_need_the_write_feature() {
     panic!("the inode cases need --features write, as scripts/guest-suite.sh runs them");
 }
+
+/// The snapshot damage `tests/oracle_check_snapshots.rs` makes (#220),
+/// judged by the reference checker itself: a snapshot tree naming a
+/// subvolume that is not there, skiplist entries that are not ancestors,
+/// a snapshot naming a tree that is not there or not its own, and a parent
+/// cycle. The reference finds each, and this checker names each.
+#[cfg(feature = "write")]
+#[test]
+fn where_the_reference_finds_snapshot_damage_this_checker_names_it() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    /// Btrees and key types (docs/clean-room.md, "Snapshots and
+    /// subvolumes -- read"), and the kernel image's snapshots: `sv`'s
+    /// (...292), its snapshot `snap`'s (...293) and their parent (...294).
+    const SNAPSHOTS: u8 = 9;
+    const SNAPSHOT_TREES: u8 = 15;
+    const KEY_SNAPSHOT: u8 = 22;
+    const KEY_SNAPSHOT_TREE: u8 = 31;
+    const INTERIOR: u64 = u32::MAX as u64 - 1;
+    const SV: u64 = u32::MAX as u64 - 3;
+    const SNAP: u32 = u32::MAX - 2;
+
+    /// A copy of fixture `src` under /share, with the key at `0:offset` of
+    /// btree `id` changed by `change` through the writer.
+    fn rewritten(
+        name: &str,
+        src: &str,
+        (id, key_type, offset): (u8, u8, u64),
+        change: impl FnOnce(&mut Vec<u8>),
+    ) -> PathBuf {
+        assert!(
+            Path::new("/usr/local/bin/bcachefs-ref").exists(),
+            "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+        );
+        std::fs::create_dir_all("/share/check-oracle").unwrap();
+        let p = PathBuf::from(format!("/share/check-oracle/{name}.img"));
+        std::fs::copy(fixture(src), &p).unwrap();
+        let dev = FileDevice::open(&p).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, id)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.pos.inode == 0 && k.pos.offset == offset && k.key_type == key_type)
+            .unwrap_or_else(|| panic!("{src}: btree {id} has no key at 0:{offset}"));
+        change(&mut k.value);
+        let mut w = Writer::open(FileDevice::open_rw(&p).unwrap()).unwrap();
+        w.insert(id, vec![k]).unwrap();
+        p
+    }
+    let snapshot = |offset| (SNAPSHOTS, KEY_SNAPSHOT, offset);
+    let put = |at: usize, x: u64, width: usize| {
+        move |v: &mut Vec<u8>| v[at..at + width].copy_from_slice(&x.to_le_bytes()[..width])
+    };
+
+    let cases = [
+        (
+            rewritten(
+                "snap-tree-missing-subvol",
+                "default.img",
+                (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE, 1),
+                put(0, u64::MAX, 8),
+            ),
+            "snapshot_tree_to_missing_subvol",
+        ),
+        (
+            rewritten(
+                "snap-skiplist-other-tree",
+                "kernel.img",
+                snapshot(INTERIOR),
+                put(32, u64::MAX, 8),
+            ),
+            "snapshot_bad_skiplist",
+        ),
+        (
+            rewritten(
+                "snap-skiplist-sibling",
+                "kernel.img",
+                snapshot(SV),
+                put(28, SNAP.into(), 4),
+            ),
+            "snapshot_bad_skiplist",
+        ),
+        (
+            rewritten(
+                "snap-tree-missing",
+                "kernel-rootsnap.img",
+                snapshot(INTERIOR),
+                put(16, 1, 8),
+            ),
+            "snapshot_to_bad_snapshot_tree",
+        ),
+        (
+            rewritten("snap-tree-wrong", "kernel.img", snapshot(SV), put(20, 1, 4)),
+            "snapshot_to_bad_snapshot_tree",
+        ),
+        (
+            rewritten(
+                "snap-parent-cycle",
+                "kernel.img",
+                snapshot(INTERIOR),
+                put(4, SV, 4),
+            ),
+            "snapshot_to_bad_snapshot_tree",
+        ),
+    ];
+    for (img, kind) in &cases {
+        let (theirs, text) = reference_finds_a_problem(img);
+        assert!(
+            theirs,
+            "{}: the reference found nothing, so this case proves nothing:\n{text}",
+            img.display()
+        );
+        let ours = check(&FileDevice::open(img).unwrap()).unwrap();
+        assert!(
+            ours.problems.iter().any(|p| p.kind == *kind),
+            "{}: the reference found damage this checker did not name as {kind}: {:?}\n{text}",
+            img.display(),
+            ours.problems
+        );
+    }
+}
+
+/// The retained default seed 51 (run 38749903964): the reference names
+/// the nonzero snapshot field even though the snapshot value is unchanged.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_key_with_a_nonzero_snapshot_field() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    std::fs::create_dir_all("/share/check-oracle").unwrap();
+    let img = PathBuf::from("/share/check-oracle/snapshot-field-nonzero.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+    let (control_bad, text) = reference_finds_a_problem(&img);
+    assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, 9)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 22 && k.pos.inode == 0 && k.pos.offset == u64::from(u32::MAX))
+        .expect("the root snapshot key exists");
+    assert_eq!(k.pos.snapshot, 0);
+    k.pos.snapshot = u32::MAX - 1;
+    {
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.insert(9, vec![k]).unwrap();
+    }
+    let (damaged, text) = reference_finds_a_problem(&img);
+    assert!(
+        damaged,
+        "the reference must reject the retained mutation:\n{text}"
+    );
+    assert!(
+        text.contains("nonzero snapshot"),
+        "wrong native finding:\n{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "bkey_snapshot_nonzero"),
+        "the snapshot field must be named: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// A bucket_gens key has no extent size: kernel.img seed 1 in differential
+/// run 38749903964 stored one with a nonzero size, which the reference
+/// rejected (`bkey_size_nonzero`) and this checker called clean.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_bucket_gens_key_with_a_nonzero_size() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    std::fs::create_dir_all("/share/check-oracle").unwrap();
+    let img = PathBuf::from("/share/check-oracle/bucket-gens-size-nonzero.img");
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    let (control_bad, text) = reference_finds_a_problem(&img);
+    assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, 14)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 30)
+        .expect("a bucket_gens key exists");
+    assert_eq!(k.size, 0);
+    let (pos, value) = (k.pos, k.value.clone());
+    k.size = 1;
+    {
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.insert(14, vec![k]).unwrap();
+    }
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let stored = btree::walk(&dev, &sb, 14)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 30 && k.pos == pos)
+        .expect("the mutated bucket_gens key is stored");
+    assert_eq!(stored.size, 1, "the size mutation must be stored");
+    assert_eq!(stored.value, value, "the generations must be unchanged");
+    let (damaged, text) = reference_finds_a_problem(&img);
+    assert!(
+        damaged,
+        "the reference must reject the retained mutation:\n{text}"
+    );
+    assert!(
+        text.contains("size_nonzero") || text.contains("nonzero size"),
+        "wrong native finding:\n{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems.iter().any(|p| p.kind == "bkey_size_nonzero"),
+        "the size field must be named: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// The snapshot cases damage their images through the writer: without it
+/// they would vanish, and a case that does not run fails.
+#[cfg(not(feature = "write"))]
+#[test]
+fn the_snapshot_cases_need_the_write_feature() {
+    panic!("the snapshot cases need --features write, as scripts/guest-suite.sh runs them");
+}
