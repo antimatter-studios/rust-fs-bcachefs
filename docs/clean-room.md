@@ -1050,7 +1050,8 @@ for 30 days. The fixture image plus the patch rebuilds the mutated image, so
 whole images are not stored.
 
 Removed since, each by the pull request that fixed it after a run at seed 0
-no longer found it: #221's four inode-metadata classes (#225).
+no longer found it: #221's four inode-metadata classes (#225), and
+#219's sixteen size and snapshot classes (#226).
 
 ### Inode metadata against the rest (#221)
 
@@ -1132,6 +1133,22 @@ run `38855619610` / job `116826294741`. Run `38857827089` on #224
 verified this binding and its rejection controls against the identical
 fixture archive. #225 retains its own fixture selector and disagreement
 baseline; fresh CI on the integrated head is required.
+
+### A key's own size and snapshot (S3, #219)
+
+Run 38579070302's report shows the reference checker refusing a key after only
+its size, or only its snapshot, was changed and the key committed through
+the writer. It printed "size != 0, deleting" (counted as
+`bkey_size_nonzero`) for a size on an inode_v3 key in inodes, a dirent in
+dirents, a subvolume, an lru `set` key, a backpointer, a bucket_gens key, a
+snapshot_tree, the logged_ops inode_alloc_cursor, and accounting keys of the
+`btree` and `inum` kinds. It printed "nonzero snapshot, deleting" (counted as
+`bkey_snapshot_nonzero`) for a snapshot on a subvolume, a snapshot key, and
+the `set` keys of lru, need_discard and freespace. A freespace key in the
+same report carries a size of 1894 sectors and is refused only for its
+snapshot, so neither rule belongs to a key type or a btree alone: the
+checker judges exactly the observed pairs of btree and key type, and every
+other pair is an open question until an oracle is seen to answer it.
 
 ## Confirmation
 

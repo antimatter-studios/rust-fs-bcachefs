@@ -3,7 +3,8 @@
 //!
 //! Checked: the superblock and its checksum; every btree this reader knows,
 //! node by node (magic, sequence, checksums, key order, keys inside each
-//! node's range); every directory entry against the inode it names (it
+//! node's range); a size or a snapshot on a key whose btree allows
+//! neither; every directory entry against the inode it names (it
 //! exists, its type agrees, its directory is a directory); every inode's
 //! link count against the entries that name it; every extent against its
 //! inode (it exists, the extent does not start past the end of the file,
@@ -1202,14 +1203,10 @@ fn walk_checked(
                     );
                 }
                 last = Some(k.pos);
-                // Differential run 38814891184: the reference refuses a
-                // bucket_gens key with a size ("size != 0").
-                if id == BUCKET_GENS && k.key_type == KEY_BUCKET_GENS && k.size != 0 {
-                    r.add(
-                        "bkey_size_nonzero",
-                        format!("btree {name}: key {} has size {}", k.pos, k.size),
-                    );
-                }
+                // check_key_fields covers the bucket_gens size refusal from
+                // differential run 38814891184 ("size != 0") with the same
+                // code and message, so it is reported once.
+                check_key_fields(id, k, r);
                 // Differential run 38814891184 (kernel-rootsnap-10): the
                 // reference refuses an xattr key in the dirents btree as an
                 // invalid bkey.
@@ -1229,5 +1226,53 @@ fn walk_checked(
             r.add("btree_node", format!("btree {name}: {e}"));
             None
         }
+    }
+}
+
+/// What the reference refuses in a key's own fields (#219): a size on a
+/// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
+/// and a snapshot on a key of a btree that is not snapshotted ("nonzero
+/// snapshot", `bkey_snapshot_nonzero`). Each pair of btree and key type
+/// below is one differential run 38579070302 saw the reference refuse; a
+/// pair nobody observed is not judged (docs/clean-room.md).
+fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
+    const FREESPACE: u8 = 11;
+    const SNAPSHOT_TREES: u8 = 15;
+    const LOGGED_OPS: u8 = 17;
+    const KEY_SNAPSHOT_TREE: u8 = 31;
+    const KEY_INODE_ALLOC_CURSOR: u8 = 35;
+    const SIZE_ZERO: &[(u8, u8)] = &[
+        (btree_id::INODES, key_type::INODE_V3),
+        (btree_id::DIRENTS, key_type::DIRENT),
+        (SUBVOLUMES, KEY_SUBVOLUME),
+        (LRU, KEY_SET),
+        (BACKPOINTERS, KEY_BACKPOINTER),
+        (BUCKET_GENS, KEY_BUCKET_GENS),
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
+        (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
+        (ACCOUNTING, KEY_ACCOUNTING),
+    ];
+    const SNAPSHOT_ZERO: &[(u8, u8)] = &[
+        (SUBVOLUMES, KEY_SUBVOLUME),
+        (SNAPSHOTS, KEY_SNAPSHOT),
+        (LRU, KEY_SET),
+        (NEED_DISCARD, KEY_SET),
+        (FREESPACE, KEY_SET),
+    ];
+    let name = journal::btree_name(id);
+    if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
+        r.add(
+            "bkey_size_nonzero",
+            format!("btree {name}: key {} has size {}", k.pos, k.size),
+        );
+    }
+    if k.pos.snapshot != 0 && SNAPSHOT_ZERO.contains(&(id, k.key_type)) {
+        r.add(
+            "bkey_snapshot_nonzero",
+            format!(
+                "btree {name}: key {} is at snapshot {}",
+                k.pos, k.pos.snapshot
+            ),
+        );
     }
 }
