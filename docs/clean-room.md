@@ -1049,6 +1049,90 @@ its class. The kept cases are uploaded as the `differential-replay` artifact
 for 30 days. The fixture image plus the patch rebuilds the mutated image, so
 whole images are not stored.
 
+Removed since, each by the pull request that fixed it after a run at seed 0
+no longer found it: #221's four inode-metadata classes (#225).
+
+### Inode metadata against the rest (#221)
+
+- A directory's size is 0: the lister prints `bi_size=0` for every
+  directory of every listed fixture (S3), and the reference reports
+  "directory with nonzero i_size" for one made 2^64 - 1.
+- An inode's sector count is the sum of the sizes of its extents btree
+  keys of type extent, reservation, reflink_p and inline_data, at its own
+  snapshot. Measured (S3) over every inode the lister prints, on default,
+  lz4, zstd, gzip, nocsum, xxhash, crc64, block4k, aged, strhash,
+  bgcompress, crc128, crc128-overwrite, casefold, kernel, kernel-prealloc
+  and probe: no exception, compressed extents counting their key's size.
+  Where an inode's extents have keys at other snapshots too, which of them
+  a version of the inode counts depends on what its snapshot sees (S1
+  9.4), and the checker does not judge it. The reference reports
+  "incorrect i_sectors: got N, should be M".
+- An inode's journal sequence is the journal's when it was last written
+  (S1 6.12 and 8.3 name the field `bi_journal_seq`, and "a
+  bi_journal_seq in the future" as a state the reference corrects).
+  Every fixture's inodes are at or below the sequence it was shut down at
+  (S3). The reference compares with the sequence its own journal is at
+  while it checks ("inode journal seq in future (currently at 45)" on lz4,
+  shut down at 43): it skips 64 past the last entry read after an unclean
+  shutdown (S1 1.3), and its run advanced at most 6 on any fixture, from
+  "recovering from clean shutdown, journal seq N" to "clean shutdown
+  complete". The checker reports a sequence more than 128 past the newest
+  written, past anywhere the reference's journal can be while it checks;
+  nearer ones are not judged.
+
+### Dirent hash reachability (#221, #225)
+
+Completed differential run `38759380443` at `c5d1c60`, reference checker
+1.39.7, seed 0 and 80 cases per fixture, found the reference-only class
+"hash table key at wrong offset" on kernel seed 45. The same branch's
+completed CI run `38759379043` failed the five-slot displacement regression;
+its hash-whiteout control passed.
+
+The collision observation in question 10 supplies the lookup rule: a
+dirent must be reachable from its name's hash slot through consecutive
+dirents or hash whiteouts. The checker uses the stored folded name for a
+casefolded entry, and leaves an unknown hash type unjudged, matching the
+reader's existing policy. `tests/check_oracle.rs` additionally requires the
+reference checker itself to reject the five-slot displacement and accept
+the one-slot displacement past a hash whiteout. These guest assertions are
+retained as independent controls; their post-fix CI result is still pending.
+
+## Retained default seed 74: checksum bytes and independent read
+
+Completed red run 38749903964/job/116473259222 and exact replay
+38840695392/job/116779857712 report an extent-data disagreement. Retained
+artifact 12020594852 has SHA-256
+`b43a64bb47570793022dc04e0bd7231b75e3bc8b351e1c3719302a189fda1c34`;
+its patch SHA-256 is
+`ee572579a8b995cbe6a8950a759560baec5297638f12dcc95f0981ab84c68c67`.
+Applied to fixtures artifact 11977252185 from run 38741040375 (archive
+`9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`),
+only six image bytes differ: 3041280–3041283 (the re-stamped bset checksum)
+and 3041646–3041647 (the extent checksum's upper 16 bits). No file data changed.
+At byte 3041640, the little-endian crc32 entry changes from
+`0x0a2f1ba705000002` to `0x00011ba705000002`. Tag, one-sector sizes,
+zero offset, checksum type 5 (CRC32C), and no compression remain unchanged.
+CRC32C has 32 stored bits here: matching low 16 bits does not validate it.
+
+Existing black-box native artifact 12011667570 from run 38818320145 has
+SHA-256 `ae6ea81e1866f4be19d6ad40c9b1753004db949e12c1948e49fff9a54ea326b0`.
+Its identical patch and reference extent listings corroborate that decoding.
+Reference fsck accepts both images, but its FUSE reader reads the unchanged
+inode 2147483904 at `many/file-0242.txt` with the expected content digest,
+and returns EIO for that same inode on the mutated image. Thus fsck exit 0
+is not a data-integrity verdict. Correlation requires that archive, complete
+physical control/mutated image digests, patch digest, reference version and
+every case field; absent or different evidence preserves the disagreement.
+CI regrades the retained native observations with positive and negative
+controls, and independently reapplies the checked-in exact-byte patch. No
+GPL source was consulted and no writer or checksum validation was changed.
+
+The same physical disagreement recurred on #225 at `4865d20`, completed
+run `38855619610` / job `116826294741`. Run `38857827089` on #224
+verified this binding and its rejection controls against the identical
+fixture archive. #225 retains its own fixture selector and disagreement
+baseline; fresh CI on the integrated head is required.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

@@ -1333,3 +1333,194 @@ fn files_truncated_up_here_are_read_by_the_reference() {
         "the reference mount does not read the files truncated up"
     );
 }
+
+/// The bucket_gens btree and its key type, as `tests/oracle_check_alloc.rs`
+/// names them.
+const BUCKET_GENS: u8 = 14;
+const BUCKET_GENS_KEY: u8 = 30;
+
+/// One invalid-key header and its indented continuation lines name every
+/// requested field. A reason on a different key is not evidence for this key.
+fn reference_key_refusal(text: &str, names: &[&str]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let lines: Vec<_> = text.lines().collect();
+    for (at, line) in lines.iter().enumerate() {
+        if !line.contains("invalid bkey in btree_node btree=") || !line.contains(names[0]) {
+            continue;
+        }
+        let block = std::iter::once(*line)
+            .chain(
+                lines[at + 1..]
+                    .iter()
+                    .copied()
+                    .take_while(|l| l.starts_with(' ') || l.starts_with('\t')),
+            )
+            .collect::<Vec<_>>()
+            .join("\n");
+        if names.iter().all(|name| block.contains(name)) {
+            return Some(block);
+        }
+    }
+    None
+}
+
+#[test]
+fn a_reference_key_refusal_keeps_its_reason_with_its_own_header() {
+    // The header and indented reason are separate lines in the retained
+    // guest log from run 38845228830, job 116799427424.
+    let header = "invalid bkey in btree_node btree=bucket_gens level=0: u64s 37 type bucket_gens POS_MIN len 1 ver 0";
+    let reason = "  size != 0, deleting";
+    let names = ["btree=bucket_gens", "size != 0, deleting"];
+    let diagnostic = format!("{header}\n{reason}");
+    let output = format!("with options: fix_errors=no\n{diagnostic}\naccounting_read... done\n");
+    assert_eq!(reference_key_refusal(&output, &names), Some(diagnostic));
+
+    // Do not combine a matching header with another key's reason, even
+    // when both appear in the same reference invocation.
+    let another = "invalid bkey in btree_node btree=dirents level=0: type dirent";
+    assert!(reference_key_refusal(
+        &format!("{header}\n  snapshot != 0, deleting\n{another}\n{reason}\n"),
+        &names
+    )
+    .is_none());
+    assert!(reference_key_refusal(
+        &format!("{header}\naccounting_read... done\n{reason}\n"),
+        &names
+    )
+    .is_none());
+    assert!(
+        reference_key_refusal(&format!("{header}\n  snapshot != 0, deleting\n"), &names).is_none()
+    );
+    assert!(reference_key_refusal(&format!("{another}\n{reason}\n"), &names).is_none());
+    assert!(reference_key_refusal(
+        &format!("{another}\n  btree=bucket_gens size != 0, deleting\n"),
+        &names
+    )
+    .is_none());
+    assert!(reference_key_refusal(
+        "with options: btree=bucket_gens size != 0, deleting\n",
+        &names
+    )
+    .is_none());
+    assert!(reference_key_refusal(&output, &[]).is_none());
+
+    let xattr = "invalid bkey in btree_node btree=dirents level=0: type xattr len 0";
+    assert_eq!(
+        reference_key_refusal(xattr, &["btree=dirents", "type xattr"]),
+        Some(xattr.to_owned())
+    );
+    assert!(reference_key_refusal(another, &["btree=dirents", "type xattr"]).is_none());
+}
+
+/// The reference checker refuses the image, and one key diagnostic names
+/// every requested field. Returns the header and its continuation lines.
+fn assert_reference_refuses(img: &Path, names: &[&str]) -> String {
+    let (ok, text) = reference(&["fsck", "-n", img.to_str().unwrap()]);
+    let diagnostic = reference_key_refusal(&text, names);
+    assert!(
+        !ok && diagnostic.is_some(),
+        "the reference checker did not refuse {} naming {names:?}:\n{text}",
+        img.display()
+    );
+    diagnostic.unwrap()
+}
+
+/// This crate's checker names the key at `pos` under `kind`.
+fn assert_ours_reports(img: &Path, kind: &str, pos: &str) {
+    let report = fs_bcachefs::check::check(&FileDevice::open(img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == kind && p.detail.contains(pos)),
+        "this checker did not report {kind} at {pos}: {:?}",
+        report.problems
+    );
+}
+
+/// Differential run 38814891184: the reference refuses a bucket_gens key with
+/// a nonzero size. The unchanged fixture passes the reference; the copy holds
+/// exactly that key with its generations intact; the reference refuses it
+/// naming the btree and the size, and this checker reports the same key.
+#[test]
+fn a_sized_bucket_gens_key_is_refused_by_the_reference() {
+    let img = scratch("default.img", "bucket-gens-size");
+    assert_fsck_clean(&img);
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let gens = btree::walk(&dev, &sb, BUCKET_GENS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == BUCKET_GENS_KEY)
+        .expect("the fixture has a bucket_gens key");
+    drop(dev);
+    assert_eq!(gens.size, 0, "the fixture's bucket_gens key has a size");
+    let mut bad = gens.clone();
+    bad.size = 1;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(BUCKET_GENS, vec![bad]).unwrap();
+    drop(w);
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let stored = btree::walk(&dev, &sb, BUCKET_GENS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == BUCKET_GENS_KEY && k.pos == gens.pos)
+        .expect("the changed bucket_gens key reads back");
+    drop(dev);
+    assert_eq!(stored.size, 1, "the stored key keeps its size");
+    assert_eq!(stored.value, gens.value, "the generations are preserved");
+
+    let line = assert_reference_refuses(&img, &["btree=bucket_gens", "size != 0, deleting"]);
+    eprintln!("reference: {line}");
+    assert_ours_reports(&img, "bkey_size_nonzero", &gens.pos.to_string());
+    std::fs::remove_file(&img).ok();
+}
+
+/// Differential run 38814891184: the reference refuses an xattr key in the
+/// dirents btree. The unchanged fixture passes the reference; the copy holds a
+/// dirent retyped as an xattr with its value intact; the reference refuses it
+/// naming the btree and the key type, and this checker reports the same key.
+#[test]
+fn an_xattr_key_in_the_dirents_btree_is_refused_by_the_reference() {
+    let img = scratch("default.img", "dirents-xattr");
+    assert_fsck_clean(&img);
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let dirent = btree::walk(&dev, &sb, btree_id::DIRENTS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == fs_bcachefs::bkey::key_type::DIRENT)
+        .expect("the fixture has a dirent");
+    drop(dev);
+    let mut bad = dirent.clone();
+    bad.key_type = fs_bcachefs::bkey::key_type::XATTR;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(btree_id::DIRENTS, vec![bad]).unwrap();
+    drop(w);
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let stored = btree::walk(&dev, &sb, btree_id::DIRENTS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos == dirent.pos)
+        .expect("the changed dirents key reads back");
+    drop(dev);
+    assert_eq!(
+        stored.key_type,
+        fs_bcachefs::bkey::key_type::XATTR,
+        "the stored key keeps its type"
+    );
+    assert_eq!(stored.value, dirent.value, "the value is preserved");
+
+    let line = assert_reference_refuses(&img, &["btree=dirents", "type xattr"]);
+    eprintln!("reference: {line}");
+    assert_ours_reports(&img, "invalid_bkey", &dirent.pos.to_string());
+    std::fs::remove_file(&img).ok();
+}

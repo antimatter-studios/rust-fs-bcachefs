@@ -47,6 +47,9 @@ import subprocess
 import sys
 from collections import Counter, OrderedDict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import default74_native_proof as native74
+
 # The lines the reference checker prints on a clean image (the fixtures'
 # NAME.fsck.txt, recorded when they are built). Anything else it prints is
 # a finding.
@@ -160,6 +163,9 @@ def judge_one(case, out, chunks, size, args):
     scratch = os.path.join(out, "scratch", cid + ".img")
     patch = os.path.join(out, "patches", cid + ".patch")
     lay(scratch, chunks, size, patch)
+    read_binding = native74.bind(
+        case, os.path.join(args.fixtures, case["fixture"]), scratch, patch, args.version
+    )
     if args.container:
         cmd = [
             "docker",
@@ -202,6 +208,9 @@ def judge_one(case, out, chunks, size, args):
     if text is not None:
         with open(ref + ".txt", "w", encoding="utf-8") as f:
             f.write(text)
+        if read_binding:
+            with open(ref + ".read.json", "w") as f:
+                json.dump(read_binding, f)
         if cid in args.keep:
             keep_case(case, out, patch, status, text)
     return status
@@ -332,6 +341,17 @@ def judged(out, case, normal=None):
         return {"verdict": "crashed", "status": status}
     normal = normal or {"lines": frozenset(), "status": 0}
     lines = findings(text, normal["lines"])
+    read_path = os.path.join(out, "ref", case["id"] + ".read.json")
+    if not lines and status == 0 and os.path.isfile(read_path):
+        with open(read_path) as f:
+            binding = json.load(f)
+        if native74.matches(
+            case, binding, os.environ.get("DIFFERENTIAL_NATIVE74_ARCHIVE")
+        ):
+            lines = [
+                "Independent reference FUSE read: exact extent returns EIO; "
+                + native74.SOURCE
+            ]
     return {
         "verdict": "found" if lines or status not in (0, normal["status"]) else "clean",
         "status": status,
@@ -463,6 +483,20 @@ def classify(args):
     report += ["", f"Fixtures: {fixtures_from or 'unrecorded (a local run)'}."]
     report += ["", "| class | cases |", "|---|---|"]
     report += [f"| {label} | {counts[c]} |" for c, label in CLASSES.items()]
+    if any(
+        native74.SOURCE in line
+        for case in cases
+        for line in case.get("ref", {}).get("lines", [])
+    ):
+        report += [
+            "",
+            "Independent native data-read corroboration: " + native74.SOURCE,
+            (
+                "Exact physical control/mutation and patch digests match retained artifact 12011667570; "
+                "the control reads its expected bytes and the mutated extent returns EIO. "
+                "The offline fsck verdict remains exit 0."
+            ),
+        ]
     if unjudged:
         report.append(f"| not judged (the judge did not finish) | {unjudged} |")
     noted = [(f, n) for f, n in normal.items() if n["notes"] or n["status"] != 0]
@@ -659,6 +693,7 @@ def main():
     how.add_argument("--reference", help="a stand-in, given the image's path (tests)")
     j.add_argument("--jobs", type=int, default=4)
     j.add_argument("--timeout", type=int, default=60)
+    j.add_argument("--version", default="(unknown version)")
     j.add_argument(
         "--keep",
         action="append",

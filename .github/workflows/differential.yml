@@ -48,6 +48,11 @@ on:
       - .github/workflows/differential.yml
       - scripts/differential-fuzz.sh
       - scripts/differential-fuzz.py
+      - scripts/default74_native_proof.py
+      - tests/default74_native_proof.py
+      - tests/data/default-74-38840695392.patch
+      - scripts/select-fixture-run.sh
+      - scripts/select-fixture-run-test.sh
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay.tsv
@@ -78,6 +83,18 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - name: Retained default-74 native read contract and rejection controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIFFERENTIAL_NATIVE74_ARCHIVE: ${{ runner.temp }}/default74-native.zip
+        run: |
+          set -euo pipefail
+          # Existing observations only: no second capture producer. Expired or
+          # substituted artifacts fail, naming the exact required artifact.
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/12011667570/zip" > "$DIFFERENTIAL_NATIVE74_ARCHIVE"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/default74-fixtures.zip"
+          python3 tests/default74_native_proof.py "$DIFFERENTIAL_NATIVE74_ARCHIVE" "$RUNNER_TEMP/default74-fixtures.zip"
+          echo "DIFFERENTIAL_NATIVE74_ARCHIVE=$DIFFERENTIAL_NATIVE74_ARCHIVE" >> "$GITHUB_ENV"
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -118,6 +135,12 @@ jobs:
             esac
           done <"$RUNNER_TEMP/replay.env" >>"$GITHUB_ENV"
 
+      # The selector's controls run first, over a fake catalog, so a
+      # selector that would take a quick run or an expired artifact fails
+      # here rather than judging the wrong input.
+      - name: Fixture selection controls
+        run: bash scripts/select-fixture-run-test.sh
+
       - name: Fetch the fixtures
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,19 +148,7 @@ jobs:
           FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest }}
         run: |
           set -euo pipefail
-          run="$FIXTURE_RUN"
-          if [ -z "$run" ]; then
-            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-          elif [ -z "$FIXTURE_DIGEST" ]; then
-            echo "fixture_run $run needs fixture_digest, so a report names the exact input" >&2; exit 1
-          fi
-          [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
-          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
-          [ -n "$artifact" ] || { echo "run $run has no fixtures artifact (expired?)" >&2; exit 1; }
-          artifact_id="${artifact%% *}"; digest="${artifact#* }"
-          if [ -n "$FIXTURE_DIGEST" ] && [ "$digest" != "$FIXTURE_DIGEST" ]; then
-            echo "run $run fixtures artifact is $digest, not the expected $FIXTURE_DIGEST" >&2; exit 1
-          fi
+          read -r run artifact_id digest < <(bash scripts/select-fixture-run.sh "$GITHUB_REPOSITORY" "$FIXTURE_RUN" "$FIXTURE_DIGEST")
           gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
           tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
           mkdir -p .vm-share

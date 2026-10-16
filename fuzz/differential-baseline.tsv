@@ -20,6 +20,8 @@
 # 648 cases, eight clean controls: 97 reference-only cases in 46 classes.
 # Each exact class below is an unresolved checker defect tracked by its issue.
 # No wildcard entries; new classes, failed controls and crate panics still fail.
+# #221's four inode-metadata classes were removed by #225 once a run at
+# seed 0, 80 cases a fixture, no longer found them.
 ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
 ref-only	key-size	invalid bkey in btree_node btree=logged_ops level=#: u#s # type inode_alloc_cursor # len # ver # : m	#219: metadata key invariants
 ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#163: allocation metadata and allowed key types
@@ -36,11 +38,8 @@ ref-only	key-size	invalid bkey in btree_node btree=backpointers level=#: u#s # t
 ref-only	key-offset	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume pos_min len # ver # : root	#219: metadata key invariants
 ref-only	node	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#163: allocation metadata and allowed key types
 ref-only	key-size	check_allocations...invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # 	#219: metadata key invariants
-ref-only	node	check_inodes...inode journal seq in future (currently at #)	#221: inode metadata consistency
 ref-only	node	check_allocations...bucket # gen # data type user has wrong stripe_sectors: got #, should be #, fixi	#163: allocation metadata and allowed key types
-ref-only	node	check_extents...incorrect i_sectors: got #, should be #	#221: inode metadata consistency
 ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type xattr # len # ver # : (type #):	#163: allocation metadata and allowed key types
-ref-only	key-value	check_extents...incorrect i_sectors: got #, should be #	#221: inode metadata consistency
 ref-only	key-size	check_alloc_info...hole in alloc btree missing in freespace btree	#163: allocation metadata and allowed key types
 ref-only	key-value	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type xattr #:u#_max len #	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type accounting # len # ver # : nr_inodes 	#163: allocation metadata and allowed key types
@@ -63,7 +62,6 @@ ref-only	key-snapshot	invalid bkey in btree_node btree=freespace level=#: u#s # 
 ref-only	key-offset	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree pos_min len # ver 	#219: metadata key invariants
 ref-only	key-size	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#219: metadata key invariants
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
-ref-only	key-value	check_inodes...directory with nonzero i_size	#221: inode metadata consistency
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#219: metadata key invariants
 
 # Measured on main 91a47a2 in CI run 38698985871, reference checker 1.39.7.
