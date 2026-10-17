@@ -3,7 +3,7 @@
 | `fsck.bcachefs` on snapshot key positions: a snapshot key in the snapshots btree with a nonzero inode position | Supported | Unreleased (#269) | #253 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit tests |
 | Snapshot-tree keys with nonzero inode positions | Supported | Unreleased | #254 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit tests |
 | Inode keys with nonzero inode positions | Supported for `inode_v3` in the inodes btree | Unreleased (#281) | #255 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit tests |
-| Backpointer values that disagree with their extents | Supported for written data extents with observed backpointer locations | Unreleased | #256 | `oracle_check_alloc.rs`, `check_oracle.rs`, `check.rs` unit test, pinned `oracle_differential_default74.rs` cases |
+| Backpointer values that disagree with their extents | Supported for written data extents with observed backpointer locations | Unreleased (#290) | #256 | `oracle_check_alloc.rs`, `check_oracle.rs`, `check.rs` unit test, pinned `oracle_differential_default74.rs` cases |
 | Logged-op-truncate keys in the freespace btree | Not supported for one measured disagreement class | | #257 | `differential.yml` report 39018152705 |
 | Xattr keys with nonzero sizes | Not supported for one measured disagreement class | | #258 | `differential.yml` report 39018152705 |
 | LRU keys in the xattrs btree | Not supported for one measured disagreement class | | #259 | `differential.yml` report 39018152705 |
