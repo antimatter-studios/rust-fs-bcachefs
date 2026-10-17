@@ -594,6 +594,65 @@ fn both_checkers_reject_a_snapshot_key_with_a_nonzero_snapshot_field() {
     );
 }
 
+/// Nightly-seed run 39018152705, seed 1659458 (#253): a snapshot's
+/// inode position is zero, independently judged again on fresh fixtures.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_key_with_a_nonzero_inode() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for inode in [1, u64::MAX] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("snapshot-inode-{inode}.img"));
+        std::fs::copy(fixture("default.img"), &img).unwrap();
+        let (control_bad, text) = reference_finds_a_problem(&img);
+        assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, 9)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == 22 && k.pos.inode == 0 && k.pos.offset == u64::from(u32::MAX))
+            .expect("the root snapshot key exists");
+        let value = k.value.clone();
+        k.pos.inode = inode;
+        let pos = k.pos;
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(9, vec![k]).unwrap();
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let stored = btree::walk(&dev, &sb, 9)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == 22 && k.pos == pos)
+            .expect("the mutated snapshot key is stored");
+        assert_eq!(stored.value, value, "the snapshot value must be unchanged");
+        let (damaged, text) = reference_finds_a_problem(&img);
+        assert!(damaged, "the reference must reject inode {inode}:\n{text}");
+        assert!(
+            text.contains("snapshot_pos_bad"),
+            "wrong native finding:\n{text}"
+        );
+        let ours = check(&dev).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "snapshot_pos_bad" && p.detail.contains(&pos.to_string())),
+            "the snapshot inode must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// A bucket_gens key has no extent size: kernel.img seed 1 in differential
 /// run 38749903964 stored one with a nonzero size, which the reference
 /// rejected (`bkey_size_nonzero`) and this checker called clean.
