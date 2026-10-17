@@ -26,9 +26,9 @@
 //! journal, as it would be read.
 //!
 //! Of the allocation btrees, each bucket's generation in bucket_gens is
-//! checked against its alloc key, each data extent has its backpointer (a
-//! piece of a compressed region aside), each bucket holding data is a user
-//! bucket in its alloc key,
+//! checked against its alloc key, each data extent has its backpointer with
+//! matching value (a piece of a compressed region aside), each bucket
+//! holding data is a user bucket in its alloc key,
 //! the fragmentation lru holds an entry for each partly filled bucket and
 //! nothing else, the need_discard btree a key for each bucket waiting for
 //! discard and nothing else, and the device's accounting by data type is
@@ -669,13 +669,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     };
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
     // Where the device's backpointers are, when the filesystem keeps them.
-    let backpointers: Option<std::collections::BTreeSet<u64>> = trees
+    let backpointers: Option<BTreeMap<u64, &Bkey>> = trees
         .get(&BACKPOINTERS)
         .filter(|_| judge_alloc)
         .map(|keys| {
             keys.iter()
                 .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
-                .map(|k| k.pos.offset)
+                .map(|k| (k.pos.offset, k))
                 .collect()
         });
 
@@ -968,30 +968,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     r.add("alloc_key_data_type_wrong", d);
                 }
             }
-            // Its backpointer, at its device sector << 16 plus its offset
-            // into a checksummed region it is a piece of (#163: the
-            // reference's "missing backpointer"; the aged image: the piece
-            // at offset 136 of the region at sector 26880 has its
-            // backpointer at 26880 << 16 | 136). Only for the shapes whose
-            // backpointer is known to sit there: not an unwritten extent,
-            // and not a piece of a compressed region.
-            let known = e.crc.is_none_or(|c| {
-                c.compression_type == crate::extent::compression::NONE
-                    || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
-            });
-            let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
             if let Some(bps) = &backpointers {
-                if known && !e.ptr.is_unwritten() && !bps.contains(&at) {
-                    r.add(
-                        "missing_backpointer",
-                        format!(
-                            "extent {}: no backpointer at device sector {} offset {}",
-                            k.pos,
-                            e.ptr.offset,
-                            at & 0xffff
-                        ),
-                    );
-                }
+                data_backpointer(k, &e, bps, &mut r);
             }
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
@@ -1273,6 +1251,58 @@ fn nearest<'a>(chain: &[u32], keys: &[&'a Bkey]) -> Option<&'a Bkey> {
         .map(|(_, k)| k)
 }
 
+/// The observed backpointer lookup for a written data extent (#163).
+fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mut Report) {
+    // The aged image's piece at offset 136 of the region at sector 26880
+    // has its backpointer at 26880 << 16 | 136. Only uncompressed pieces
+    // and whole compressed regions have an observed lookup rule.
+    let known = e.crc.is_none_or(|c| {
+        c.compression_type == crate::extent::compression::NONE
+            || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
+    });
+    let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
+    if !known || e.ptr.is_unwritten() {
+        return;
+    }
+    let Some(bp) = bps.get(&at) else {
+        r.add(
+            "missing_backpointer",
+            format!(
+                "extent {}: no backpointer at device sector {} offset {}",
+                k.pos,
+                e.ptr.offset,
+                at & 0xffff
+            ),
+        );
+        return;
+    };
+    // S3/S4/S8: three header bytes, five uninterpreted bytes, length u32,
+    // then the target bpos. #256's second-word mutation changes both the
+    // length and snapshot without moving the backpointer key.
+    let length = e.crc.map_or(e.len, |c| {
+        if c.compression_type == crate::extent::compression::NONE {
+            e.len
+        } else {
+            u64::from(c.compressed_size)
+        }
+    });
+    let v = &bp.value;
+    let matches = v.len() >= 32
+        && v[..3] == [btree_id::EXTENTS, 0, DATA_USER]
+        && u64::from(le32(v, 8)) == length
+        && Bpos::parse(&v[12..32]).is_ok_and(|pos| pos == k.pos);
+    if !matches {
+        r.add(
+            "backpointer_to_missing_ptr",
+            format!(
+                "backpointer {}: value does not match extent {} (expected btree extents, \
+                 level 0, data type user, length {length})",
+                bp.pos, k.pos
+            ),
+        );
+    }
+}
+
 /// Read one extent's stored bytes and verify its checksum.
 fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     let Some(crc) = e.crc else { return Ok(()) };
@@ -1471,6 +1501,101 @@ mod tests {
             },
             value,
         }
+    }
+
+    /// Backpointer fields observed by the reference tools, checked against
+    /// the extent they are supposed to describe.
+    #[test]
+    fn a_backpointer_value_must_agree_with_its_extent() {
+        // #256, reference run 39018152705, block4k seed 1659443.
+        let mut extent = key(key_type::EXTENT, 8, Vec::new());
+        extent.pos.inode = 2147483766;
+        extent.pos.snapshot = u32::MAX;
+        extent.size = 8;
+        let e = DataExtent {
+            file_start: 0,
+            len: 8,
+            ptr: crate::extent::Ptr {
+                dev: 0,
+                offset: 17040,
+                gen: 0,
+                flags: 0,
+            },
+            crc: None,
+            skip: 0,
+        };
+        let mut value = vec![0, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let bp = key(KEY_BACKPOINTER, 1116733440, value);
+        let findings = |bp: &Bkey, e: &DataExtent| {
+            let mut r = Report::default();
+            data_backpointer(&extent, e, &BTreeMap::from([(bp.pos.offset, bp)]), &mut r);
+            r.problems
+        };
+        assert!(findings(&bp, &e).is_empty());
+        // The exact mutation changes length and snapshot in one word.
+        let mut bad = bp.clone();
+        bad.value[8..16].copy_from_slice(&1u64.to_le_bytes());
+        let problems = findings(&bad, &e);
+        assert!(problems
+            .iter()
+            .any(|p| p.kind == "backpointer_to_missing_ptr"
+                && p.detail.contains(&extent.pos.to_string())));
+        // Each documented field, and every short value, is checked safely.
+        for at in [0, 1, 2, 8, 12, 16, 24] {
+            let mut bad = bp.clone();
+            bad.value[at] ^= 1;
+            assert_eq!(
+                findings(&bad, &e)[0].kind,
+                "backpointer_to_missing_ptr",
+                "byte {at}"
+            );
+        }
+        for len in 0..32 {
+            let mut bad = bp.clone();
+            bad.value.truncate(len);
+            assert_eq!(
+                findings(&bad, &e)[0].kind,
+                "backpointer_to_missing_ptr",
+                "length {len}"
+            );
+        }
+        let mut missing = Report::default();
+        data_backpointer(&extent, &e, &BTreeMap::new(), &mut missing);
+        assert_eq!(missing.problems[0].kind, "missing_backpointer");
+
+        // Whole compressed regions use their physical length; an
+        // uncompressed piece uses its live length and offset in the region.
+        let mut e = e;
+        e.crc = Some(crate::extent::Crc {
+            compressed_size: 2,
+            uncompressed_size: 8,
+            offset: 0,
+            nonce: 0,
+            csum_type: 5,
+            compression_type: crate::extent::compression::LZ4,
+            csum_hi: 0,
+            csum_lo: 0,
+        });
+        let mut compressed = bp.clone();
+        compressed.value[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert!(findings(&compressed, &e).is_empty());
+        let c = e.crc.as_mut().unwrap();
+        c.compression_type = crate::extent::compression::NONE;
+        c.offset = 136;
+        c.uncompressed_size = 256;
+        let mut piece = bp.clone();
+        piece.pos.offset |= 136;
+        assert!(findings(&piece, &e).is_empty());
+        // The existing exclusions stay excluded.
+        e.crc.as_mut().unwrap().compression_type = crate::extent::compression::LZ4;
+        assert!(findings(&bad, &e).is_empty());
+        e.crc = None;
+        e.ptr.flags = crate::extent::PTR_UNWRITTEN;
+        assert!(findings(&bad, &e).is_empty());
     }
 
     /// A snapshot tree's value: master subvolume, then root snapshot.

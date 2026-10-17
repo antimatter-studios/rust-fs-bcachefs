@@ -1290,6 +1290,39 @@ verifies that all other stored key fields remain unchanged. These new
 regressions run in CI, not locally. No position rule for other inode key
 versions or other btrees is inferred, and no GPL source was read.
 
+### Backpointer values against their extents (S3, S4, S8, #256)
+
+The same nightly [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
+and fixtures recorded for #253 report two value-only disagreements:
+`block4k` seed 1659443 at backpointer `0:1116733440:0`, and `aged` seed
+1659460 at `0:3114205184:0`. The reference checker 1.39.7 exits 9 with
+"backpointer doesn't match extent it points to" and
+`backpointer_to_missing_ptr`; this crate reported clean. Report artifact
+12096026183 has digest
+`sha256:ad43d71ebff7928f2e92b16634da0880523ba8f865af3b30dfed32818b1b2670`.
+
+The mutations replace the value's second little-endian word by 1 and 0,
+respectively. That word carries the length and target snapshot: the
+block4k value changes from length 8 and snapshot U32_MAX to length 1 and
+snapshot 0; aged changes from length 22 and snapshot U32_MAX to zeros.
+The referenced extents remain `2147483766:8:U32_MAX` and
+`2147487978:22:U32_MAX`. This is black-box checker output and the already
+observed value layout above, without reference-source access.
+
+The checker now compares the documented btree, level, data type, physical
+length and target position at each already-supported data backpointer
+location. Whole compressed regions use their compressed length;
+uncompressed pieces use their live length. The existing unclean-filesystem,
+unwritten-extent and compressed-piece exclusions remain. Bytes 3 through 7
+are not interpreted. #230's absent-backpointer disagreement and exact
+baseline entry remain unchanged.
+
+The test-only commit precedes the fix. Unit tests cover those fields,
+short values and the existing lookup boundaries; fixture and independent
+reference regressions change the length and snapshot together and alone,
+with clean controls and unchanged extents. The digest-pinned CI job replays
+both exact seeds. Tests run in CI, not locally; no GPL source was read.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)
