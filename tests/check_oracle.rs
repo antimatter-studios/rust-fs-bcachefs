@@ -164,16 +164,23 @@ fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
                 .any(|marker| text.contains(marker)),
             "one reference invocation failed or faulted; no case details retained"
         );
+        // As in reference_finds_a_problem, -n can print a finding even
+        // when the process exits successfully. Options are not findings.
+        let named = text.lines().any(|line| {
+            !line.trim_start().starts_with("with options")
+                && (line.contains("error") || line.contains("fixing"))
+        });
         let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
-        observations.push((name, native.status.success(), text, ours));
+        observations.push((name, native.status.success() && !named, text, ours));
     }
     // Collect every independent observation before asserting agreement, so
     // the red run records the controls as well as the original mismatch.
     for (name, clean, text, ours) in &observations {
         println!(
-            "{name}: reference clean={clean}; ours clean={}; findings={:?}\n{text}",
+            "{name}: reference clean={clean}; ours clean={}; {} findings; first={:?}\n{text}",
             ours.clean(),
-            ours.problems
+            ours.problems.len(),
+            ours.problems.first()
         );
     }
     assert!(
@@ -182,7 +189,13 @@ fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
     );
     assert!(observations[1].1, "the reference still accepts #247's case");
     for (name, clean, _, ours) in observations {
-        assert_eq!(ours.clean(), clean, "{name}: {:?}", ours.problems);
+        assert_eq!(
+            ours.clean(),
+            clean,
+            "{name}: {} findings; first={:?}",
+            ours.problems.len(),
+            ours.problems.first()
+        );
     }
 }
 
