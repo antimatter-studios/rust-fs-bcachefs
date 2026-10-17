@@ -677,6 +677,67 @@ rm -f "$out/encrypted.mounted.json"
     fi
     rm -f "$ROOT$img"
 } > "$out/encrypted.mounted.txt" 2>&1 || echo "the steps stopped: exit $?" >> "$out/encrypted.mounted.txt"
+# The nonce's remaining parts (#275): encrypted.img's extents are all
+# uncompressed and start at their data's start, so an extent nonce's
+# compression type, uncompressed size and crc offset (S1 9.1.4.1) are not
+# seen there. An encrypted image with lz4 on is written through the mount
+# (a compressible file and a random one), settled, and 4K of each file
+# overwritten, which splits their extents and starts the later parts at an
+# offset, as crc128-overwrite does. encrypted-compressed.txt records the
+# steps; nothing here fails the build, and
+# tests/oracle_encrypted_compressed.rs fails, printing that record, if the
+# image does not hold both shapes.
+step "encrypted-compressed (--encrypted --compression=lz4, partly overwritten)"
+img="$age_dir/encrypted-compressed.img"
+rm -f "$out/encrypted-compressed.img" "$out/encrypted-compressed.json"
+{
+    rm -f "$ROOT$img"
+    truncate -s 64M "$ROOT$img"
+    bcachefs-ref format -q --encrypted --no_passphrase --compression=lz4 "$img" ||
+        echo "format: exit $?"
+    if fuse_mount "$img" rw,noatime "$work/fuse-encrypted-compressed.log"; then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, random, sys
+with open(os.path.join(sys.argv[1], "text"), "wb") as f:
+    f.write(b"".join(b"line %06d of a compressible file\n" % i for i in range(32768)))
+with open(os.path.join(sys.argv[1], "random"), "wb") as f:
+    f.write(random.Random(275).randbytes(1 << 20))
+PY
+        sync
+        sleep 2
+        fuse_kill
+        bcachefs-ref fsck -y "$img" >"$out/encrypted-compressed.written.settle.txt" 2>&1 ||
+            echo "settle written: exit $?"
+        bcachefs-ref list -b extents "$img" >"$out/encrypted-compressed.written.extents.txt" 2>&1 || true
+        if fuse_mount "$img" rw,noatime "$work/fuse-encrypted-compressed.log"; then
+            python3 - "$ROOT$mnt" <<'PY' || echo "overwrite: exit $?"
+import os, sys
+for name in ("text", "random"):
+    with open(os.path.join(sys.argv[1], name), "r+b") as f:
+        f.seek(65536)
+        f.write(b"overwritten\n" * 341 + b"end\n")
+PY
+            sync
+            sleep 2
+            manifest "$ROOT$mnt" "$out/encrypted-compressed.json" live
+            fuse_kill
+            bcachefs-ref fsck -y "$img" >"$out/encrypted-compressed.replay.txt" 2>&1 ||
+                echo "settle overwritten: exit $?"
+            for b in inodes dirents extents; do
+                bcachefs-ref list -b "$b" "$img" >"$out/encrypted-compressed.$b.txt" 2>&1 || true
+            done
+            bcachefs-ref fsck -n "$img" >"$out/encrypted-compressed.fsck.txt" 2>&1 ||
+                echo "fsck: exit $?" >>"$out/encrypted-compressed.fsck.txt"
+            grep -c 'csum chacha20_poly1305_80 ' "$out/encrypted-compressed.extents.txt" |
+                sed 's/$/ encrypted crc entries/'
+            grep 'crc[0-9]*:.* offset [1-9]' "$out/encrypted-compressed.extents.txt" ||
+                echo "no crc offset above 0"
+            cp --sparse=always "$ROOT$img" "$out/encrypted-compressed.img"
+        fi
+    fi
+    rm -f "$ROOT$img"
+} >"$out/encrypted-compressed.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/encrypted-compressed.txt"
+sed 's/^/encrypted-compressed: /' "$out/encrypted-compressed.txt"
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
