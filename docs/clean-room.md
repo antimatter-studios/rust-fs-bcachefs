@@ -1713,6 +1713,43 @@ must survive. `cli_offset_writes_are_read_by_the_reference` in
 guest's reference checker, lister and read-only mount to judge (S3, S8).
 This is black-box CLI use only; no reference source is read or compared.
 
+### Optional fields are validated after superblock selection (S3, S4, #261)
+
+[Nightly run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
+reported four crate-only `superblock_copy` disagreements. Its examples,
+`aged-unclean` and `kernel` seed 1659440, change the primary superblock's
+field-16 length at byte 7288 from 3 words to 0 and re-stamp its checksum.
+The parser's diagnostic offset 6536 is relative to the optional-field area,
+which starts at byte 752. Both reference verdicts are clean, exit 0.
+The fixtures and their digests are the pinned artifact recorded for #253.
+
+Fresh black-box observations on 2026-10-17 use that exact aged-unclean
+fixture and the harness guest's installed reference build `1.39.7 fuse`.
+[The retained observation](../tests/data/superblock-copy-261-reference.txt)
+records the invocation, image hashes, mutations, statuses and exact diagnostic
+text. The unchanged control, a primary-only zero-length field, and a
+middle-copy-only zero-length field are accepted with exit 0 and no superblock
+diagnostic. The same change to the last equal-sequence copy, a primary whose
+sequence is incremented, or every copy is refused with exit 1 and
+`invalid_sb_field_size`: "Invalid superblock: optional field with size 0
+(type 16)". Thus optional-field validation applies to the sequence-winning
+copy; an invalid selected field is not grounds for falling back to an older
+copy. Existing last-copy sequence tie-breaking is corroborated here.
+
+Two physical-damage controls also exit 0 but explicitly report "primary
+superblock unreadable": one for a bad checksum, one for zeroed magic. The
+checker retains those diagnostics. It verifies each candidate's header and
+checksum before selection and parses optional fields only in the winner;
+the standalone single-copy parser still rejects a zero-length field.
+
+The test-only commit precedes the implementation. The pinned CI regression
+replays both reported examples; ordinary fixture and live-reference cases
+cover selected and unselected copies, a newer primary, all copies, and an
+unrestamped mutation. Differential pull requests replay the same pinned
+fixtures, 80 mutations per fixture and first seed 1659440. Only #261's exact
+baseline allowance is removed. Suites run in CI, not locally. No reference
+source was read; the observations above came only from its executable output.
+
 ## No comparison against the reference source
 
 Decided 2026-10-17 (#160). This record is evidence about the *process*: the

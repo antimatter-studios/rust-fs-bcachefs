@@ -67,10 +67,11 @@ fn the_reference_validates_only_the_selected_copys_optional_fields() {
         let text = String::from_utf8_lossy(&native.stdout).into_owned()
             + &String::from_utf8_lossy(&native.stderr);
         assert!(
-            matches!(native.status.code(), Some(0..=123))
+            matches!(native.status.code(), Some(0 | 1))
                 && ![
                     ".c:",
                     ".h:",
+                    ".rs:",
                     "BUG",
                     "assertion",
                     "Assertion",
