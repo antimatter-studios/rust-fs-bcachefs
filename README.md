@@ -108,6 +108,36 @@ Capability, path and input refusals are checked before opening the image
 for writing. Symlinks are refused. Errors use the shared stderr contract:
 status 1 for failure, 2 for invalid arguments and 3 for unsupported operations.
 
+## Filesystem properties
+
+`get [KEY]` and `info [KEY]` are identical:
+
+```sh
+fs.bcachefs disk.img get
+fs.bcachefs disk.img info label --text
+fs.bcachefs disk.img get bcachefs.uuid
+fs.bcachefs disk.img set label BACKUP     # unsupported: exit 3
+fs.bcachefs disk.img resize 20G --force   # unsupported: exit 3
+```
+
+JSON is the default. The ordered shared keys are `fs`, `label` (null when
+empty), `total_bytes`, `free_bytes`, `block_size`, `dirty`, and `bcachefs`.
+Capacity counts the member's usable buckets; free space counts the free
+bucket runs, both in bytes, as in the C ABI's filesystem statistics.
+`dirty` means the superblock is not marked clean, even after in-memory
+journal replay. The `bcachefs` object holds `uuid`, `version`,
+`btree_node_size`, `devices`, `encrypted` and `clean`.
+
+Selection returns an object such as `{"bcachefs.uuid": "..."}`; `--text`
+prints that value alone. Unknown keys return exit 2. `set KEY VALUE` and
+`resize SIZE [--force]` return exit 3 before opening the target, without
+stdout or image changes; errors use the shared stderr format.
+
+Compatibility change: `info` previously returned filesystem-specific fields
+at the top level and an empty label as `""`. Those fields now live under
+`bcachefs`, and an empty label is null. Full reports require readable
+filesystem trees for the free-space count.
+
 ## Changelog
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).

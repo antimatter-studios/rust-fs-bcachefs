@@ -208,11 +208,16 @@ tasks:
   # Each test file prints three lines; the extra docs file fits the budget.
   # #293 adds 300 checks: 40 successful-write checks, 240 refusal checks,
   # and 20 generated-documentation checks. One new file adds three lines.
+  # #294 adds 955 mandatory CLI checks: eleven reference-backed property sets
+  # (848, including a nonempty label), dirty/unknown keys (42), refusals (39),
+  # help (8), generated docs (18). Execution is recorded by CI.
+  # One new file adds three verdict lines (78 bytes); budgets rise by
+  # three lines and 150 bytes, retaining the existing path-length margin.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 31 1250 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3895'
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 34 1400 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 4850'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'

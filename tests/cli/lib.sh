@@ -35,6 +35,17 @@ check() {
 # file fails naming the task that builds them. Nothing skips.
 need_fixture() {
     if [ ! -f "$FIXTURES/$1.img" ] || [ ! -f "$FIXTURES/$1.json" ]; then
+        echo "FAIL  $NAME: $FIXTURES/$1.img or its manifest $1.json is missing -- build the fixtures with \`chore fixtures\`" >&2
+        echo "test result: FAILED. $passed passed; 1 failed"
+        exit 1
+    fi
+}
+
+# need_image NAME: the image NAME.img exists, or the whole file fails naming
+# the task that builds it. For images such as write-study/base that the
+# reference's reports describe but no manifest does. Nothing skips.
+need_image() {
+    if [ ! -f "$FIXTURES/$1.img" ]; then
         echo "FAIL  $NAME: $FIXTURES/$1.img is missing -- build the fixtures with \`chore fixtures\`" >&2
         echo "test result: FAILED. $passed passed; 1 failed"
         exit 1
