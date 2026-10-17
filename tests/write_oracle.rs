@@ -175,6 +175,73 @@ fn reference_mount_reads(img: &Path, files: &[(&str, &[u8])]) -> bool {
     read.is_ok()
 }
 
+/// Recursive CLI output is judged by FUSE's find and the reference lister.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_recursive_walk_matches_the_reference_and_ends_on_damaged_directories() {
+    let img = scratch("kernel.img", "recursive");
+    let mut writer = Writer::open(FileDevice::open_rw(&*img).unwrap()).unwrap();
+    writer.symlink(4096, b"dirlink", b"dir").unwrap();
+    writer.symlink(4096, b"ancestor", b"/").unwrap();
+    writer.symlink(4096, b"raw-\xff", b"absent").unwrap();
+    drop(writer);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli/recursive-oracle.py");
+    let check = |image: &Path, mode: &str, extra: &[&Path]| {
+        let out = Command::new("python3")
+            .arg(&script)
+            .arg(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+            .arg(image)
+            .arg(mode)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    with_reference_mount(&img, |m| check(&img, "mount", &[m]));
+    // The lister gets the image after the mount releases it.
+    check(&img, "lister", &[]);
+    for fault in ["cycle", "twice", "unreadable"] {
+        let damaged = scratch("default.img", fault);
+        let dev = FileDevice::open(&*damaged).unwrap();
+        let fs = Filesystem::open(FileDevice::open(&*damaged).unwrap()).unwrap();
+        let dir = fs.lookup("/dir").unwrap();
+        let keys = btree::walk(&dev, &Superblock::read(&dev).unwrap(), btree_id::DIRENTS).unwrap();
+        let mut key = keys
+            .into_iter()
+            .find(|k| {
+                fs_bcachefs::inode::Dirent::from_key(k).is_ok_and(|d| {
+                    if fault == "unreadable" {
+                        d.dir == dir
+                    } else {
+                        d.dir == 4096
+                            && d.name
+                                == if fault == "twice" {
+                                    b"many".as_slice()
+                                } else {
+                                    b"dir".as_slice()
+                                }
+                    }
+                })
+            })
+            .unwrap();
+        if fault == "unreadable" {
+            key.value[9..].fill(0);
+        } else {
+            key.value[..8]
+                .copy_from_slice(&(if fault == "cycle" { 4096u64 } else { dir }).to_le_bytes());
+        }
+        Writer::open(FileDevice::open_rw(&*damaged).unwrap())
+            .unwrap()
+            .insert(btree_id::DIRENTS, vec![key])
+            .unwrap();
+        check(&damaged, fault, &[]);
+    }
+}
+
 /// The installed command's two spellings use the library writer; only the
 /// black-box reference tools judge the resulting bytes and metadata.
 #[cfg(feature = "cli")]
