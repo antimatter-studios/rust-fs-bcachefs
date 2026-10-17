@@ -68,4 +68,85 @@ check "put over a directory is refused" test $? -ne 0
 fs.bcachefs "$SANDBOX/refuse.img" rmdir /d >/dev/null 2>&1
 check "rmdir of a directory with entries is refused" test $? -ne 0
 
+# The shared spelling and its alias have the same input, mode and journal
+# options, and every predictable refusal preserves the complete image.
+refusal() {
+    local code="$1" description="$2"
+    shift 2
+    fs.bcachefs "$img" "$verb" "$@" < /dev/null >"$SANDBOX/out" 2>"$SANDBOX/err"
+    check "$verb: $description status" test $? -eq "$code"
+    check "$verb: $description has no stdout" test ! -s "$SANDBOX/out"
+    # shellcheck disable=SC2016 # $c belongs to jq's --argjson.
+    check "$verb: $description is a shared JSON error" \
+        jq -e --argjson c "$code" '.code == $c and (.error | type) == "string"' "$SANDBOX/err" >/dev/null
+    check "$verb: $description preserves the image" cmp -s "$img" "$SANDBOX/saved.img"
+}
+printf '\0\377binary\n' >"$SANDBOX/input"
+for fixture in casefold.img kernel-rootsnap.img; do
+    if [ ! -f "$FIXTURES/$fixture" ]; then
+        fail "$FIXTURES/$fixture is missing -- build it with \`chore fixtures\`"
+        finish
+    fi
+done
+for verb in write put; do
+    for mode in in-place journal; do
+        img="$SANDBOX/shared-$verb-$mode.img"
+        cp "$FIXTURES/write-study/base.img" "$img"
+        args=()
+        [ "$mode" = journal ] && args+=(--journal)
+        fs.bcachefs "$img" "$verb" /d/shared --mode 640 "${args[@]}" <"$SANDBOX/input" >"$SANDBOX/out" 2>"$SANDBOX/err"
+        check "$verb $mode: stdin succeeds" test $? -eq 0
+        # shellcheck disable=SC2016 # $j belongs to jq's --argjson.
+        check "$verb $mode: the report uses the canonical verb" \
+            jq -e --argjson j "$([ "$mode" = journal ] && echo true || echo false)" \
+            '.verb == "write" and .size == 9 and .ino > 0 and .journal == $j' "$SANDBOX/out" >/dev/null
+        check "$verb $mode: no success diagnostic" test ! -s "$SANDBOX/err"
+        fs.bcachefs "$img" read /d/shared >"$SANDBOX/bytes"
+        check "$verb $mode: binary stdin is exact" cmp -s "$SANDBOX/input" "$SANDBOX/bytes"
+        fs.bcachefs "$img" stat /d/shared >"$SANDBOX/stat"
+        check "$verb $mode: mode is applied on creation" jq -e '.mode == "0640"' "$SANDBOX/stat" >/dev/null
+        fs.bcachefs "$img" "$verb" /d/shared --from "$SANDBOX/big" --mode 600 "${args[@]}" >"$SANDBOX/out" 2>"$SANDBOX/err"
+        check "$verb $mode: --from replaces the file" test $? -eq 0
+        fs.bcachefs "$img" read /d/shared >"$SANDBOX/bytes"
+        check "$verb $mode: replacement bytes are exact" cmp -s "$SANDBOX/big" "$SANDBOX/bytes"
+        fs.bcachefs "$img" stat /d/shared >"$SANDBOX/stat"
+        check "$verb $mode: replacement keeps the existing mode" jq -e '.mode == "0640"' "$SANDBOX/stat" >/dev/null
+        fs.bcachefs "$img" "$verb" /d/shared "${args[@]}" </dev/null >"$SANDBOX/out" 2>"$SANDBOX/err"
+        check "$verb $mode: empty stdin truncates" test $? -eq 0
+        fs.bcachefs "$img" read /d/shared >"$SANDBOX/bytes"
+        check "$verb $mode: the file is empty" test ! -s "$SANDBOX/bytes"
+        cp "$img" "$SANDBOX/saved.img"
+        refusal 1 'directory destination' /d "${args[@]}"
+        refusal 1 'missing parent' /missing/file "${args[@]}"
+        refusal 1 'file parent' /d/shared/file "${args[@]}"
+        refusal 1 'missing input' /d/new --from "$SANDBOX/missing" "${args[@]}"
+        refusal 1 'directory input' /d/new --from "$SANDBOX" "${args[@]}"
+        refusal 2 'invalid mode' /d/new --mode 888 "${args[@]}"
+        refusal 2 'out-of-range mode' /d/new --mode 10000 "${args[@]}"
+        refusal 2 'missing path' "${args[@]}"
+        refusal 2 'root path' / "${args[@]}"
+        refusal 2 'dot name' /d/. "${args[@]}"
+        refusal 2 'dot-dot name' /d/../new "${args[@]}"
+        refusal 2 'long name' "/d/$(printf '%0256d' 0)" "${args[@]}"
+        if [ "$mode" = journal ]; then
+            refusal 3 'unclean in-place target' /d/new
+        fi
+    done
+    img="$SANDBOX/symlink-$verb.img"
+    cp "$FIXTURES/write-study/base.img" "$img"
+    fs.bcachefs "$img" ln -s existing /d/link >/dev/null
+    cp "$img" "$SANDBOX/saved.img"
+    refusal 1 'symlink destination' /d/link
+    refusal 1 'symlink parent' /d/link/new
+    for fixture in casefold kernel-rootsnap; do
+        img="$SANDBOX/capability.img"
+        cp "$FIXTURES/$fixture.img" "$img"
+        cp "$img" "$SANDBOX/saved.img"
+        refusal 3 "$fixture creation" /new
+        if [ "$fixture" = kernel-rootsnap ]; then
+            refusal 3 'snapshotted file replacement' /kept.txt
+        fi
+    done
+done
+
 finish

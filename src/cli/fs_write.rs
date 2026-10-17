@@ -1,4 +1,4 @@
-//! `fs.bcachefs`'s write verbs: put, mkdir, rm, rmdir, mv, ln, chmod, chown,
+//! `fs.bcachefs`'s write verbs: write (alias put), mkdir, rm, rmdir, mv, ln, chmod, chown,
 //! setfattr, rmfattr. EXPERIMENTAL: each is one transaction of
 //! `fs_bcachefs::write::Writer`, which the tests hold to the reference
 //! checker and the reference mount; `--journal` commits it through the
@@ -14,7 +14,7 @@ use fs_core::cli::{CliError, Json, Outcome};
 use fs_core::FileDevice;
 
 const VERBS: &[&str] = &[
-    "put", "mkdir", "rm", "rmdir", "mv", "ln", "chmod", "chown", "setfattr", "rmfattr",
+    "write", "mkdir", "rm", "rmdir", "mv", "ln", "chmod", "chown", "setfattr", "rmfattr",
 ];
 
 fn journal() -> Arg {
@@ -31,7 +31,8 @@ fn path(name: &'static str, help: &'static str) -> Arg {
 /// The write verbs, added to `fs.bcachefs`'s command.
 pub fn subcommands(cmd: Cmd) -> Cmd {
     cmd.subcommand(
-        Cmd::new("put")
+        Cmd::new("write")
+            .visible_alias("put")
             .about("(experimental) Create or replace a file with stdin, or --from FILE")
             .arg(path("path", "The file to write"))
             .arg(
@@ -47,7 +48,10 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
                     .value_name("OCTAL")
                     .default_value("644"),
             )
-            .arg(journal()),
+            .arg(journal())
+            .after_help(
+                "Examples:\n  printf 'hello\\n' | fs.bcachefs disk.img write /hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt --mode 640 --journal\n\nput is an identical alias. --mode sets permissions only when creating a file.",
+            ),
     )
     .subcommand(
         Cmd::new("mkdir")
@@ -161,6 +165,100 @@ fn octal(s: &str) -> Result<u32, CliError> {
     u32::from_str_radix(s, 8).map_err(|_| CliError::usage(format!("{s:?} is not an octal mode")))
 }
 
+fn writer(dev: FileDevice, journal: bool) -> Result<Writer<FileDevice>, CliError> {
+    if journal {
+        Writer::open_journalled(dev).map_err(failed)
+    } else {
+        Writer::open(dev).map_err(failed)
+    }
+}
+
+/// Resolve and validate through the library's reader before any writable
+/// handle is opened. Only a missing final entry is a create; unsupported
+/// paths and damaged metadata must retain their own errors.
+fn write_path(
+    target: &OsString,
+    p: &str,
+    journal: bool,
+) -> Result<(u64, Vec<u8>, Option<u64>), CliError> {
+    let (parent, name) = p.rsplit_once('/').unwrap_or(("", p));
+    if name.is_empty() || name.len() > 255 || p.split('/').any(|s| s == "." || s == "..") {
+        return Err(CliError::usage(format!("{p:?} is not a valid file path")));
+    }
+    // These constructors only read. A read-only device lets the library
+    // check its existing capabilities and journal without risking writes.
+    writer(
+        FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?,
+        journal,
+    )?;
+    let fs =
+        Filesystem::open(FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?)
+            .map_err(failed)?;
+    if fs.root().snapshot != u32::MAX {
+        return Err(CliError::not_implemented(
+            "writing a snapshotted root subvolume",
+        ));
+    }
+    let dir = fs
+        .lookup(if parent.is_empty() { "/" } else { parent })
+        .map_err(failed)?;
+    let parent_inode = fs.inode(dir).map_err(failed)?;
+    if !parent_inode.is_dir() {
+        return Err(CliError::failed(format!("{parent}: not a directory")));
+    }
+    let existing = match fs.lookup(p) {
+        Ok(ino) => Some(ino),
+        Err(fs_bcachefs::Error::NotFound(_)) => None,
+        Err(e) => return Err(failed(e)),
+    };
+    let inode = match existing {
+        Some(ino) => {
+            let inode = fs.inode(ino).map_err(failed)?;
+            if !inode.is_file() {
+                return Err(CliError::failed(format!("{p}: not a regular file")));
+            }
+            inode
+        }
+        None => {
+            if parent_inode.is_casefolded()
+                || fs_bcachefs::inode::name_hash(
+                    parent_inode.hash_type(),
+                    parent_inode.hash_seed,
+                    name.as_bytes(),
+                )
+                .is_none()
+            {
+                return Err(CliError::not_implemented(
+                    "creating entries in a casefolded directory or one with an unknown string hash",
+                ));
+            }
+            parent_inode
+        }
+    };
+    let opts = inode.options;
+    if opts.data_replicas > 2 {
+        return Err(CliError::not_implemented(
+            "writing more than one data replica on one device",
+        ));
+    }
+    let checksum = if opts.data_checksum == 0 {
+        u64::from(fs.superblock().data_checksum_opt())
+    } else {
+        opts.data_checksum - 1
+    };
+    let compression = if opts.compression == 0 {
+        u64::from(fs.superblock().compression_opt())
+    } else {
+        opts.compression - 1
+    };
+    if checksum > 3 || compression > 3 || (checksum == 0 && compression != 0) {
+        return Err(CliError::not_implemented(
+            "the file's data checksum or compression",
+        ));
+    }
+    Ok((dir, name.as_bytes().to_vec(), existing))
+}
+
 /// Run a write verb, or `None` when `verb` is not one.
 pub fn run(target: &OsString, verb: &str, m: &ArgMatches) -> Option<Result<Outcome, CliError>> {
     if !VERBS.contains(&verb) {
@@ -182,7 +280,13 @@ fn run_verb(target: &OsString, verb: &str, m: &ArgMatches) -> Result<Outcome, Cl
     };
     let mut report = vec![("verb", Json::Str(verb.into()))];
     match verb {
-        "put" => {
+        "write" => {
+            let p = s("path");
+            let mode = octal(&s("mode"))?;
+            if mode > 0o7777 {
+                return Err(CliError::usage("mode must be between 0 and 7777 octal"));
+            }
+            let (dir, name, existing) = write_path(target, &p, m.get_flag("journal"))?;
             let mut data = Vec::new();
             match m.get_one::<OsString>("from") {
                 Some(f) => {
@@ -194,10 +298,6 @@ fn run_verb(target: &OsString, verb: &str, m: &ArgMatches) -> Result<Outcome, Cl
                         .map_err(|e| CliError::failed(e.to_string()))?;
                 }
             }
-            let p = s("path");
-            let mode = octal(&s("mode"))?;
-            let existing = lookup(target, &p).ok();
-            let (dir, name) = split(target, &p)?;
             let mut w = open()?;
             let ino = match existing {
                 Some(ino) => {
