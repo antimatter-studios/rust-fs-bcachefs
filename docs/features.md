@@ -1,15 +1,16 @@
 # Features
 
 What this driver does today, what it refuses, and what is coming. **Every
-pull request that adds, fixes or removes behaviour updates its row here, in
-the same pull request** (AGENTS.md). The provenance of each on-disk fact is
-in [clean-room.md](clean-room.md); the reasoning behind each change is in
-[CHANGELOG.md](../CHANGELOG.md).
+pull request that adds, fixes or removes behaviour adds its row to
+[`features.d/`](../features.d/README.md), in the same pull request**
+(AGENTS.md), never an edit to this page; a release writes those rows here.
+The provenance of each on-disk fact is in [clean-room.md](clean-room.md); the
+reasoning behind each change is in [CHANGELOG.md](../CHANGELOG.md).
 
 **Since** is the release a row's current state shipped in, with the pull
-request that landed it: `Unreleased (#N)` until a release, then the version.
-The first release is 0.4.0. **Tracking** names the issue for anything not
-finished.
+request that landed it: `Unreleased (#N)` in its fragment until a release,
+then the version. The first release is 0.4.0. **Tracking** names the issue
+for anything not finished.
 
 States:
 
@@ -82,17 +83,7 @@ overwrite and full fixture/oracle CI validation remain required.
 | `fsck.bcachefs` on snapshots, subvolumes and reflinks: each subvolume judged as its snapshot sees it, entries naming subvolumes, reflink ranges and refcounts | Supported | 0.4.0 (#144) | #139 | `oracle_check.rs`, `oracle_refused_local.rs` |
 | `fsck.bcachefs` on xattrs and inode back-references: an xattr whose inode is gone or that its name's hash slot cannot reach, an inode whose `bi_dir`/`bi_dir_offset` names no entry or another inode's, an inode whose has-options flag disagrees with its options | Supported | 0.4.2 | #163 | `oracle_check_namespace.rs` |
 | `fsck.bcachefs` on the allocation btrees: a bucket whose generation in `bucket_gens` is not its alloc key's; a data extent, or a piece of an uncompressed checksummed region, with no backpointer at its device sector plus its offset into the region; a bucket holding written data whose alloc key gives it another data type than user; on one device, a partly filled bucket with no fragmentation lru entry, an lru entry no bucket's fill gives, a bucket waiting for discard with no need_discard key, a need_discard key no such bucket gives, and the device's accounting of a data type out of step with its alloc keys | Supported | 0.4.2 | #163 | `oracle_check_alloc.rs` |
-| Differential damaged-image comparison with the reference checker | Partial: exact known defects tracked; kernel as second judge remains | Unreleased (#217) | #164 | `differential.yml`, `tests/scripts/differential-fuzz-classifies.sh` |
-| Exact default seed 74 extent checksum disagreement | Correlated with digest-pinned independent reference FUSE reads; other physical images retain their own verdict | Unreleased (#224, #225) | #220, #221 | `tests/default74_native_proof.py`; native artifact 12011667570, retained patch 12020594852 |
-| Digest-pinned missing-backpointer replay with unchanged-control checks and independent original/mutated backpointer and extent listings | Partial: listings corroborate the displaced key; why the reference checker accepts it remains unresolved | Unreleased (#233) | #230 | `fuzz/differential-replay-230.tsv`, `tests/scripts/differential-fuzz-classifies.sh`, `differential.yml` |
-| Independent data-read validation of the pinned extent checksum disagreement: the reference checker accepts both images, while its mount reads the control and refuses the changed extent with EIO | Partial: one independently observed image/checksum tuple | Unreleased (#229) | #219 | `pinned_differential_default74.rs`, `scripts/pinned-default74-reference.sh`, `scripts/pinned-default74-read-controls.py` |
-| `fsck.bcachefs` on a key's own size and snapshot: a size on an inode, dirent, subvolume, lru, backpointer, bucket_gens, snapshot_tree, inode allocation cursor or accounting key, and a snapshot on a subvolume, snapshot, lru, need_discard or freespace key, each where the reference was observed to refuse it | Supported | Unreleased (#226) | #219 | `oracle_check_key_fields.rs`, `differential.yml`; a snapshot key's snapshot (default seed 51, run 38749903964) and a bucket_gens key's size (kernel seed 1) also in `oracle_check_snapshots.rs`, `check_oracle.rs` |
-| `fsck.bcachefs` on a key's position and its value's lengths: a subvolume not at `0:id` with an id above 0, a snapshot_tree at offset 0, a `btree` accounting key with bits set below its btree id or at a snapshot, an xattr whose name and value lengths run past its value | Supported | Unreleased (#229) | #219 | `oracle_check_key_positions.rs`, `differential.yml` |
 | One damaged inode node the reference refuses for a reason its report cuts off (`default.img` seed 44) | Not supported for one measured disagreement class | | #219 | `differential.yml` report 38579070302 |
-| `fsck.bcachefs` on snapshot links: a snapshot tree whose master subvolume is not in the subvolumes btree, a snapshot naming a tree that is not there or whose root is not the one its parents lead to (a parent cycle included), a skiplist entry that is neither the snapshot nor one of its ancestors | Supported | Unreleased (#224) | #220 | `oracle_check_snapshots.rs`, `check_oracle.rs` |
-| `fsck.bcachefs` on inode metadata: a directory whose size is not 0, an inode whose journal sequence is more than 128 past the newest the journal wrote, an inode whose sector count is not what its extents, reservations, reflink pointers and inline data add up to (judged where every key of its extents is at the inode's own snapshot) | Supported | Unreleased (#225) | #221 | `oracle_check_inode_metadata.rs`, `check_oracle.rs` |
-| `fsck.bcachefs` on dirent hash reachability: entries separated from their name's hash slot by an empty slot are reported; collisions and hash whiteouts remain traversable, folded names supply casefolded hashes, and unknown hash types remain unjudged | Supported | Unreleased (#225) | #221 | `oracle_check_dirent_hash.rs`, `check_oracle.rs`, `oracle_collisions.rs`, `oracle_casefold.rs` |
-| A btree node whose bsets end before the sectors its parent's pointer counts as written (a torn or missing later bset), refused as corrupt by the reader and the checker | Refused | Unreleased (#223) | #222 | `oracle_node_written.rs`, `btree.rs` unit tests |
 | Repair | Not supported | | | |
 
 ## Writing (`--features write`)
