@@ -39,6 +39,40 @@ const COMPUTED: u64 = 0xa2f1ba7;
 const FIXTURE_DIGEST: &str =
     "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e";
 
+#[test]
+fn the_aged_unclean_1659479_journal_length_mismatch_is_reported() {
+    assert_eq!(
+        std::fs::read_to_string(common::fixtures_dir().join("../fixtures-pin"))
+            .unwrap()
+            .trim(),
+        FIXTURE_DIGEST
+    );
+    let base = Arc::new(std::fs::read(common::fixture("aged-unclean.img")).unwrap());
+    let t = targets(&base);
+    let dev = Overlay::new(Arc::clone(&base), false);
+    assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
+    let before = dev.bytes(2490368, 3584);
+    assert_eq!(
+        apply_case(&dev, &t, 1659479),
+        "jset at byte 2490368 (3584 bytes), re-stamped"
+    );
+    let mut expected = before;
+    expected[34..48].fill(255);
+    assert_eq!(
+        dev.bytes(2490368, 3584),
+        expected,
+        "the oversized mutation cannot actually be re-stamped"
+    );
+    let r = fs_bcachefs::check::check(&*dev).unwrap();
+    assert!(
+        r.problems.iter().any(|p| p.kind == "journal"
+            && p.detail.contains("jset_past_bucket_end")
+            && p.detail.contains("34359738416")),
+        "reference exit 9, jset_past_bucket_end: {:?}",
+        r.problems
+    );
+}
+
 /// #261: the reference checker 1.39.7 accepts both of the exact reported
 /// seed-1659440 cases (exit 0), despite the primary's zero-length field.
 #[test]
