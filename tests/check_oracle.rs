@@ -946,6 +946,73 @@ fn both_checkers_reject_an_inode_key_with_a_nonzero_inode_position() {
     }
 }
 
+/// Run 39018152705, aged seed 1659486 (#258): a size-only change to
+/// user.attr29 is refused by the reference as bkey_size_nonzero.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_xattr_key_with_a_nonzero_size() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for size in [1, u32::MAX] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("xattr-size-{size}.img"));
+        std::fs::copy(fixture("aged.img"), &img).unwrap();
+        let (control_bad, text) = reference_finds_a_problem(&img);
+        assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, btree_id::XATTRS)
+            .unwrap()
+            .into_iter()
+            .find(|k| {
+                k.key_type == key_type::XATTR
+                    && k.value.get(..2) == Some(&[0, 6])
+                    && k.value.get(4..10) == Some(b"attr29")
+            })
+            .expect("the aged fixture has user.attr29");
+        assert_eq!(k.size, 0);
+        let original = k.clone();
+        k.size = size;
+        let pos = k.pos;
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(btree_id::XATTRS, vec![k]).unwrap();
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut stored = btree::walk(&dev, &sb, btree_id::XATTRS)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == key_type::XATTR && k.pos == pos)
+            .expect("the mutated xattr key is stored");
+        assert_eq!(stored.size, size);
+        stored.size = 0;
+        assert_eq!(stored, original, "only the xattr key size must change");
+        let (damaged, text) = reference_finds_a_problem(&img);
+        assert!(damaged, "the reference must reject size {size}:\n{text}");
+        assert!(
+            text.contains("bkey_size_nonzero") && text.contains("size != 0"),
+            "wrong native finding:\n{text}"
+        );
+        let ours = check(&dev).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "bkey_size_nonzero" && p.detail.contains(&pos.to_string())),
+            "the xattr key size must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// A bucket_gens key has no extent size: kernel.img seed 1 in differential
 /// run 38749903964 stored one with a nonzero size, which the reference
 /// rejected (`bkey_size_nonzero`) and this checker called clean.
