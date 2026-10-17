@@ -176,11 +176,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             }
             sb
         }
-        Err(e @ (Error::BadChecksum { .. } | Error::BadMagic { .. })) => {
-            r.add(
-                "superblock",
-                format!("no copy of the superblock reads: {e}"),
-            );
+        Err(e @ (Error::BadChecksum { .. } | Error::BadMagic { .. } | Error::Corrupt(_))) => {
+            r.add("superblock", format!("no usable superblock: {e}"));
             return Ok(r);
         }
         Err(e) => return Err(e),

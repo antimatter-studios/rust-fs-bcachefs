@@ -9,8 +9,9 @@ name: differential
 # NOT A PULL-REQUEST GATE, and never a required check: what it finds depends
 # on its seeds, so a fresh finding would fail whichever unrelated change
 # happened to be open. It runs nightly, each night on new seeds; on demand;
-# and on the pull requests that change the harness itself, at seed 0, the
-# seeds the baseline was measured on.
+# and on pull requests that change the harness itself. Pull requests use
+# #261's digest-pinned fixtures and 80 cases starting at seed 1659440;
+# dispatches default to seed 0 unless another seed or replay is requested.
 #
 # DISCLOSURE (AGENTS.md, "A crash in the reference stays private"). The
 # only things this workflow publishes are the report's counts and the
@@ -172,6 +173,12 @@ jobs:
           cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_aged_1659486_xattr_size_mismatch_is_reported -- --show-output 2>&1 | tee "$RUNNER_TEMP/xattr258.log"
           grep -q '^test the_aged_1659486_xattr_size_mismatch_is_reported \.\.\. ok$' "$RUNNER_TEMP/xattr258.log"
           grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/xattr258.log"
+      - name: An unused malformed superblock copy agrees with the reference (#261)
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 a_zero_length_field_in_an_unused_superblock_copy_stays_clean -- --show-output 2>&1 | tee "$RUNNER_TEMP/superblock261.log"
+          grep -q '^test a_zero_length_field_in_an_unused_superblock_copy_stays_clean \.\.\. ok$' "$RUNNER_TEMP/superblock261.log"
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/superblock261.log"
       # The reference checker's own verdict on the same bytes: `fsck -n` on
       # the fixture unchanged and on default-74's mutation, in the
       # differential harness's container, failed unless each is expected.
@@ -278,8 +285,8 @@ jobs:
       - name: Fetch the fixtures
         env:
           GH_TOKEN: ${{ github.token }}
-          FIXTURE_RUN: ${{ inputs.replay && env.FIXTURE_RUN || inputs.fixture_run }}
-          FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest }}
+          FIXTURE_RUN: ${{ inputs.replay && env.FIXTURE_RUN || inputs.fixture_run || (github.event_name == 'pull_request' && '38741040375') || '' }}
+          FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest || (github.event_name == 'pull_request' && 'sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e') || '' }}
         run: |
           set -euo pipefail
           read -r run artifact_id digest < <(bash scripts/select-fixture-run.sh "$GITHUB_REPOSITORY" "$FIXTURE_RUN" "$FIXTURE_DIGEST")
@@ -304,7 +311,7 @@ jobs:
         env:
           DIFFERENTIAL_READ_EVIDENCE: ${{ runner.temp }}/native-read-proof
           CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
-          FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed }}
+          FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed || (github.event_name == 'pull_request' && '1659440') || '' }}
           DIFFERENTIAL_KEEP: ${{ inputs.replay && env.DIFFERENTIAL_KEEP || inputs.keep }}
           EVENT: ${{ github.event_name }}
         run: |
