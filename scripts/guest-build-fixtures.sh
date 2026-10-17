@@ -615,6 +615,36 @@ truncate -s 64M "$out/encrypted.img"
 bcachefs-ref format -q --encrypted --no_passphrase --source="${src#"$ROOT"}" "$out/encrypted.img" \
     > "$out/encrypted.format.txt" 2>&1
 bcachefs-ref show-super "$out/encrypted.img" > "$out/encrypted.super.txt" 2>&1
+# The same tree under a known passphrase (#270), so its master key is
+# sealed: the reader tells the two kinds apart, and the passphrase unlock
+# (#273) is learned from this image. The passphrase file holds exactly the
+# bytes the formatter was given, with no trailing newline. Every outcome
+# goes to encrypted-passphrase.format.txt, with the unlock command's own
+# help (how it takes a passphrase) and its report of each encrypted
+# image's state; nothing here fails the build, and tests/oracle_refused.rs
+# fails, printing that record, if the formatter failed. The superblock
+# printer will not read this image without its passphrase (S3): its report
+# is that refusal, which the test takes as the reference's view that the
+# key is sealed.
+step "encrypted-passphrase (--encrypted --passphrase_file)"
+printf '%s' 'correct horse battery staple' > "$out/encrypted-passphrase.passphrase"
+truncate -s 64M "$out/encrypted-passphrase.img"
+{
+    echo "-- format --encrypted --passphrase_file"
+    bcachefs-ref format -q --encrypted --passphrase_file="$out/encrypted-passphrase.passphrase" \
+        --source="${src#"$ROOT"}" "$out/encrypted-passphrase.img" < /dev/null ||
+        echo "format: exit $?"
+    echo "-- unlock --help"
+    bcachefs-ref unlock --help < /dev/null || echo "unlock --help: exit $?"
+    for e in encrypted encrypted-passphrase; do
+        echo "-- unlock --check $e.img"
+        bcachefs-ref unlock --check "$out/$e.img" < /dev/null || echo "unlock --check: exit $?"
+    done
+} > "$out/encrypted-passphrase.format.txt" 2>&1
+sed 's/^/encrypted-passphrase: /' "$out/encrypted-passphrase.format.txt"
+bcachefs-ref show-super "$out/encrypted-passphrase.img" < /dev/null \
+    > "$out/encrypted-passphrase.super.txt" 2>&1 ||
+    echo "show-super: exit $?" >> "$out/encrypted-passphrase.super.txt"
 step "multi (two devices)"
 truncate -s 64M "$out/multi-0.img" "$out/multi-1.img"
 bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.format.txt" 2>&1
