@@ -26,9 +26,9 @@
 //! journal, as it would be read.
 //!
 //! Of the allocation btrees, each bucket's generation in bucket_gens is
-//! checked against its alloc key, each data extent has its backpointer (a
-//! piece of a compressed region aside), each bucket holding data is a user
-//! bucket in its alloc key,
+//! checked against its alloc key, each data extent has its backpointer with
+//! matching value (a piece of a compressed region aside), each bucket
+//! holding data is a user bucket in its alloc key,
 //! the fragmentation lru holds an entry for each partly filled bucket and
 //! nothing else, the need_discard btree a key for each bucket waiting for
 //! discard and nothing else, and the device's accounting by data type is
@@ -1251,7 +1251,6 @@ fn nearest<'a>(chain: &[u32], keys: &[&'a Bkey]) -> Option<&'a Bkey> {
         .map(|(_, k)| k)
 }
 
-/// Read one extent's stored bytes and verify its checksum.
 /// The observed backpointer lookup for a written data extent (#163).
 fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mut Report) {
     // The aged image's piece at offset 136 of the region at sector 26880
@@ -1262,7 +1261,10 @@ fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mu
             || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
     });
     let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
-    if known && !e.ptr.is_unwritten() && !bps.contains_key(&at) {
+    if !known || e.ptr.is_unwritten() {
+        return;
+    }
+    let Some(bp) = bps.get(&at) else {
         r.add(
             "missing_backpointer",
             format!(
@@ -1272,9 +1274,36 @@ fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mu
                 at & 0xffff
             ),
         );
+        return;
+    };
+    // S3/S4/S8: three header bytes, five uninterpreted bytes, length u32,
+    // then the target bpos. #256's second-word mutation changes both the
+    // length and snapshot without moving the backpointer key.
+    let length = e.crc.map_or(e.len, |c| {
+        if c.compression_type == crate::extent::compression::NONE {
+            e.len
+        } else {
+            u64::from(c.compressed_size)
+        }
+    });
+    let v = &bp.value;
+    let matches = v.len() >= 32
+        && v[..3] == [btree_id::EXTENTS, 0, DATA_USER]
+        && u64::from(le32(v, 8)) == length
+        && Bpos::parse(&v[12..32]).is_ok_and(|pos| pos == k.pos);
+    if !matches {
+        r.add(
+            "backpointer_to_missing_ptr",
+            format!(
+                "backpointer {}: value does not match extent {} (expected btree extents, \
+                 level 0, data type user, length {length})",
+                bp.pos, k.pos
+            ),
+        );
     }
 }
 
+/// Read one extent's stored bytes and verify its checksum.
 fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     let Some(crc) = e.crc else { return Ok(()) };
     if !crate::csum::is_known(crc.csum_type) {
