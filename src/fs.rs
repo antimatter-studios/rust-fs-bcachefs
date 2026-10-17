@@ -19,7 +19,7 @@ use crate::bkey::{Bkey, Bpos};
 use crate::btree::{btree_id, Cursor};
 use crate::error::{Error, Result};
 use crate::extent::{compression, DataExtent};
-use crate::inode::{Dirent, Inode, ROOT_INO};
+use crate::inode::{Dirent, Inode, InodeV3Raw, ROOT_INO};
 use crate::journal::Replay;
 use crate::superblock::Superblock;
 use fs_core::BlockRead;
@@ -352,13 +352,25 @@ impl<D: BlockRead> Filesystem<D> {
 
     /// An inode as the snapshot `n.snapshot` sees it.
     pub fn inode_at(&self, n: Node) -> Result<Inode> {
+        Inode::from_key(&self.inode_key_at(n)?)
+    }
+
+    /// Every field of an inode as stored, as the snapshot `n.snapshot` sees
+    /// it: what [`Inode`] leaves out, such as the creation time, the
+    /// generation and a device node's number.
+    pub fn inode_raw_at(&self, n: Node) -> Result<InodeV3Raw> {
+        InodeV3Raw::parse(&self.inode_key_at(n)?.value)
+    }
+
+    /// The `inode_v3` key of an inode as the snapshot `n.snapshot` sees it.
+    fn inode_key_at(&self, n: Node) -> Result<Bkey> {
         let ino = n.ino;
         let keys = self.keys_at(btree_id::INODES, 0, ino)?;
         let Some(k) = nearest(&self.chain(n.snapshot), keys) else {
             return Err(Error::NotFound(format!("inode {ino}")));
         };
         match k.key_type {
-            crate::bkey::key_type::INODE_V3 => Inode::from_key(&k),
+            crate::bkey::key_type::INODE_V3 => Ok(k),
             // The earlier encodings (S1 11.5, 11.6: `inode` is v1,
             // `inode_v2` is 0.18 to 0.22): a filesystem older than this
             // reader decodes, which is not the same as no inode.

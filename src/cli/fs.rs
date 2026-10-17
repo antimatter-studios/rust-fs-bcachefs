@@ -9,8 +9,8 @@ use std::os::unix::ffi::OsStrExt;
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
 use super::device::{Device, Target};
-use fs_bcachefs::inode::{Dirent, Inode};
-use fs_bcachefs::superblock::format_uuid;
+use fs_bcachefs::inode::{Dirent, Inode, INODE_HAS_CASE_INSENSITIVE};
+use fs_bcachefs::superblock::{format_uuid, Superblock};
 use fs_bcachefs::{fs::Node, Filesystem};
 use fs_core::cli::{CliError, Format, Json, Outcome, Tool};
 
@@ -80,8 +80,16 @@ fn read_command() -> Cmd {
         .subcommand(listing_command("ls"))
         .subcommand(
             Cmd::new("stat")
-                .about("One path's inode: number, type, mode, owner, links, size, times")
-                .arg(Arg::new("path").value_name("PATH").required(true)),
+                .about("Report one path: identity, type, mode, owner, links, sizes and every time")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .value_parser(value_parser!(OsString))
+                        .required(true),
+                )
+                .after_help(
+                    "Examples:\n  fs.bcachefs disk.img stat /etc/hostname\n  fs.bcachefs disk.img stat /var/log | jq .nlink\n  fs.bcachefs disk.img stat --text /bin/sh\n\nA symlink is reported, not followed. The shared keys come first, in this order: path, inode, type, mode, uid, gid, nlink, size, allocated_bytes, then atime, mtime, ctime and btime (the creation time), each as signed seconds since the epoch with *_nsec beside it. A non-UTF-8 PATH is resolved as bytes and adds path_hex; a symlink adds target; a device node adds major and minor, null because the driver does not decode its device number (bcachefs.dev holds it as stored). bcachefs holds snapshot, sectors, flags (by name, unknown bits as one hex value), generation, and the data_checksum, compression and background_compression options the inode carries (null when it carries none). The ino, sectors and *_ns keys of earlier releases are gone: inode, bcachefs.sectors and the seconds plus nanoseconds replace them.",
+                ),
         )
         .subcommand(listing_command("tree"))
         .subcommand(
@@ -184,27 +192,12 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
             }
             Ok(Outcome::report(Json::Arr(rows)))
         }
-        Some(("stat", sub)) => {
-            let fs = open(dev)?;
-            let path = sub.get_one::<String>("path").expect("required");
-            let ino = fs.lookup(path).map_err(failed)?;
-            let i = fs.inode(ino).map_err(failed)?;
-            let base = fs.superblock().time_base_lo;
-            Ok(Outcome::report(Json::object([
-                ("path", Json::Str(path.clone())),
-                ("ino", Json::UInt(ino)),
-                ("type", Json::Str(kind(i.mode).into())),
-                ("mode", Json::Str(format!("{:04o}", i.mode & 0o7777))),
-                ("uid", Json::UInt(i.uid.into())),
-                ("gid", Json::UInt(i.gid.into())),
-                ("nlink", Json::UInt(i.link_count().into())),
-                ("size", Json::UInt(i.size)),
-                ("sectors", Json::UInt(i.sectors)),
-                ("atime_ns", Json::UInt(base.saturating_add(i.atime))),
-                ("mtime_ns", Json::UInt(base.saturating_add(i.mtime))),
-                ("ctime_ns", Json::UInt(base.saturating_add(i.ctime))),
-            ])))
-        }
+        Some(("stat", sub)) => stat(
+            &open(dev)?,
+            sub.get_one::<OsString>("path")
+                .expect("required")
+                .as_bytes(),
+        ),
         Some(("read", sub)) => {
             let fs = open(dev)?;
             let path = sub.get_one::<String>("path").expect("required");
@@ -264,6 +257,111 @@ fn get(fs: &Filesystem<Device>, key: Option<&str>) -> Result<Outcome, CliError> 
         ))
     })?;
     Ok(Outcome::report(Json::object([(key, value.clone())])).with_text(value.to_text()))
+}
+
+/// `stat PATH`: one path in the shape every `fs.<fs> stat` shares, the
+/// shared keys first and bcachefs's own under `bcachefs`. The path is
+/// resolved as bytes, entering subvolumes, and a symlink is reported, not
+/// followed.
+fn stat(fs: &Filesystem<Device>, path: &[u8]) -> Result<Outcome, CliError> {
+    let n = fs.resolve_bytes(path).map_err(failed)?;
+    let i = fs.inode_at(n).map_err(failed)?;
+    let raw = fs.inode_raw_at(n).map_err(failed)?;
+    let mut fields = vec![(
+        "path",
+        Json::from(String::from_utf8_lossy(path).into_owned()),
+    )];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.extend([
+        ("inode", Json::from(n.ino)),
+        ("type", Json::from(kind(i.mode))),
+        ("mode", Json::from(format!("{:04o}", i.mode & 0o7777))),
+        ("uid", Json::from(i.uid)),
+        ("gid", Json::from(i.gid)),
+        ("nlink", Json::from(i.link_count())),
+        ("size", Json::from(i.size)),
+        ("allocated_bytes", Json::from(i.sectors.saturating_mul(512))),
+    ]);
+    // otime is the creation time (the lister's bi_otime).
+    for (key, nsec, stored) in [
+        ("atime", "atime_nsec", "atime"),
+        ("mtime", "mtime_nsec", "mtime"),
+        ("ctime", "ctime_nsec", "ctime"),
+        ("btime", "btime_nsec", "otime"),
+    ] {
+        let (s, ns) = epoch_time(fs.superblock(), raw.time(stored).unwrap_or(0));
+        fields.push((key, Json::from(s)));
+        fields.push((nsec, Json::from(ns)));
+    }
+    let device = matches!(i.mode & 0o170000, 0o020000 | 0o060000);
+    if i.is_symlink() {
+        let target = fs.read_at(n).map_err(failed)?;
+        fields.push((
+            "target",
+            Json::from(String::from_utf8_lossy(&target).into_owned()),
+        ));
+    } else if device {
+        // How bi_dev holds the two numbers is not known (docs/clean-room.md,
+        // open question 21): no image has held a device node.
+        fields.push(("major", Json::Null));
+        fields.push(("minor", Json::Null));
+    }
+    let mut own = vec![
+        ("snapshot", Json::from(n.snapshot)),
+        ("sectors", Json::from(i.sectors)),
+        ("flags", flag_names(i.flags)),
+        ("generation", Json::from(raw.field("generation"))),
+    ];
+    for option in ["data_checksum", "compression", "background_compression"] {
+        own.push((option, Json::from(i.option(option))));
+    }
+    if device {
+        own.push(("dev", Json::from(raw.field("dev"))));
+    }
+    fields.push(("bcachefs", Json::object(own)));
+    Ok(Outcome::report(Json::object(fields)))
+}
+
+/// bi_flags, the low 20 bits of the inode's flags word: the string hash
+/// type and the number of fields are above it.
+const BI_FLAGS: u32 = 0xf_ffff;
+
+/// bi_flags bits by the names the reference lister prints for them: only
+/// those an image has shown (docs/clean-room.md).
+const INODE_FLAGS: &[(u32, &str)] = &[(INODE_HAS_CASE_INSENSITIVE, "has_case_insensitive")];
+
+/// The set bi_flags by name, then every bit without a name as one hex value.
+fn flag_names(flags: u32) -> Json {
+    let flags = flags & BI_FLAGS;
+    let mut names: Vec<Json> = INODE_FLAGS
+        .iter()
+        .filter(|(bit, _)| flags & bit != 0)
+        .map(|(_, name)| Json::from(*name))
+        .collect();
+    let unknown = INODE_FLAGS.iter().fold(flags, |f, (bit, _)| f & !bit);
+    if unknown != 0 {
+        names.push(Json::from(format!("0x{unknown:08x}")));
+    }
+    Json::Arr(names)
+}
+
+/// A stored inode time as signed seconds since the epoch and nanoseconds:
+/// a count of the superblock's time units (its precision, in nanoseconds)
+/// from its time base (`time_base_lo`, nanoseconds since the epoch)
+/// (docs/clean-room.md, "Creating a file"). The count is signed, two's
+/// complement: a time before the base, as the formatter copies from its
+/// source tree, is stored just below 2^64 (docs/clean-room.md, "Inodes and
+/// dirents").
+fn epoch_time(sb: &Superblock, stored: u64) -> (i64, u64) {
+    let ns = i128::from(sb.time_base_lo)
+        + i128::from(stored as i64) * i128::from(sb.time_precision.max(1));
+    let s = i64::try_from(ns.div_euclid(1_000_000_000)).unwrap_or(i64::MAX);
+    (s, ns.rem_euclid(1_000_000_000) as u64)
 }
 
 fn read(
