@@ -1066,6 +1066,14 @@ reflink btrees is kept as `kernel.extents.txt` and `kernel.reflink.txt`.
 
 ### Snapshots and subvolumes -- read
 
+The recursive CLI (#260) uses these existing observations to enter each
+subvolume at its root and snapshot; directory identity includes both fields.
+Its guest regression compares the paths, types and inode numbers with GNU
+find through the reference FUSE mount of the reference-made `kernel` tree,
+and root/snapshot IDs with the reference lister. Damaged copies exercise
+revisited and unreadable directories. These are black-box checks scheduled
+for CI; no new format layout is inferred and no reference source is read.
+
 The reference tool, run in the kernel oracle's VM (S10,
 `scripts/kernel-oracle.sh`), makes a subvolume `sv`, fills it, snapshots
 it as `snap`, then changes, removes and adds a file in `sv`. The lister's
