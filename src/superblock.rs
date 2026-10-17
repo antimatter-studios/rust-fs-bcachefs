@@ -415,6 +415,14 @@ impl Superblock {
         self.field(FIELD_CRYPT).is_some()
     }
 
+    /// The crypt field of an encrypted filesystem ([`crate::crypt`]);
+    /// `None` for a filesystem that is not encrypted.
+    pub fn crypt(&self) -> Result<Option<crate::crypt::CryptField>> {
+        self.field(FIELD_CRYPT)
+            .map(|f| crate::crypt::CryptField::parse(&f.body))
+            .transpose()
+    }
+
     /// Whether the filesystem was shut down cleanly. INFERRED: flags[0]
     /// bit 1, set wherever the reference printer says `Clean: 1` (every
     /// formatter-made fixture and the replayed aged image) and clear on the
