@@ -1396,9 +1396,11 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             "snapshot_pos_bad",
             format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
         ),
-        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE) if k.pos.offset == 0 => r.add(
+        // Run 39018152705 also rejects tree 1 moved to inode 1 as
+        // "bad pos"; the tree id remains in the offset (#254).
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
             "snapshot_tree_pos_bad",
-            format!("btree {name}: snapshot_tree at {}, offset 0", k.pos),
+            format!("btree {name}: snapshot_tree at {}, not at 0:tree", k.pos),
         ),
         // A `btree` accounting key is its kind and the btree's id in the
         // top two bytes of its inode; a bit below them, or a snapshot, is

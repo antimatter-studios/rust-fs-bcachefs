@@ -1246,6 +1246,27 @@ the reference checker in the guest, with unchanged controls and a check
 that the stored snapshot value is unchanged. The unit regression keeps
 inode 0 accepted and confines this rule to the observed btree/key-type pair.
 
+### Snapshot-tree inode positions (S3, #254)
+
+The same [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
+and pinned fixtures recorded above for #253 contain three snapshot-tree
+inode disagreements. The report's default and block4k examples (seed
+1659461) move snapshot tree 1 from `0:1:0` to `1:1:0`, keeping its value,
+offset and snapshot unchanged. The reference checker 1.39.7 exits 9 and
+reports `snapshot_tree_pos_bad` ("bad pos, deleting"); this crate reported
+clean. This is black-box output only; no reference source was read.
+
+The checker now reports that problem for a snapshot-tree key in the
+snapshot_trees btree whose inode is nonzero, alongside its existing
+offset-zero refusal. `oracle_check_key_positions.rs` repeats the reported
+inode-1 mutation on default and block4k. `check_oracle.rs` requires the
+reference checker to reject inode 1 and U64_MAX on fresh fixtures, after
+both checkers accept unchanged controls; it verifies that the stored key
+differs only in its inode. The unit regression covers inode 0, 1 and
+U64_MAX, preserves the offset-zero refusal, and confines the rule to this
+btree/key-type pair. These new regressions run in CI, not locally. No
+snapshot-field rule or change to snapshot-tree link checks is inferred.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)

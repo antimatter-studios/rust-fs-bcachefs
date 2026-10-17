@@ -105,9 +105,8 @@ ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # typ
 
 # Measured on main 08c02dc in run 39018152705 (2026-10-17), reference
 # checker 1.39.7: 648 cases, first seed 1659440. Each new class has its
-# own child of #228. #253 fixes the first (snapshot inode positions),
-# so only the fourteen unresolved classes are recorded here.
-ref-only	key-inode	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#254: The checker accepts a snapshot-tree key with a nonzero inode position
+# own child of #228. #253 fixes snapshot inode positions and #254 fixes
+# snapshot-tree inode positions; only thirteen unresolved classes remain.
 ref-only	key-inode	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# u#_max:#:u#	#255: The checker accepts an inode key with a nonzero inode position
 ref-only	key-value	backpointer doesn't match extent it points to:	#256: The checker misses a backpointer whose value disagrees with its extent
 ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type logged_op_truncate # len # ver #	#257: The checker accepts a logged-op-truncate key in the freespace btree
