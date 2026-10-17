@@ -101,6 +101,10 @@ const BTREE_NAMES: &[&str] = &[
     "reconcile_work",
     "subvolume_children",
     "accounting",
+    "reconcile_hipri",
+    "reconcile_pending",
+    "reconcile_scan",
+    "reconcile_work_phys",
 ];
 
 /// A btree's name as the reference tools print it.

@@ -22,17 +22,26 @@ export FLTH_GUEST=1
 cd /repo
 # FS_CORE_CALLER names this repository: run directly rather than through
 # core's core.sh, the script would otherwise take core for the caller.
+#
+# Every step runs, and the suite fails at the end if any did: a red oracle
+# test must not hide what the reference tools, which only exist in here,
+# say about the same change.
 FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-run.sh \
     fs-bcachefs /share rust-fs-core -- bash -c '
-        set -euo pipefail
+        set -uo pipefail
+        failed=0
         # Each cargo test runs in its own scratch root, removed on any exit.
         run=/repo/scripts/test-scratch-run.sh
-        EXPECT_OVERFLOW_CHECKS=1 bash "$run" cargo test --locked --lib --test fuzz_decoders --test scratch_dir "$@"
-        bash "$run" cargo test --locked --release --features write --test "oracle_*" --test capi "$@"
+        # One controlled reference case first, independently of the broad matrix.
+        bash "$run" cargo test --locked --release --features write --test check_oracle_reconcile_dirent -- --nocapture || failed=1
+        EXPECT_OVERFLOW_CHECKS=1 bash "$run" cargo test --locked --lib --test fuzz_decoders --test scratch_dir "$@" || failed=1
+        bash "$run" cargo test --locked --release --features write --test "oracle_*" --test capi "$@" || failed=1
         # The checker against the reference checker, which only exists in
         # here; the writer makes some of its damaged images.
-        bash "$run" cargo test --locked --release --features write --test check_oracle "$@"
+        bash "$run" cargo test --locked --release --features write --test check_oracle "$@" || failed=1
+        bash "$run" cargo test --locked --release --features write --test check_oracle_key_types "$@" || failed=1
         # The write path, judged by the reference tools that only exist in
         # here; one test at a time, since they share one mount point.
-        RUST_TEST_THREADS=1 bash "$run" cargo test --locked --release --features write --test write_oracle "$@"
+        RUST_TEST_THREADS=1 bash "$run" cargo test --locked --release --features write --test write_oracle "$@" || failed=1
+        exit "$failed"
     ' guest-suite "$@"

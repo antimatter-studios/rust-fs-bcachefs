@@ -1267,6 +1267,54 @@ U64_MAX, preserves the offset-zero refusal, and confines the rule to this
 btree/key-type pair. These new regressions run in CI, not locally. No
 snapshot-field rule or change to snapshot-tree link checks is inferred.
 
+### The key types a btree holds (S3, #163)
+
+`tests/check_oracle_key_types.rs` plants a key of every type into a copy
+of `default` and reads the reference checker's verdict on each. Its runs
+up to 39020187551 planted eight keys to an image, and the reference named
+only some of the keys it refused: a dirent planted alone into
+reconcile_work_phys is refused with "invalid key type for btree
+reconcile_work_phys (dirent)" (`check_oracle_reconcile_dirent.rs`), and
+drew no verdict among seven others. The matrix now plants one key to an
+image. What those runs show regardless:
+
+- The reference judges a key's type before its value size: an
+  inode_generation key with no value is refused for its type in
+  reconcile_work_phys and other btrees, and with "bad val size (0 < 8)" in
+  inodes.
+- A cookie with no value is refused only for its value size, in every
+  btree, so its type passes everywhere. A whiteout and an error key are
+  refused only for their snapshot ("snapshot == 0", damage) or size
+  ("size == 0", extents, reflink, freespace), never for their type.
+
+The checker lets every btree hold deleted, whiteout, error and cookie
+keys, and judges the types of three btrees beyond them: logged_ops holds
+the logged operations and the inode allocation cursor, and accounting the
+accounting key. All three judged btrees also permit `set` and unnamed
+type 40 in the observed single-key cases below. Which types every other
+btree holds is open (#305).
+
+Completed merge-queue run
+[39037096192](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39037096192),
+at group head `1540ad069774d34b5a02be0a400545b6fb4a5fd4` containing PR
+#218 head `5b152e5`, judged one planted key per image in logged_ops,
+accounting and reconcile_work_phys. Its guest matrix reported zero
+reference crashes or hangs, zero unresolved type verdicts and zero failed
+plantings. The recorded refusal sets exclude `set` (25) and unnamed type
+40 in all three trees, while this checker rejected those two types in
+logged_ops and accounting, and type 40 in reconcile_work_phys. The first
+two trees' retained `set` controls print no invalid key and complete clean
+shutdown. This establishes the type verdict for those cases only; no
+meaning or value layout is inferred for type 40, nor any rule for other
+unnamed types. The matrix retains its probe one past the documented names.
+
+The same run's exact-dirent case prints a type refusal naming
+`btree=reconcile_work_phys`. This checker already found that planted dirent,
+but its diagnostic used `btree24`, which the test could not recognize.
+Tree 24 is now named using S1's existing documented order, also recorded
+in the planting helper. These observations use only the reference tools'
+printed output, never their source.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)
