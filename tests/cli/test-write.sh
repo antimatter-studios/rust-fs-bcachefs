@@ -45,7 +45,11 @@ for mode in in-place journal; do
     check "$mode: cat /d/hello (got '$got')" test "$got" = "hello from the cli"
     check "$mode: cat /d/big is 200000 z's" test "$(fs.bcachefs "$img" cat /d/big | tr -d z | wc -c | tr -d ' ')" = 0
     check "$mode: cat /d/sub/moved" test "$(fs.bcachefs "$img" cat /d/sub/moved)" = "an existing file"
-    check "$mode: cat /d/link is its target" test "$(fs.bcachefs "$img" cat /d/link)" = "sub/moved"
+    fs.bcachefs "$img" cat /d/link >"$SANDBOX/out" 2>"$SANDBOX/err"
+    check "$mode: cat refuses a symlink" test $? -eq 1
+    check "$mode: symlink refusal has no stdout" test ! -s "$SANDBOX/out"
+    check "$mode: symlink refusal names its target" \
+        jq -e '.code == 1 and (.error | contains("symlink to sub/moved"))' "$SANDBOX/err" >/dev/null
     names="$(fs.bcachefs "$img" ls /d | jq -r '.[].name' | sort | tr '\n' ' ')"
     check "$mode: ls /d (got $names)" test "$names" = "big hello hello2 link sub "
     fs.bcachefs "$img" stat /d/hello >"$SANDBOX/stat.json"
