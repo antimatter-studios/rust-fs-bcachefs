@@ -180,13 +180,31 @@ fn reference_mount_reads(img: &Path, files: &[(&str, &[u8])]) -> bool {
 #[cfg(feature = "cli")]
 #[test]
 fn cli_write_and_put_are_read_by_the_reference() {
-    use std::io::Write;
+    cli_write_and_put_at_offset(0);
+}
+
+#[cfg(feature = "cli")]
+#[test]
+fn cli_offset_writes_are_read_by_the_reference() {
+    cli_write_and_put_at_offset(1 << 20);
+}
+
+#[cfg(feature = "cli")]
+fn cli_write_and_put_at_offset(offset: u64) {
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::process::Stdio;
 
     for verb in ["write", "put"] {
         for journal in [false, true] {
             let img = scratch("write-study/base.img", &format!("cli-{verb}-{journal}"));
+            let size = std::fs::metadata(&*img).unwrap().len();
+            let whole = img.with_extension("whole");
+            let mut container = std::fs::File::create(&whole).unwrap();
+            container.write_all(&vec![b'P'; offset as usize]).unwrap();
+            std::io::copy(&mut std::fs::File::open(&*img).unwrap(), &mut container).unwrap();
+            container.write_all(&[b'S'; 4096]).unwrap();
+            drop(container);
             let data = pattern(200_003, 23);
             let input = img.with_extension("input");
             std::fs::write(&input, &data).unwrap();
@@ -196,7 +214,12 @@ fn cli_write_and_put_are_read_by_the_reference() {
                 ("cli-empty", false, &[][..]),
             ] {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"));
-                cmd.arg("fs").arg(&*img).arg(verb).arg(format!("/d/{name}"));
+                cmd.arg("fs")
+                    .arg(&whole)
+                    .arg(verb)
+                    .arg(format!("/d/{name}"))
+                    .arg("--offset")
+                    .arg(offset.to_string());
                 cmd.args(["--mode", "640"]);
                 if journal {
                     cmd.arg("--journal");
@@ -222,6 +245,22 @@ fn cli_write_and_put_are_read_by_the_reference() {
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
+            // Strip only the container; the checker, lister and mount see
+            // the exact partition bytes our command wrote, at offset zero.
+            let mut container = std::fs::File::open(&whole).unwrap();
+            let mut prefix = vec![0; offset as usize];
+            container.read_exact(&mut prefix).unwrap();
+            assert_eq!(prefix, vec![b'P'; offset as usize]);
+            let copied = std::io::copy(
+                &mut Read::by_ref(&mut container).take(size),
+                &mut std::fs::File::create(&*img).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(copied, size);
+            container.seek(SeekFrom::Start(offset + size)).unwrap();
+            let mut suffix = Vec::new();
+            container.read_to_end(&mut suffix).unwrap();
+            assert_eq!(suffix, vec![b'S'; 4096]);
             assert_fsck_clean(&img);
             if journal {
                 // Apply the journal before asking the on-disk lister to
