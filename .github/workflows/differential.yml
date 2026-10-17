@@ -67,6 +67,8 @@ on:
       - fuzz/differential-replay*.tsv
       - fuzz/shared/**
       - tests/oracle_differential_default74.rs
+      - tests/oracle_differential_snapshot_tree_subvolume.rs
+      - scripts/pinned-snapshot-tree-subvolume.sh
       - scripts/pinned-default74-reference.sh
       - scripts/pinned-default74-read-controls.py
       - scripts/pinned-default74-observation-controls.sh
@@ -122,7 +124,7 @@ jobs:
   pinned-default74:
     name: pinned default-74 (#219, fixtures sha256:9f112ded)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: read
@@ -185,6 +187,24 @@ jobs:
           cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 a_zero_length_field_in_an_unused_superblock_copy_stays_clean -- --show-output 2>&1 | tee "$RUNNER_TEMP/superblock261.log"
           grep -q '^test a_zero_length_field_in_an_unused_superblock_copy_stays_clean \.\.\. ok$' "$RUNNER_TEMP/superblock261.log"
           grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/superblock261.log"
+      - name: The pinned snapshot-tree subvolume regression runs once
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_snapshot_tree_subvolume -- --show-output 2>&1 | tee "$RUNNER_TEMP/snapshot-tree-subvolume.log"
+          grep -q '^test kernel_1659511_reports_a_master_subvolume_in_another_snapshot_tree \.\.\. ok$' "$RUNNER_TEMP/snapshot-tree-subvolume.log"
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/snapshot-tree-subvolume.log"
+      - name: The same 80 cases from seed 1659440 resolve the observed class
+        run: bash scripts/pinned-snapshot-tree-subvolume.sh
+      - name: Keep the snapshot-tree subvolume reference verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-tree-subvolume-reference
+          path: |
+            tmp/snapshot-tree-subvolume/evidence.txt
+            tmp/snapshot-tree-subvolume/kept/
+          if-no-files-found: error
+          retention-days: 30
       # The reference checker's own verdict on the same bytes: `fsck -n` on
       # the fixture unchanged and on default-74's mutation, in the
       # differential harness's container, failed unless each is expected.
