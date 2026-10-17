@@ -71,6 +71,23 @@ chore staticlib    # dist/libfs_bcachefs.a and its headers
 chore cli:install  # the tools, staged in tmp/cli
 ```
 
+## Listing trees
+
+`fs.bcachefs disk.img ls -R --max-depth 8 --limit 1000 /dir` walks in
+byte-sorted depth-first order; `tree` is an identical alias of `ls -R`.
+Each existing ls entry adds a volume-absolute `path` and relative `depth`
+(direct children are depth 1, a starting file or symlink is depth 0).
+Non-UTF-8 paths also carry `path_hex`. Plain `ls` still lists one directory.
+Symlinks are never followed. Subvolume and snapshot roots are entered and
+marked with their `subvolume` and `snapshot` IDs; repeated directory
+identities (inode plus snapshot) carry `revisited: true` and are not entered.
+
+Defaults are depth 64 and 100000 entries. Exact fits succeed; one further
+entry beyond either bound, or an unreadable directory, exits 1 with the
+collected JSON array (or `--text` lines) on stdout and the bound or path in
+the stderr error. A missing starting path prints no report. Bounds accept
+zero and require `--recursive` on `ls`; an empty directory fits zero bounds.
+
 ## Reading files
 
 `fs.bcachefs` reads an image or device directly, without mounting it:
