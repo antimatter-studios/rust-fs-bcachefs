@@ -54,9 +54,21 @@ fn read_command() -> Cmd {
                 .arg(Arg::new("path").value_name("PATH").default_value("/")),
         )
         .subcommand(
-            Cmd::new("cat")
-                .about("Write a file's bytes (or a symlink's target) to stdout")
-                .arg(Arg::new("path").value_name("PATH").required(true)),
+            Cmd::new("read")
+                .visible_alias("cat")
+                .about("Read a regular file's bytes; refuse symlinks, naming their target")
+                .arg(Arg::new("path").value_name("PATH").required(true))
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("FILE")
+                        .value_parser(value_parser!(OsString))
+                        .help("Write FILE.partial and rename to FILE on success, instead of stdout"),
+                )
+                .after_help(
+                    "Examples:\n  fs.bcachefs disk.img read /hello.txt\n  fs.bcachefs disk.img read /hello.txt -o hello.txt",
+                ),
         )
 }
 
@@ -138,20 +150,83 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
             walk(&fs, root, &prefix, &mut rows, 0)?;
             Ok(Outcome::report(Json::Arr(rows)))
         }
-        Some(("cat", sub)) => {
+        Some(("read", sub)) => {
             let fs = open(dev)?;
             let path = sub.get_one::<String>("path").expect("required");
-            let data = fs
-                .lookup(path)
-                .and_then(|ino| fs.read(ino))
-                .map_err(failed)?;
-            std::io::stdout()
-                .write_all(&data)
-                .map_err(|e| CliError::failed(e.to_string()))?;
-            Ok(Outcome::done())
+            read(&fs, path, sub.get_one("output"))
         }
         _ => Err(CliError::usage("unknown subcommand")),
     }
+}
+
+fn read(
+    fs: &Filesystem<FileDevice>,
+    path: &str,
+    output: Option<&OsString>,
+) -> Result<Outcome, CliError> {
+    let ino = fs.lookup(path).map_err(failed)?;
+    let inode = fs.inode(ino).map_err(failed)?;
+    if inode.is_dir() {
+        return Err(CliError::failed(format!("{path}: is a directory")));
+    }
+    if inode.is_symlink() {
+        let target = fs.read(ino).map_err(failed)?;
+        return Err(CliError::failed(format!(
+            "{path}: is a symlink to {}; read the target instead",
+            String::from_utf8_lossy(&target)
+        )));
+    }
+    if !inode.is_file() {
+        return Err(CliError::failed(format!("{path}: not a regular file")));
+    }
+
+    // Keep memory bounded even for sparse files larger than the device.
+    const CHUNK: usize = 1 << 20;
+    let copy = |sink: &mut dyn Write| -> Result<(), CliError> {
+        let mut offset = 0u64;
+        while offset < inode.size {
+            let want = (inode.size - offset).min(CHUNK as u64) as usize;
+            let data = fs.read_range(ino, offset, want).map_err(failed)?;
+            if data.len() != want {
+                return Err(CliError::failed(format!(
+                    "{path}: short read at byte {offset} of {}",
+                    inode.size
+                )));
+            }
+            sink.write_all(&data)
+                .map_err(|e| CliError::failed(format!("write: {e}")))?;
+            offset += data.len() as u64;
+        }
+        sink.flush()
+            .map_err(|e| CliError::failed(format!("write: {e}")))
+    };
+    match output {
+        None => copy(&mut std::io::stdout().lock())?,
+        Some(file) => {
+            let dest = std::path::Path::new(file);
+            let mut partial = dest.as_os_str().to_owned();
+            partial.push(".partial");
+            let partial = std::path::PathBuf::from(partial);
+            // Do not truncate a partial left by another extraction, or
+            // follow a host symlink at that path.
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial)
+                .map_err(|e| CliError::failed(format!("create {}: {e}", partial.display())))?;
+            let result = copy(&mut f);
+            drop(f);
+            let result = result.and_then(|()| {
+                std::fs::rename(&partial, dest)
+                    .map_err(|e| CliError::failed(format!("rename to {}: {e}", dest.display())))
+            });
+            if result.is_err() {
+                let _ = std::fs::remove_file(&partial);
+            }
+            result?;
+        }
+    }
+    Ok(Outcome::done())
 }
 
 /// The type of an inode by its mode, in the words the manifests use.

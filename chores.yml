@@ -201,13 +201,15 @@ tasks:
     cmds: ['scripts/cli-install.sh']
 
   # Measured with test-write.sh (#46): 21 lines, 839 bytes, 3250 checks.
-  # Each test file prints three lines; the budget has room for one more.
-  # The floor is about 95% of the checks.
+  # #292 adds 505 mandatory checks: extraction 288, symlink refusals 144,
+  # remaining refusals 53, write-readback refusals 4 and generated docs 16.
+  # The existing floor rises by that count; CI records the full measurement.
+  # Each test file prints three lines; the extra docs file fits the budget.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 28 1100 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3090'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3595'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
