@@ -1290,6 +1290,31 @@ verifies that all other stored key fields remain unchanged. These new
 regressions run in CI, not locally. No position rule for other inode key
 versions or other btrees is inferred, and no GPL source was read.
 
+### Xattr key sizes (S3, #258)
+
+Nightly [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705),
+using the digest-pinned fixtures recorded above for #253, changed only the
+size of an xattr key in `aged.img` at seed 1659486. The key is in btree 3
+at `2147487679:2679498547732338290:U32_MAX`, with attribute `user.attr29`;
+its size becomes 1. The reference checker 1.39.7 exits 9, prints
+"size != 0, deleting" and counts `bkey_size_nonzero`; this crate reported
+clean. This is black-box output, without reading reference source.
+
+The checker now includes the observed xattrs-btree/xattr-key pair in its
+existing zero-size rule. No size rule for other key types or btrees is
+inferred. The test-only commit precedes the fix: the unit regression uses
+the reported position, accepts size 0, rejects 1 and U32_MAX and checks
+the rule's scope. The fixture and live independent-reference regressions
+select `user.attr29` by name so regenerated inode numbers and hashes can
+change. The latter requires clean controls, rejects sizes 1 and U32_MAX
+and verifies that every other stored key field stays unchanged.
+
+The differential workflow's digest-pinned job replays the exact seed,
+checks the retained size-only mutation and requires `bkey_size_nonzero`.
+Only #258's exact differential allowance is removed. The regressions and
+the full 80-case-per-fixture replay from first seed 1659440 run in CI, not
+locally; post-fix reference agreement remains for CI. No GPL source was read.
+
 ### Backpointer values against their extents (S3, S4, S8, #256)
 
 The same nightly [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)

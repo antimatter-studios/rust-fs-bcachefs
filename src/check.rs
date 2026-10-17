@@ -1381,6 +1381,7 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SIZE_ZERO: &[(u8, u8)] = &[
         (btree_id::INODES, key_type::INODE_V3),
         (btree_id::DIRENTS, key_type::DIRENT),
+        (btree_id::XATTRS, key_type::XATTR),
         (SUBVOLUMES, KEY_SUBVOLUME),
         (LRU, KEY_SET),
         (BACKPOINTERS, KEY_BACKPOINTER),
@@ -1708,6 +1709,35 @@ mod tests {
                 check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
                 assert!(unrelated.clean(), "{unrelated:?}");
             }
+        }
+    }
+
+    #[test]
+    fn an_xattr_key_with_a_nonzero_size_is_named() {
+        // Run 39018152705, aged seed 1659486 (#258): size 1 on this
+        // xattr is refused by the reference as bkey_size_nonzero.
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(key_type::XATTR, 2679498547732338290, vec![0; 8]);
+            k.pos.inode = 2147487679;
+            k.pos.snapshot = u32::MAX;
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(btree_id::XATTRS, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+                assert!(report.problems[0].detail.contains(&format!("size {size}")));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::EXTENTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+            k.key_type = key_type::EXTENT;
+            check_key_fields(btree_id::XATTRS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
         }
     }
 

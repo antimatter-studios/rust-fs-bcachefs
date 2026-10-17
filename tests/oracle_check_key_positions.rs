@@ -209,6 +209,20 @@ fn a_btree_accounting_key_with_bytes_below_its_btree_id_is_refused() {
 }
 
 #[test]
+fn an_xattr_key_with_a_nonzero_size_is_refused() {
+    // The same attribute as aged seed 1659486 in run 39018152705 (#258),
+    // selected by name because regenerated fixtures may renumber inodes.
+    refused(
+        "aged",
+        btree_id::XATTRS,
+        key_type::XATTR,
+        |k| k.value.get(..2) == Some(&[0, 6]) && k.value.get(4..10) == Some(b"attr29"),
+        |k| k.size = 1,
+        "bkey_size_nonzero",
+    );
+}
+
+#[test]
 fn an_xattr_whose_lengths_run_past_its_value_is_refused() {
     // The run's change: the value's first word all ones, a name of 255
     // bytes and a value of 65535 in a value of five words.
