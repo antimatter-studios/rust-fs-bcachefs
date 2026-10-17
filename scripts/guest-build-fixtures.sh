@@ -738,6 +738,51 @@ PY
     rm -f "$ROOT$img"
 } >"$out/encrypted-compressed.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/encrypted-compressed.txt"
 sed 's/^/encrypted-compressed: /' "$out/encrypted-compressed.txt"
+# The 128-bit data MAC (#334, part of #276): S1 9.1.4.3 says data MACs
+# keep all 128 bits under the wide_macs option instead of the default 80,
+# and every other encrypted image carries only the 80-bit MAC. An encrypted
+# image formatted --wide_macs from the fixture tree has a random file
+# written through the mount, is settled, and is listed and checked.
+# encrypted-wide-macs.txt records the steps; nothing here fails the build,
+# and tests/oracle_encrypted_wide_macs.rs fails, printing that record, if
+# its extents do not carry the 128-bit MAC.
+step "encrypted-wide-macs (--encrypted --no_passphrase --wide_macs)"
+img="$age_dir/encrypted-wide-macs.img"
+rm -f "$out/encrypted-wide-macs.img" "$out/encrypted-wide-macs.json"
+{
+    rm -f "$ROOT$img"
+    truncate -s 64M "$ROOT$img"
+    bcachefs-ref format -q --encrypted --no_passphrase --wide_macs --source="${src#"$ROOT"}" "$img" ||
+        echo "format: exit $?"
+    bcachefs-ref show-super "$img" >"$out/encrypted-wide-macs.super.txt" 2>&1 || true
+    if fuse_mount "$img" rw,noatime "$work/fuse-encrypted-wide-macs.log"; then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, random, sys
+with open(os.path.join(sys.argv[1], "wide-macs-random"), "wb") as f:
+    f.write(random.Random(276).randbytes(1 << 20))
+PY
+        sync
+        sleep 2
+        manifest "$ROOT$mnt" "$out/encrypted-wide-macs.json" live
+        fuse_kill
+        bcachefs-ref fsck -y "$img" >"$out/encrypted-wide-macs.settle.txt" 2>&1 ||
+            echo "settle: exit $?"
+        for b in inodes dirents extents; do
+            bcachefs-ref list -b "$b" "$img" >"$out/encrypted-wide-macs.$b.txt" 2>&1 || true
+        done
+        bcachefs-ref fsck -n "$img" >"$out/encrypted-wide-macs.fsck.txt" 2>&1 ||
+            echo "fsck: exit $?" >>"$out/encrypted-wide-macs.fsck.txt"
+        grep -c 'csum chacha20_poly1305_128 ' "$out/encrypted-wide-macs.extents.txt" |
+            sed 's/$/ crc entries with the 128-bit MAC/'
+        grep -c 'csum chacha20_poly1305_80 ' "$out/encrypted-wide-macs.extents.txt" |
+            sed 's/$/ crc entries with the 80-bit MAC/'
+        cp --sparse=always "$ROOT$img" "$out/encrypted-wide-macs.img"
+    else
+        echo "mount: failed"
+    fi
+    rm -f "$ROOT$img"
+} >"$out/encrypted-wide-macs.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/encrypted-wide-macs.txt"
+sed 's/^/encrypted-wide-macs: /' "$out/encrypted-wide-macs.txt"
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
