@@ -143,7 +143,8 @@ tasks:
       # #250 adds two host cases to the stack's 221-case floor.
       # #271 adds two encrypted-node oracle cases.
       # #272 adds four encrypted-extent oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 229'
+      # #261 adds one selected-copy optional-field regression.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 230'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -206,7 +207,8 @@ tasks:
       # #260 adds the CLI walk against the reference lister and FUSE find.
       # #272 adds four encrypted-extent unit cases and four oracle cases.
       # #251 adds the CLI stat against the reference mount's lstat.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 348'
+      # #261 adds one host case and one independent reference case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 350'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -338,7 +340,8 @@ tasks:
       # #250's write-feature cases do not run in this default-feature tier.
       # #271's eleven encrypted-node cases run here.
       # #272's eight encrypted-extent cases run here.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 163'
+      # #261's host optional-field regression also runs here.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 164'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
