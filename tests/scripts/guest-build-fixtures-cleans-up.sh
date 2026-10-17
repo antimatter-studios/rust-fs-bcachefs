@@ -91,8 +91,8 @@ elif name == 'mountpoint':
             sys.exit(1)
     if mode == 'mount-hold' and mounted and not (case / 'signalled').exists():
         # The supervisor calls readiness only after recording the kernel ID.
-        # Daemon attachment alone can precede that ownership handoff; a signal
-        # then correctly refuses to detach an as-yet unrecorded mount.
+        # The mount-unrecorded-hold control separately covers a signal before
+        # the supervisor records an attached mount's identity.
         record('owned-mount-ready', mount=args[-1])
         (case / 'ready').write_text(str(os.getpid()))
         sys.exit(1)

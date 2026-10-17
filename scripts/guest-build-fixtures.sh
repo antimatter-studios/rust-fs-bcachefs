@@ -34,6 +34,12 @@ fuse_mount_identity() {
         --mountpoint "$ROOT$mnt" --output ID
 }
 
+# Keep the first identity for this attempt: later lookups must never adopt a
+# replacement. The private mountpoint was checked empty before launch.
+fuse_record_identity() {
+    [ -n "$fuse_id" ] || fuse_id="$(fuse_mount_identity)" || fuse_id=
+}
+
 # Only the child sessions and the private mount started here are stopped.
 fuse_kill() {
     local current
@@ -48,6 +54,9 @@ fuse_kill() {
             return 1
         fi
         wait "$fuse_pid" 2>/dev/null || true
+        # An owned child can attach after the last readiness lookup, including
+        # when a signal interrupts startup. Recheck after it can no longer attach.
+        fuse_record_identity
         fuse_pid=
     fi
     current="$(fuse_mount_identity)" || current=
@@ -274,9 +283,12 @@ fuse_mount() { # IMAGE OPTIONS LOG
     setsid -- bcachefs-ref fusemount -f -o "$2" "$1" "$mnt" >"$3" 2>&1 &
     fuse_pid=$!
     while [ "$SECONDS" -lt "$deadline" ]; do
-        fuse_id="$(fuse_mount_identity)" || fuse_id=
+        fuse_record_identity
         if ! kill -0 "$fuse_pid" 2>/dev/null; then
             wait "$fuse_pid" || status=$?
+            # The empty lookup above may precede both attachment and exit.
+            # Finish recording this attempt before discarding its child handle.
+            fuse_record_identity
             fuse_pid=
             echo "the reference mount exited: status=$status image=$1" >&2
             break
