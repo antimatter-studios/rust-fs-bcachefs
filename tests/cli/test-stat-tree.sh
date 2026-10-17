@@ -68,6 +68,11 @@ for set in default zstd block4k aged; do
         fail "$set: $FIXTURES/$set.inodes.txt is missing -- build the fixtures with \`chore fixtures\`"
         : >"$SANDBOX/lister.txt"
     fi
+    # The superblock's "Time of last write" as the reference printed it, in
+    # seconds since the epoch (UTC, the guest's zone being unknown here).
+    last="$(sed -n 's/^Time of last write: *//p' "$FIXTURES/$set.super.txt" 2>/dev/null |
+        jq -Rr 'gsub(" +"; " ") | strptime("%a %b %d %H:%M:%S %Y") | mktime' 2>/dev/null)"
+    ints "${last:-}" || fail "$set: no time of last write in $FIXTURES/$set.super.txt -- build the fixtures with \`chore fixtures\`"
 
     for verb in 'ls --recursive' tree; do
     read -r -a words <<<"$verb"
@@ -98,6 +103,11 @@ for set in default zstd block4k aged; do
         check "$set: stat $path starts with the shared keys, in order" jq -e "[keys_unsorted[]] | .[0:17] == $shared" "$j" >/dev/null
         check "$set: stat $path has every shared key typed" jq -e "$typed" "$j" >/dev/null
         check "$set: stat $path has none of the old keys" jq -e "($old) | not" "$j" >/dev/null
+        # The tree was made, formatted and aged on the day the reference
+        # last wrote the image: a time read in the wrong unit, from the
+        # wrong base or with the wrong sign lands years away.
+        check "$set: stat $path every time is within a day of the last write ($last)" \
+            jq -e --argjson l "${last:-null}" '[.atime, .mtime, .ctime, .btime] | all(. >= $l - 86400 and . <= $l + 86400)' "$j" >/dev/null
         if [ "$type" = symlink ]; then
             check "$set: stat $path target is $target" jq -e --arg t "$target" '.target == $t' "$j" >/dev/null
         else
