@@ -18,7 +18,7 @@ for set in default lz4 zstd gzip nocsum xxhash crc64 block4k; do
     if fs.bcachefs "$img" ls / >"$SANDBOX/ls.json" 2>"$SANDBOX/err"; then
         want="$(jq -r '.entries[] | .path | select(test("^/[^/]+$")) | ltrimstr("/")' "$manifest" | sort)"
         got="$(jq -r '.[].name' "$SANDBOX/ls.json" | grep -vx 'lost+found' | sort)"
-        check "$set: ls / lists the manifest's top level (want: $(echo $want), got: $(echo $got))" \
+        check "$set: ls / lists the manifest's top level (want: $want, got: $got)" \
             test "$want" = "$got"
     else
         fail "$set: ls / failed: $(cat "$SANDBOX/err")"
@@ -64,6 +64,7 @@ for set in default lz4 zstd gzip nocsum xxhash crc64 block4k; do
             fs.bcachefs "$img" "$verb" "$path" -o "$SANDBOX/dest" >"$SANDBOX/out" 2>"$SANDBOX/err"
             check "$set: $verb refuses symlink $path" test $? -eq 1
             check "$set: $verb of a symlink has no stdout" test ! -s "$SANDBOX/out"
+            # shellcheck disable=SC2016 # $t is jq's --arg, not a shell variable.
             check "$set: $verb names symlink target $target in its JSON error" \
                 jq -e --arg t "$target" '.code == 1 and (.error | contains("symlink") and contains($t))' "$SANDBOX/err" >/dev/null
             check "$set: symlink refusal preserves destination" cmp -s "$SANDBOX/saved" "$SANDBOX/dest"
