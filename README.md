@@ -87,6 +87,27 @@ directories, special files and symlinks; a symlink error names its target
 so it can be read explicitly. Errors use JSON on stderr by default, or
 text with `--text`.
 
+## Writing files (experimental)
+
+The `cli` feature includes the library's experimental `write` feature:
+
+```sh
+printf 'hello\n' | fs.bcachefs disk.img write /hello.txt
+fs.bcachefs disk.img write /hello.txt --from hello.txt --mode 640
+fs.bcachefs disk.img write /hello.txt --from hello.txt --journal
+```
+
+`write PATH` creates or replaces a regular file from stdin, or from
+`--from FILE`. Empty input truncates the file. `put` is an identical alias.
+`--mode OCTAL` sets permissions on creation (default `644`); replacement
+preserves the existing mode. `--journal` commits through the library's
+journal path and can continue an earlier journalled session. In-place
+writes require a clean image and are not crash-safe.
+
+Capability, path and input refusals are checked before opening the image
+for writing. Symlinks are refused. Errors use the shared stderr contract:
+status 1 for failure, 2 for invalid arguments and 3 for unsupported operations.
+
 ## Changelog
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).
