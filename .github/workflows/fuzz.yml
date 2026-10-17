@@ -45,7 +45,7 @@ jobs:
     # fuzzing; the rest is building cargo-fuzz and the targets.
     timeout-minutes: 90
     # issues: write, for filing a failed scheduled run (the last step);
-    # actions: read, for the fixtures of the newest green main run.
+    # actions: read, for the fixtures of the newest landed tree.
     permissions:
       contents: read
       issues: write
@@ -95,13 +95,27 @@ jobs:
 
       # The whole_image target lays its cases over the fixtures the
       # reference tools made (#152). Building them takes the harness VM, so
-      # the newest green main run's are fetched instead.
-      - name: Fetch the fixtures from the newest green main run
+      # the newest landed tree's are fetched instead. Since #238 a push to
+      # main runs only the quick checks and uploads no fixtures; the full
+      # pipeline, and with it the fixtures, runs in the merge queue. So the
+      # newest unexpired `fixtures` artifact is taken from a successful CI
+      # run on main or on a main merge-queue branch, which is the tree that
+      # landed (#239).
+      - name: Fetch the fixtures from the newest landed tree
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-          [ -n "$run" ] || { echo "no green main run to take the fixtures from" >&2; exit 1; }
+          run=""
+          for candidate in $(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=fixtures&per_page=50" \
+              --jq '.artifacts[] | select(.expired | not)
+                    | select(.workflow_run.head_branch == "main" or (.workflow_run.head_branch | startswith("gh-readonly-queue/main/")))
+                    | .workflow_run.id'); do
+            if [ "$(gh run view "$candidate" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion --jq '.workflowName + " " + .conclusion')" = "CI success" ]; then
+              run=$candidate
+              break
+            fi
+          done
+          [ -n "$run" ] || { echo "no successful main or merge-queue CI run has an unexpired fixtures artifact" >&2; exit 1; }
           gh run download "$run" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
