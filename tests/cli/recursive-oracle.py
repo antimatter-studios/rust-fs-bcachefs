@@ -23,7 +23,7 @@ if mode == "mount":
     assert out.returncode == 0, out.stderr
     mount = rest[0]
     found = subprocess.run(
-        ["find", ".", "-mindepth", "1", "-printf", r"/%P\0%y\0%i\0"],
+        ["find", ".", "-mindepth", "1", "-printf", r"/%P\0%y\0%i\0%s\0"],
         cwd=mount,
         capture_output=True,
         check=True,
@@ -31,13 +31,14 @@ if mode == "mount":
     assert found.pop() == b""
     kinds = {b"d": "dir", b"f": "reg", b"l": "lnk"}
     expected = {
-        p: (kinds[k], int(i)) for p, k, i in zip(found[::3], found[1::3], found[2::3])
+        p: (kinds[k], int(i), int(s))
+        for p, k, i, s in zip(found[::4], found[1::4], found[2::4], found[3::4])
     }
     paths = [
         bytes.fromhex(r["path_hex"]) if "path_hex" in r else r["path"].encode()
         for r in rows
     ]
-    actual = {p: (r["type"], r["ino"]) for p, r in zip(paths, rows)}
+    actual = {p: (r["type"], r["ino"], r["size"]) for p, r in zip(paths, rows)}
     assert actual == expected, (actual.keys() ^ expected.keys(), actual, expected)
     assert len(paths) == len(expected) and paths == sorted(
         paths, key=lambda p: p.split(b"/")
@@ -54,14 +55,8 @@ if mode == "mount":
     for p in ["/sv/new.txt", "/snap/gone.txt", "/snap/inner/file.txt"]:
         assert p in by_path
     assert not any(p.startswith((b"/dirlink/", b"/ancestor/")) for p in paths)
-    for tree in [
-        "kernel.inodes.txt",
-        "kernel.dirents.txt",
-        "kernel.subvolumes.txt",
-        "kernel.snapshots.txt",
-    ]:
-        # The lister recorded these btrees on the exact reference-made fixture.
-        assert os.path.getsize(os.path.join(rest[1], tree)) > 0
+    raw = walk(os.fsdecode(b"/raw-\xff"))
+    assert raw.returncode == 0 and json.loads(raw.stdout)[0]["depth"] == 0, raw.stderr
     listed = subprocess.run(
         ["bcachefs-ref", "list", "-b", "subvolumes", image],
         capture_output=True,
@@ -73,6 +68,12 @@ if mode == "mount":
             rb"snapshot(?: id)? " + str(by_path[p]["snapshot"]).encode() + rb"\b",
             listed,
         )
+    inodes = subprocess.run(
+        ["bcachefs-ref", "list", "-b", "inodes", image], capture_output=True, check=True
+    ).stdout
+    assert all(
+        re.search(rb"\b0:" + str(r["ino"]).encode() + rb":", inodes) for r in rows
+    )
 elif mode in ("cycle", "twice"):
     assert out.returncode == 0, out.stderr
     alias = "/dir" if mode == "cycle" else "/many"

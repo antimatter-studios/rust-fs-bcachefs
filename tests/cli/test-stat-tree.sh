@@ -13,9 +13,10 @@ for set in default zstd block4k aged; do
     for verb in 'ls --recursive' tree; do
     read -r -a words <<<"$verb"
     if fs.bcachefs "$img" "${words[@]}" / >"$SANDBOX/tree.json" 2>"$SANDBOX/err"; then
-        want="$(jq -r '.entries[] | "\(.path) \(.type)"' "$manifest" | sort)"
-        got="$(jq -r '.[] | select(.path != "/lost+found") | "\(.path) \(if .type == "reg" then "file" elif .type == "lnk" then "symlink" else .type end)"' "$SANDBOX/tree.json" | sort)"
-        check "$set: $verb / lists the manifest's paths and types" test "$want" = "$got"
+        ids="$(jq '.entries | any(has("ino"))' "$manifest")"
+        want="$(jq -r '.entries[] | "\(.path) \(.type) \(.ino // "")"' "$manifest" | sort)"
+        got="$(jq -r --argjson ids "$ids" '.[] | select(.path != "/lost+found") | "\(.path) \(if .type == "reg" then "file" elif .type == "lnk" then "symlink" else .type end) \(if $ids then .ino else "" end)"' "$SANDBOX/tree.json" | sort)"
+        check "$set: $verb / lists the manifest's paths, types and recorded inodes" test "$want" = "$got"
     else
         fail "$set: $verb / failed: $(cat "$SANDBOX/err")"
     fi
