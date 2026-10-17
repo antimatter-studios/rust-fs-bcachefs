@@ -1551,6 +1551,34 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_tree_key_with_a_nonzero_inode_is_named() {
+        // Reference run 39018152705 rejects tree 1 at 1:1:0 as
+        // snapshot_tree_pos_bad (#254); offset 0 was already refused.
+        for inode in [0, 1, u64::MAX] {
+            for offset in [0, 1] {
+                let mut k = key(KEY_SNAPSHOT_TREE, offset, tree(1, u32::MAX));
+                k.pos.inode = inode;
+                let mut report = Report::default();
+                check_key_fields(SNAPSHOT_TREES, &k, &mut report);
+                if inode == 0 && offset != 0 {
+                    assert!(report.clean(), "{report:?}");
+                } else {
+                    assert_eq!(report.problems.len(), 1, "{report:?}");
+                    assert_eq!(report.problems[0].kind, "snapshot_tree_pos_bad");
+                    assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+                }
+
+                let mut unrelated = Report::default();
+                check_key_fields(SNAPSHOTS, &k, &mut unrelated);
+                assert!(unrelated.clean(), "{unrelated:?}");
+                k.key_type = KEY_SUBVOLUME;
+                check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
+                assert!(unrelated.clean(), "{unrelated:?}");
+            }
+        }
+    }
+
+    #[test]
     fn each_broken_snapshot_link_is_named() {
         let parents = [(100, 0), (99, 100)];
         let snaps = |skip: u32| [(100, snapshot(1, [0; 3])), (99, snapshot(1, [skip, 0, 0]))];
