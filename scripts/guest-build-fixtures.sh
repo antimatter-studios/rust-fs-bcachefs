@@ -783,6 +783,60 @@ PY
     rm -f "$ROOT$img"
 } >"$out/encrypted-wide-macs.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/encrypted-wide-macs.txt"
 sed 's/^/encrypted-wide-macs: /' "$out/encrypted-wide-macs.txt"
+# The unclean encrypted image (#337, part of #277): aged-unclean is the
+# only image left without a clean shutdown, and its journal is plaintext.
+# An encrypted image formatted from the fixture tree has files written
+# through the mount with journal reclaim held off, and the daemon is
+# killed as it is for aged-unclean, so the newest keys are in encrypted
+# journal entries only. The image is copied out unreplayed with the
+# journal lister's view, then the checker replays the scratch copy and a
+# read-only mount of it records the manifest the replay is compared with.
+# encrypted-unclean.txt records the steps; nothing here fails the build,
+# and tests/oracle_encrypted_unclean.rs fails, printing that record, if
+# the image is not unclean or the reference did not replay it.
+step "encrypted-unclean (--encrypted --no_passphrase, left unclean by the reference mount)"
+img="$age_dir/encrypted-unclean.img"
+rm -f "$out/encrypted-unclean.img" "$out/encrypted-unclean.json" "$out/encrypted-unclean.mounted.json"
+{
+    rm -f "$ROOT$img"
+    truncate -s 64M "$ROOT$img"
+    bcachefs-ref format -q --encrypted --no_passphrase --source="${src#"$ROOT"}" "$img" ||
+        echo "format: exit $?"
+    if fuse_mount "$img" rw,noatime,journal_reclaim_delay=60000 "$work/fuse-encrypted-unclean.log"; then
+        python3 - "$ROOT$mnt" <<'PY' || echo "write: exit $?"
+import os, random, sys
+d = os.path.join(sys.argv[1], "unclean")
+os.mkdir(d)
+for i in range(8):
+    with open(os.path.join(d, f"file-{i}"), "wb") as f:
+        f.write(random.Random(277 + i).randbytes(4096 * (i + 1)))
+        f.flush()
+        os.fsync(f.fileno())
+PY
+        sync
+        sleep 2
+        manifest "$ROOT$mnt" "$out/encrypted-unclean.mounted.json" live
+        fuse_kill
+        cp --sparse=always "$ROOT$img" "$out/encrypted-unclean.img"
+        bcachefs-ref show-super "$img" >"$out/encrypted-unclean.super.txt" 2>&1 || true
+        bcachefs-ref list_journal -a -H "$img" >"$out/encrypted-unclean.journal-headers.txt" 2>&1 ||
+            echo "list_journal headers: exit $?"
+        bcachefs-ref list_journal -d -V false "$img" >"$out/encrypted-unclean.journal-dirty.txt" 2>&1 ||
+            echo "list_journal dirty keys: exit $?"
+        bcachefs-ref fsck -y "$img" >"$out/encrypted-unclean.replay.txt" 2>&1 ||
+            echo "replay: exit $?"
+        if fuse_mount "$img" ro,noatime "$work/fuse-encrypted-unclean-ro.log"; then
+            manifest "$ROOT$mnt" "$out/encrypted-unclean.json" live
+            fuse_kill
+        else
+            echo "mount: failed (replayed, read-only)"
+        fi
+    else
+        echo "mount: failed"
+    fi
+    rm -f "$ROOT$img"
+} >"$out/encrypted-unclean.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/encrypted-unclean.txt"
+sed 's/^/encrypted-unclean: /' "$out/encrypted-unclean.txt"
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
