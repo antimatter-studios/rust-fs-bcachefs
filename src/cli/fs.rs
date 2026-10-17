@@ -6,10 +6,10 @@ use std::io::Write;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
+use super::device::{Device, Target};
 use fs_bcachefs::superblock::format_uuid;
 use fs_bcachefs::Filesystem;
 use fs_core::cli::{CliError, Json, Outcome, Tool};
-use fs_core::FileDevice;
 
 pub const TOOL: Tool = Tool {
     name: "fs.bcachefs",
@@ -44,6 +44,17 @@ fn read_command() -> Cmd {
                 .help("The image file or device")
                 .value_parser(value_parser!(OsString))
                 .required(true),
+        )
+        .arg(
+            Arg::new("offset")
+                .long("offset")
+                .value_name("BYTES")
+                .value_parser(value_parser!(u64))
+                .global(true)
+                .help("Byte offset of the filesystem in TARGET (default 0), for a partition inside a whole-disk image"),
+        )
+        .after_help(
+            "--offset applies to the filesystem device on every verb, including experimental writes; it never seeks within a file.\n\nExamples:\n  fs.bcachefs --offset 1048576 whole-disk.img info\n  fs.bcachefs whole-disk.img read /hello.txt --offset 1048576\n  fs.bcachefs whole-disk.img write /hello.txt --from hello.txt --offset 1048576",
         )
         .args(fs_core::cli::format_args().map(|a| a.global(true)))
         .subcommand_required(true)
@@ -109,17 +120,26 @@ fn key_command(name: &'static str) -> Cmd {
 
 fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
     let target = m.get_one::<OsString>("target").expect("required");
+    let offset = m
+        .subcommand()
+        .and_then(|(_, sub)| sub.get_one::<u64>("offset"))
+        .or_else(|| m.get_one::<u64>("offset"))
+        .copied()
+        .unwrap_or(0);
+    // Unsupported operations still refuse without opening any target.
+    if let Some((verb @ ("set" | "resize"), _)) = m.subcommand() {
+        return Err(CliError::not_implemented(format!(
+            "{verb}: not implemented by this driver"
+        )));
+    }
+    let target = Target::new(target, offset);
+    // Validate the window before dispatch, including every write preflight.
+    let dev = target.open()?;
     if let Some((verb, sub)) = m.subcommand() {
-        if matches!(verb, "set" | "resize") {
-            return Err(CliError::not_implemented(format!(
-                "{verb}: not implemented by this driver"
-            )));
-        }
-        if let Some(r) = super::fs_write::run(target, verb, sub) {
+        if let Some(r) = super::fs_write::run(&target, verb, sub) {
             return r;
         }
     }
-    let dev = FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?;
     match m.subcommand() {
         Some(("get" | "info", sub)) => get(
             &open(dev)?,
@@ -183,7 +203,7 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
     }
 }
 
-fn get(fs: &Filesystem<FileDevice>, key: Option<&str>) -> Result<Outcome, CliError> {
+fn get(fs: &Filesystem<Device>, key: Option<&str>) -> Result<Outcome, CliError> {
     let sb = fs.superblock();
     let usage = fs.usage().map_err(failed)?;
     let label = sb.label_str();
@@ -236,7 +256,7 @@ fn get(fs: &Filesystem<FileDevice>, key: Option<&str>) -> Result<Outcome, CliErr
 }
 
 fn read(
-    fs: &Filesystem<FileDevice>,
+    fs: &Filesystem<Device>,
     path: &str,
     output: Option<&OsString>,
 ) -> Result<Outcome, CliError> {
@@ -323,7 +343,7 @@ fn kind(mode: u32) -> &'static str {
 const MAX_TREE_DEPTH: usize = 256;
 
 fn walk(
-    fs: &Filesystem<FileDevice>,
+    fs: &Filesystem<Device>,
     dir: u64,
     prefix: &str,
     rows: &mut Vec<Json>,
@@ -357,6 +377,6 @@ fn failed(e: fs_bcachefs::Error) -> CliError {
     }
 }
 
-fn open(dev: FileDevice) -> Result<Filesystem<FileDevice>, CliError> {
+fn open(dev: Device) -> Result<Filesystem<Device>, CliError> {
     Filesystem::open(dev).map_err(failed)
 }
