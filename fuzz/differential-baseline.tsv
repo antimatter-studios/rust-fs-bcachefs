@@ -106,9 +106,9 @@ ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # typ
 # checker 1.39.7: 648 cases, first seed 1659440. Each new class has its
 # own child of #228. #253 fixes snapshot inode positions, #254 fixes
 # snapshot-tree inode positions, #255 fixes inode key inode positions,
-# and #256 checks data backpointer values; eleven classes remain.
+# #256 checks data backpointer values, and #258 checks xattr key sizes;
+# ten classes remain.
 ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type logged_op_truncate # len # ver #	#257: The checker accepts a logged-op-truncate key in the freespace btree
-ref-only	key-size	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type xattr #:u#_max len #	#258: The checker misses an xattr key with a nonzero size
 ref-only	key-type	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type lru #:u#_max len # v	#259: The checker accepts an LRU key in the xattrs btree
 ours-only	superblock	check:superblock_copy	#261: The superblock-copy finding disagrees with the reference after a superblock mutation
 ref-only	jset	invalid journal entry, version=(unknown version) (#) seq=#: <image> sector # seq #: journal entry to	#262: The checker misses a journal entry version the reference rejects
