@@ -35,8 +35,26 @@
 //! Poly1305:  keyed with the first 32 keystream bytes of the same nonce
 //!            with 0x8000_0000 XORed into word 3
 //! ```
+//!
+//! The data extents are decrypted and authenticated with the same key
+//! (#272). S1 (9.1.4.1, 9.1.4.3) says an extent's nonce is made from its
+//! version, compression type and uncompressed size with a per-CRC nonce
+//! offset, and that its MAC is Poly1305 truncated to 80 bits in its crc
+//! entry. The layout is S4 again, every candidate kept only where it
+//! decrypted all 441 extents of `encrypted.img` to the tree it was
+//! formatted from and reproduced every stored MAC (docs/clean-room.md,
+//! "Encryption: data extents"):
+//!
+//! ```text
+//! extent:    word 0 zero (the block counter from the extent's start),
+//!            word 1 the key's version, word 2 zero, word 3 0x1000_0000
+//! MAC:       Poly1305 over the stored bytes, keyed as for a node; its
+//!            first 8 bytes are the crc entry's low checksum word, the next
+//!            2 its high 16 bits
+//! ```
 
 use crate::error::{Error, Result};
+use crate::extent::{compression, Crc};
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use poly1305::universal_hash::KeyInit;
 
@@ -128,6 +146,22 @@ pub const CSUM_CHACHA20_POLY1305_128: u8 = 4;
 /// the nodes of `encrypted.img`.
 pub const NONCE_BTREE_NODE: u32 = 0x2000_0000;
 
+/// A data extent's checksum type when it is encrypted: ChaCha20 with a
+/// Poly1305 MAC truncated to 80 bits, S1's `chacha20_poly1305_80` (9.1.4.3,
+/// the default). OBSERVED: the crc entry of every extent of
+/// `encrypted.img` carries type 3, and its 80 stored bits are the first 80
+/// of the MAC [`decrypt_extent`] computes.
+pub const CSUM_CHACHA20_POLY1305_80: u8 = 3;
+
+/// How many bytes of an extent's MAC its crc entry keeps: 80 bits.
+const EXTENT_MAC_BYTES: usize = 10;
+
+/// Word 3 of a data extent's nonce: S1's `BCH_NONCE_EXTENT` domain.
+/// OBSERVED: of the sixteen top-nibble values, the only one whose
+/// keystream turns the stored bytes of `encrypted.img`'s extents into the
+/// files it was formatted from.
+pub const NONCE_EXTENT: u32 = 0x1000_0000;
+
 /// XORed into word 3 of a nonce for the keystream whose first 32 bytes key
 /// Poly1305: S1's `BCH_NONCE_POLY` domain. OBSERVED: with
 /// [`NONCE_BTREE_NODE`], the value that reproduces every stored MAC of
@@ -217,6 +251,76 @@ pub fn btree_node_nonce(offset: usize, seq: u64, journal_seq: u64) -> Result<Non
         (seq >> 32) as u32,
         NONCE_BTREE_NODE ^ journal_seq as u32,
     ])
+}
+
+/// The nonce of a data extent whose crc entry is `crc`, in a key whose
+/// version is `version_hi:version_lo`. OBSERVED on all 441 extents of
+/// `encrypted.img`: the version (1 to 0x1b9, its high 64 bits zero) is word
+/// 1, and the uncompressed size, which runs from 1 to 64 sectors there,
+/// does not enter it. What was not seen is refused rather than given a
+/// guessed nonce: a compressed extent (S1 puts the compression type in the
+/// nonce, #275), a per-CRC nonce offset, and a version of 2^32 or more
+/// (whether its high bits are word 2 or share word 3).
+pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce> {
+    if crc.compression_type != compression::NONE {
+        return Err(Error::Unsupported(format!(
+            "an encrypted extent with compression type {}: how a compressed extent's nonce is \
+             made has not been observed",
+            crc.compression_type
+        )));
+    }
+    if crc.nonce != 0 {
+        return Err(Error::Unsupported(format!(
+            "an encrypted extent with nonce offset {}: how it enters the nonce has not been \
+             observed",
+            crc.nonce
+        )));
+    }
+    let version = u32::try_from(version_lo)
+        .ok()
+        .filter(|_| version_hi == 0)
+        .ok_or_else(|| {
+            Error::Unsupported(format!(
+                "an encrypted extent with version {version_hi:#x}:{version_lo:#x}: how a version \
+                 of 2^32 or more enters its nonce has not been observed"
+            ))
+        })?;
+    Ok([0, version, 0, NONCE_EXTENT])
+}
+
+/// Verify the MAC of an encrypted extent's stored bytes `data`, then
+/// decrypt them in place; `crc` is its crc entry and `version_hi:version_lo`
+/// its key's version. Nothing is decrypted unless the MAC verifies: a
+/// mismatch is refused as a bad checksum naming the MAC. A checksum type
+/// other than the 80-bit MAC (S1's `wide_macs` keeps 128) has not been
+/// observed in a data extent, and is refused.
+pub fn decrypt_extent(
+    key: &MasterKey,
+    crc: &Crc,
+    version_hi: u32,
+    version_lo: u64,
+    data: &mut [u8],
+) -> Result<()> {
+    if crc.csum_type != CSUM_CHACHA20_POLY1305_80 {
+        return Err(Error::Unsupported(format!(
+            "an encrypted extent with checksum type {}: only the 80-bit MAC (type \
+             {CSUM_CHACHA20_POLY1305_80}) has been observed",
+            crc.csum_type
+        )));
+    }
+    let nonce = extent_nonce(crc, version_hi, version_lo)?;
+    let mac = key.mac(nonce, data)?;
+    let mut stored = [0u8; EXTENT_MAC_BYTES];
+    stored[..8].copy_from_slice(&crc.csum_lo.to_le_bytes());
+    stored[8..].copy_from_slice(&(crc.csum_hi as u16).to_le_bytes());
+    if crc.csum_hi > u64::from(u16::MAX) || mac[..EXTENT_MAC_BYTES] != stored {
+        return Err(Error::BadChecksum {
+            what: "extent data MAC",
+            stored: crc.csum_lo,
+            computed: u64::from_le_bytes(mac[..8].try_into().expect("8 bytes")),
+        });
+    }
+    key.apply(nonce, data)
 }
 
 #[cfg(test)]
@@ -355,5 +459,147 @@ mod tests {
             btree_node_nonce(0, 1, 1 << 28),
             Err(Error::Unsupported(_))
         ));
+    }
+
+    /// The master key of `encrypted.img`, from its crypt field (the fixtures
+    /// artifact of CI run 39021762764).
+    fn encrypted_img_key() -> MasterKey {
+        MasterKey([
+            0x4b, 0xb0, 0x49, 0x86, 0xf2, 0x3a, 0x34, 0x30, 0x7c, 0x1f, 0xf3, 0x81, 0xd3, 0x34,
+            0x4a, 0x8a, 0x6a, 0xe1, 0xcf, 0x6c, 0xc2, 0x89, 0xfc, 0x8e, 0xf8, 0x4b, 0xb4, 0x10,
+            0x70, 0x88, 0x9c, 0xc3,
+        ])
+    }
+
+    /// `hello.txt`'s one extent in `encrypted.img`: its stored sector, and
+    /// the crc entry before its pointer (`0x3ede_0300_0000_0004`, then
+    /// `0x655e_30e7_6f31_fa5a`) in a key of version 0x1b8. The file is
+    /// "hello world\n"; the rest of the sector is zeros.
+    const HELLO_SECTOR: &[u8; 512] =
+        include_bytes!("../tests/data/encrypted-hello-extent-39021762764.bin");
+    const HELLO_VERSION: u64 = 0x1b8;
+
+    fn hello_crc() -> Crc {
+        let v = [0x3ede_0300_0000_0004u64, 0x655e_30e7_6f31_fa5a];
+        let v: Vec<u8> = v.iter().flat_map(|w| w.to_le_bytes()).collect();
+        match crate::extent::parse_entries(&v).unwrap()[..] {
+            [crate::extent::ExtentEntry::Crc(c)] => c,
+            ref e => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_extent_is_verified_and_decrypted() {
+        let crc = hello_crc();
+        assert_eq!(
+            (crc.csum_type, crc.compression_type, crc.nonce, crc.csum_hi),
+            (CSUM_CHACHA20_POLY1305_80, compression::NONE, 0, 0x3ede)
+        );
+        let mut data = *HELLO_SECTOR;
+        decrypt_extent(&encrypted_img_key(), &crc, 0, HELLO_VERSION, &mut data).unwrap();
+        assert_eq!(&data[..12], b"hello world\n");
+        assert!(data[12..].iter().all(|&b| b == 0));
+    }
+
+    /// One bit changed anywhere -- the data, either half of the stored MAC,
+    /// the version, the key -- and the extent is refused before anything is
+    /// decrypted.
+    #[test]
+    fn an_extent_whose_mac_does_not_verify_is_refused() {
+        let key = encrypted_img_key();
+        let refused = |crc: &Crc, version: u64, key: &MasterKey, mut data: [u8; 512]| {
+            let before = data;
+            match decrypt_extent(key, crc, 0, version, &mut data) {
+                Err(Error::BadChecksum { what, .. }) => assert_eq!(what, "extent data MAC"),
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(data, before, "decrypted although refused");
+        };
+        for at in [0, 11, 511] {
+            let mut data = *HELLO_SECTOR;
+            data[at] ^= 1;
+            refused(&hello_crc(), HELLO_VERSION, &key, data);
+        }
+        let mut crc = hello_crc();
+        crc.csum_lo ^= 1 << 63;
+        refused(&crc, HELLO_VERSION, &key, *HELLO_SECTOR);
+        let mut crc = hello_crc();
+        crc.csum_hi ^= 1;
+        refused(&crc, HELLO_VERSION, &key, *HELLO_SECTOR);
+        refused(&hello_crc(), HELLO_VERSION + 1, &key, *HELLO_SECTOR);
+        refused(
+            &hello_crc(),
+            HELLO_VERSION,
+            &MasterKey([0x5a; 32]),
+            *HELLO_SECTOR,
+        );
+    }
+
+    #[test]
+    fn an_extent_nonce_is_its_version_under_the_extent_domain() {
+        let crc = hello_crc();
+        assert_eq!(
+            extent_nonce(&crc, 0, 0x1b8).unwrap(),
+            [0, 0x1b8, 0, 0x1000_0000]
+        );
+        assert_eq!(
+            extent_nonce(&crc, 0, u64::from(u32::MAX)).unwrap()[1],
+            u32::MAX
+        );
+    }
+
+    /// What has not been observed is refused, not given a guessed nonce:
+    /// compression, a nonce offset, a version of 2^32 or more, and a MAC of
+    /// another width.
+    #[test]
+    fn an_extent_not_yet_observed_is_refused() {
+        let unsupported = |crc: Crc, version_hi: u32, version_lo: u64| {
+            let mut data = *HELLO_SECTOR;
+            match decrypt_extent(
+                &encrypted_img_key(),
+                &crc,
+                version_hi,
+                version_lo,
+                &mut data,
+            ) {
+                Err(Error::Unsupported(m)) => m,
+                other => panic!("{other:?}"),
+            }
+        };
+        for t in [compression::LZ4, compression::INCOMPRESSIBLE] {
+            let m = unsupported(
+                Crc {
+                    compression_type: t,
+                    ..hello_crc()
+                },
+                0,
+                HELLO_VERSION,
+            );
+            assert!(m.contains("compression type"), "{m}");
+        }
+        let m = unsupported(
+            Crc {
+                nonce: 1,
+                ..hello_crc()
+            },
+            0,
+            HELLO_VERSION,
+        );
+        assert!(m.contains("nonce offset 1"), "{m}");
+        for (hi, lo) in [(1, HELLO_VERSION), (0, 1 << 32)] {
+            let m = unsupported(hello_crc(), hi, lo);
+            assert!(m.contains("version"), "{m}");
+        }
+        for t in [0, 4, 5] {
+            let m = unsupported(
+                Crc {
+                    csum_type: t,
+                    ..hello_crc()
+                },
+                0,
+                HELLO_VERSION,
+            );
+            assert!(m.contains(&format!("checksum type {t}")), "{m}");
+        }
     }
 }

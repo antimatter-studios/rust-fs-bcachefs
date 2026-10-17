@@ -74,27 +74,29 @@ pub struct Filesystem<D: BlockRead> {
     /// This device's index and bucket size (sectors), for judging pointers.
     dev_idx: u8,
     bucket_size: u64,
+    /// The master key of an encrypted filesystem, stored unsealed in its
+    /// crypt field: every data extent is decrypted with it (#272).
+    key: Option<crate::crypt::MasterKey>,
 }
 
 impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
-        if let Some(crypt) = sb.crypt()? {
-            // Its data is encrypted, and is not read yet (#272); its btree
-            // nodes are, by crate::btree, with an unsealed key (#271).
-            // Whether a passphrase is needed is said, since that is what
-            // the person holding the image can act on.
-            return Err(Error::Unsupported(
-                if crypt.is_sealed() {
+        // An encrypted filesystem is read when its master key is stored
+        // unsealed: its btree nodes by crate::btree (#271), its data here
+        // (#272). One whose key a passphrase seals is refused, saying so,
+        // since that is what the person holding the image can act on.
+        let key = match sb.crypt()? {
+            Some(crypt) if crypt.is_sealed() => {
+                return Err(Error::Unsupported(
                     "the filesystem is encrypted, its master key sealed by a passphrase: \
-                     encrypted filesystems are not read"
-                } else {
-                    "the filesystem is encrypted, its master key stored unsealed (formatted \
-                     without a passphrase): encrypted filesystems are not read"
-                }
-                .into(),
-            ));
-        }
+                     encrypted filesystems are read only when the key is stored unsealed"
+                        .into(),
+                ))
+            }
+            Some(crypt) => crypt.master_key(),
+            None => None,
+        };
         if sb.nr_devices != 1 {
             return Err(Error::Unsupported(format!(
                 "{} devices: only single-device filesystems are read",
@@ -125,6 +127,7 @@ impl<D: BlockRead> Filesystem<D> {
             cache: Default::default(),
             snapshot: u32::MAX,
             parents: Default::default(),
+            key,
         };
         fs.parents = fs.load_snapshots()?;
         fs.snapshot = fs.root_snapshot()?;
@@ -654,7 +657,7 @@ impl<D: BlockRead> Filesystem<D> {
                         )));
                     }
                     let e = DataExtent::from_key(&k)?;
-                    let data = self.extent_data(&e)?;
+                    let data = self.extent_data(&k, &e)?;
                     copy_window(&mut out, offset, end, e.file_start * 512, &data);
                 }
                 crate::bkey::key_type::INLINE_DATA => {
@@ -818,7 +821,7 @@ impl<D: BlockRead> Filesystem<D> {
                 value: v.value[8..].to_vec(),
                 ..v.clone()
             })?;
-            let data = self.extent_data(&e)?;
+            let data = self.extent_data(&v, &e)?;
             // The part of this shared extent the pointer covers, at the
             // file sector it shows up at.
             let to = v.pos.offset.min(hi);
@@ -833,18 +836,34 @@ impl<D: BlockRead> Filesystem<D> {
     }
 
     /// The `len` live sectors of one extent, decompressed and checked; an
-    /// unwritten extent's are zeros, whatever its sectors hold (#158).
-    fn extent_data(&self, e: &DataExtent) -> Result<Vec<u8>> {
+    /// unwritten extent's are zeros, whatever its sectors hold (#158). `k`
+    /// is the key it is in, whose version is part of an encrypted extent's
+    /// nonce.
+    fn extent_data(&self, k: &Bkey, e: &DataExtent) -> Result<Vec<u8>> {
         e.ptr.check(self.dev_idx, self.pointer_gen(e)?)?;
         if e.ptr.is_unwritten() {
             let bytes = usize::try_from(e.len.saturating_mul(512))
                 .map_err(|_| Error::Corrupt(format!("an unwritten extent of {} sectors", e.len)))?;
             return Ok(vec![0; bytes]);
         }
-        extent_bytes(e, self.dev.size_bytes(), |at, buf| {
+        let decrypt = self.key.as_ref().map(|key| Decrypt {
+            key,
+            version_hi: k.version_hi,
+            version_lo: k.version_lo,
+        });
+        extent_bytes(e, decrypt, self.dev.size_bytes(), |at, buf| {
             Ok(self.dev.read_at(at, buf)?)
         })
     }
+}
+
+/// What decrypts the data extents of an encrypted filesystem: its master
+/// key, and the version of the key an extent is in.
+#[derive(Clone, Copy)]
+pub(crate) struct Decrypt<'a> {
+    pub key: &'a crate::crypt::MasterKey,
+    pub version_hi: u32,
+    pub version_lo: u64,
 }
 
 /// The live bytes of a data extent, read with `read(byte offset, buffer)`:
@@ -855,11 +874,48 @@ impl<D: BlockRead> Filesystem<D> {
 /// allocated for them: an extent with no checksum entry is read by the
 /// key's own size, up to 2 TiB, and a buffer that size aborts the process
 /// (#151).
+///
+/// In an encrypted filesystem, `decrypt` carries its key: the stored bytes
+/// are authenticated by their MAC and decrypted before anything else is
+/// done with them (S1 9.1.4: every data pointer of an encrypted filesystem
+/// carries a nonce and a MAC), and an extent without one is refused. Only
+/// an extent whose whole data is live has been observed encrypted; one
+/// partly overwritten is refused (#275).
 pub(crate) fn extent_bytes(
     e: &DataExtent,
+    decrypt: Option<Decrypt<'_>>,
     dev_bytes: u64,
     read: impl Fn(u64, &mut [u8]) -> Result<()>,
 ) -> Result<Vec<u8>> {
+    // Its checksum is a MAC, of 80 bits or of 128 (S1 9.1.4.3).
+    let encrypted = e.crc.is_some_and(|c| {
+        c.csum_type == crate::crypt::CSUM_CHACHA20_POLY1305_80
+            || c.csum_type == crate::crypt::CSUM_CHACHA20_POLY1305_128
+    });
+    match (encrypted, decrypt) {
+        (false, None) | (true, Some(_)) => {}
+        (false, Some(_)) => {
+            return Err(Error::Corrupt(format!(
+                "an extent at sector {} with no MAC in an encrypted filesystem",
+                e.ptr.offset
+            )))
+        }
+        (true, None) => {
+            return Err(Error::Unsupported(format!(
+                "an encrypted extent at sector {}, and no master key to decrypt it",
+                e.ptr.offset
+            )))
+        }
+    }
+    if let (Some(c), Some(_)) = (e.crc, decrypt) {
+        if e.skip != 0 || e.len != u64::from(c.uncompressed_size) {
+            return Err(Error::Unsupported(format!(
+                "an encrypted extent at sector {} of which {} of {} sectors from sector {} are \
+                 live: a partly overwritten encrypted extent has not been observed",
+                e.ptr.offset, e.len, c.uncompressed_size, e.skip
+            )));
+        }
+    }
     let stored_sectors = match e.crc {
         Some(c) => c.compressed_size as u64,
         None => e.len,
@@ -878,20 +934,26 @@ pub(crate) fn extent_bytes(
     let Some(crc) = e.crc else {
         return Ok(raw);
     };
-    if !crate::csum::is_known(crc.csum_type) {
-        return Err(Error::Unsupported(format!(
-            "data checksum type {}",
-            crc.csum_type
-        )));
+    if let Some(d) = decrypt {
+        crate::crypt::decrypt_extent(d.key, &crc, d.version_hi, d.version_lo, &mut raw)?;
+    } else {
+        if !crate::csum::is_known(crc.csum_type) {
+            return Err(Error::Unsupported(format!(
+                "data checksum type {}",
+                crc.csum_type
+            )));
+        }
+        // 32- and 64-bit checksums live entirely in the low word; the
+        // high bits are only used by MACs, which crate::crypt checks.
+        let stored = crc.csum_lo;
+        crate::csum::verify(crc.csum_type, &raw, stored).map_err(|computed| {
+            Error::BadChecksum {
+                what: "extent data",
+                stored,
+                computed,
+            }
+        })?;
     }
-    // 32- and 64-bit checksums live entirely in the low word; the
-    // high bits are only used by 128-bit MACs, which are not read here.
-    let stored = crc.csum_lo;
-    crate::csum::verify(crc.csum_type, &raw, stored).map_err(|computed| Error::BadChecksum {
-        what: "extent data",
-        stored,
-        computed,
-    })?;
     let plain = match crc.compression_type {
         compression::NONE | compression::INCOMPRESSIBLE => raw,
         t => crate::compress::decompress(t, &raw, crc.uncompressed_size as usize * 512)?,
