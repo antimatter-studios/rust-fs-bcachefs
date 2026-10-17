@@ -173,6 +173,83 @@ fn reference_mount_reads(img: &Path, files: &[(&str, &[u8])]) -> bool {
     read.is_ok()
 }
 
+/// The installed command's two spellings use the library writer; only the
+/// black-box reference tools judge the resulting bytes and metadata.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_write_and_put_are_read_by_the_reference() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    for verb in ["write", "put"] {
+        for journal in [false, true] {
+            let img = scratch("write-study/base.img", &format!("cli-{verb}-{journal}"));
+            let data = pattern(200_003, 23);
+            let input = img.with_extension("input");
+            std::fs::write(&input, &data).unwrap();
+            for (name, from_file, bytes) in [
+                ("cli-stdin", false, data.as_slice()),
+                ("existing", true, data.as_slice()),
+                ("cli-empty", false, &[][..]),
+            ] {
+                let mut cmd = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"));
+                cmd.arg("fs").arg(&*img).arg(verb).arg(format!("/d/{name}"));
+                cmd.args(["--mode", "640"]);
+                if journal {
+                    cmd.arg("--journal");
+                }
+                if from_file {
+                    cmd.arg("--from").arg(&input);
+                }
+                let mut child = cmd
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let mut stdin = child.stdin.take().unwrap();
+                if !from_file {
+                    stdin.write_all(bytes).unwrap();
+                }
+                drop(stdin);
+                let out = child.wait_with_output().unwrap();
+                assert!(
+                    out.status.success(),
+                    "{verb}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            assert_fsck_clean(&img);
+            if journal {
+                // Apply the journal before asking the on-disk lister to
+                // inspect it, as the continued-journal oracle does.
+                let (ok, text) = reference(&["fsck", "-y", img.to_str().unwrap()]);
+                assert!(ok, "the reference replay failed:\n{text}");
+            }
+            let (ok, listing) = reference(&["list", "-b", "dirents", img.to_str().unwrap()]);
+            assert!(
+                ok && listing.contains("cli-stdin") && listing.contains("cli-empty"),
+                "the reference lister: {listing}"
+            );
+            with_reference_mount(&img, |m| {
+                assert_eq!(std::fs::read(m.join("d/cli-stdin")).unwrap(), data);
+                assert_eq!(std::fs::read(m.join("d/existing")).unwrap(), data);
+                assert!(std::fs::read(m.join("d/cli-empty")).unwrap().is_empty());
+                assert_eq!(
+                    std::fs::metadata(m.join("d/cli-stdin"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o7777,
+                    0o640
+                );
+            });
+            assert_fsck_clean(&img);
+        }
+    }
+}
+
 /// Re-stating the newest key of a btree changes nothing a reader can see,
 /// but exercises the whole write path: a bset appended to the leaf, the new
 /// length carried to the root and the superblock rewritten.

@@ -189,7 +189,8 @@ tasks:
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # #247 adds that oracle case and one live-reference comparison.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 321'
+      # #293 adds one mandatory CLI write test against the live reference.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 322'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -205,11 +206,13 @@ tasks:
   # remaining refusals 53, write-readback refusals 4 and generated docs 16.
   # The existing floor rises by that count; CI records the full measurement.
   # Each test file prints three lines; the extra docs file fits the budget.
+  # #293 adds 300 checks: 40 successful-write checks, 240 refusal checks,
+  # and 20 generated-documentation checks. One new file adds three lines.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 28 1100 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3595'
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 31 1250 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 3895'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
