@@ -89,6 +89,31 @@ collected JSON array (or `--text` lines) on stdout and the bound or path in
 the stderr error. A missing starting path prints no report. Bounds accept
 zero and require `--recursive` on `ls`; an empty directory fits zero bounds.
 
+## One path's metadata
+
+```sh
+fs.bcachefs disk.img stat /etc/hostname
+fs.bcachefs disk.img stat --text /var/log
+```
+
+`stat PATH` reports one path without following it when it is a symlink.
+The shared keys come first, in this order: `path`, `inode`, `type`, `mode`,
+`uid`, `gid`, `nlink`, `size`, `allocated_bytes`, then `atime`, `mtime`,
+`ctime` and `btime` (the creation time) as signed seconds since the epoch,
+each with `*_nsec` beside it. `type` is `file`, `dir`, `symlink`, `char`,
+`block`, `fifo` or `socket`. A symlink adds `target`; a device node adds
+`major` and `minor`, null because the device number's encoding has not been
+observed. A non-UTF-8 path is resolved as bytes and adds `path_hex`; paths
+inside subvolumes and snapshots resolve as `ls -R` walks them.
+
+The `bcachefs` object holds `snapshot`, `sectors`, `flags` (by name, with
+any unnamed bits as one hex value), `generation`, and the inode's
+`data_checksum`, `compression` and `background_compression` options (null
+when it carries none). A missing path is exit 1 with the shared stderr
+error. Compatibility change: the earlier `ino`, `sectors` and
+`atime_ns`/`mtime_ns`/`ctime_ns` keys are gone; `inode`, `bcachefs.sectors`
+and the seconds plus nanoseconds replace them.
+
 ## Reading files
 
 `fs.bcachefs` reads an image or device directly, without mounting it:
