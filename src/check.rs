@@ -1581,6 +1581,33 @@ mod tests {
     }
 
     #[test]
+    fn an_inode_key_with_a_nonzero_inode_position_is_named() {
+        // Run 39018152705, seed 1659490 (#255): the reference rejects
+        // inode_v3 at U64_MAX:2147483849:U32_MAX, leaving its value intact.
+        for inode in [0, 1, u64::MAX] {
+            let mut k = key(key_type::INODE_V3, 2147483849, Vec::new());
+            k.pos.inode = inode;
+            k.pos.snapshot = u32::MAX;
+            let mut report = Report::default();
+            check_key_fields(btree_id::INODES, &k, &mut report);
+            if inode == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "inode_pos_inode_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::DIRENTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+            k.key_type = key_type::DIRENT;
+            check_key_fields(btree_id::INODES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
     fn each_broken_snapshot_link_is_named() {
         let parents = [(100, 0), (99, 100)];
         let snaps = |skip: u32| [(100, snapshot(1, [0; 3])), (99, snapshot(1, [skip, 0, 0]))];
