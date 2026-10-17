@@ -37,7 +37,9 @@
 //! ```
 
 use crate::error::{Error, Result};
-use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use chacha20::cipher::{
+    consts::U10, KeyIvInit, StreamCipher, StreamCipherCore, StreamCipherSeek, StreamCipherSeekCore,
+};
 use poly1305::universal_hash::KeyInit;
 
 /// The key magic: the bytes "bch**key". OBSERVED at bytes 16..24 of the
@@ -160,7 +162,8 @@ impl MasterKey {
     /// been observed.
     pub fn apply(&self, nonce: Nonce, data: &mut [u8]) -> Result<()> {
         let blocks = (data.len() as u64).div_ceil(64);
-        if u64::from(nonce[0]) + blocks > 1 << 32 {
+        let end = u64::from(nonce[0]) + blocks;
+        if end > 1 << 32 {
             return Err(Error::Unsupported(format!(
                 "{} bytes from ChaCha20 block {:#x} run past its 32-bit block counter",
                 data.len(),
@@ -174,7 +177,29 @@ impl MasterKey {
         let mut c = chacha20::ChaCha20::new((&self.0).into(), (&iv).into());
         let out_of_range = |_| Error::Unsupported("ChaCha20 keystream out of range".into());
         c.try_seek(u64::from(nonce[0]) * 64).map_err(out_of_range)?;
-        c.try_apply_keystream(data).map_err(out_of_range)
+
+        // RustCrypto's slice wrapper reserves block u32::MAX so its cursor
+        // cannot wrap. Our checked range may include that final block: use
+        // the wrapper for the prefix, then generate exactly one core block.
+        let final_bytes = if end == 1 << 32 {
+            (data.len() - 1) % 64 + 1
+        } else {
+            0
+        };
+        let prefix_len = data.len() - final_bytes;
+        let (prefix, tail) = data.split_at_mut(prefix_len);
+        c.try_apply_keystream(prefix).map_err(out_of_range)?;
+        if !tail.is_empty() {
+            let mut core = chacha20::ChaChaCore::<U10>::new((&self.0).into(), (&iv).into());
+            core.set_block_pos(u32::MAX);
+            let mut block = Default::default();
+            core.write_keystream_block(&mut block);
+            for (byte, key) in tail.iter_mut().zip(block) {
+                *byte ^= key;
+            }
+            // Drop the core here; its wrapped counter must never be used.
+        }
+        Ok(())
     }
 
     /// The Poly1305 key for `nonce`: the first 32 keystream bytes of

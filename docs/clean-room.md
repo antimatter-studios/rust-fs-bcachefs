@@ -37,6 +37,7 @@ be learned this way is an **open question**, not a guess.
 | S10 | The package repository index at https://apt.bcachefs.org/ and its `Packages` metadata (package names, versions, dependencies), fetched 2026-10-07 | metadata | That the reference kernel module is packaged for DKMS and needs kernel headers 6.16 or newer, and (fetched again 2026-10-09) that the `trixie` suite carries `bcachefs-kernel-dkms` 1:1.39.7, the tools' pinned version. Since #110 a Debian 13 container on the CI runner installs that package, as an oracle at arm's length: DKMS builds the module in the container, which is discarded with its source, and the module runs in a VM QEMU boots there (`scripts/kernel-oracle.sh`). No package was opened on a workstation. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
 | S11 | Y. Nir and A. Langley, "ChaCha20 and Poly1305 for IETF Protocols", RFC 8439 (2018), https://www.rfc-editor.org/rfc/rfc8439 | public specification | The ChaCha20 state (constants, key, 32-bit block counter in word 12, 96-bit nonce in words 13..15), the Poly1305 MAC, and its one-time key as the first 32 bytes of a ChaCha20 block; test vectors 2.4.2 and 2.6.2 anchor `src/crypt.rs`. See "Encryption: btree nodes". |
+| S12 | OpenSSL 3.6.5 (2026-09-29), `enc -chacha20`, run 2026-10-17 | independent cipher oracle | The final two ChaCha20 blocks for a zero key and IV `feffffff4433221188776655ccbbaa99`, encrypting 128 zero bytes, anchor the counter-boundary regression in `src/crypt.rs` (#318). Only cipher output was used; no filesystem format fact was inferred. |
 
 ## The specification's own licence
 
@@ -395,6 +396,16 @@ all eight fixture sets.
   ChaCha20 block (2.6). The implementations are RustCrypto's `chacha20`
   and `poly1305` crates (MIT OR Apache-2.0), checked against RFC 8439's
   vectors 2.4.2 and 2.6.2 in `src/crypt.rs`.
+- The counter boundary (#318) is checked against OpenSSL (S12): with a
+  zero key, IV `feffffff4433221188776655ccbbaa99`, and 128 zero input
+  bytes, the first block starts at counter `0xffff_fffe` and the second
+  at `0xffff_ffff`; all three nonce words are nonzero. The regression
+  checks full and partial blocks, XOR with nonzero input, and refusal
+  without changing input when a request exceeds that range. RustCrypto
+  0.9.1's slice wrapper reserves the final block; the reader generates
+  that block once through its core after checking the complete range,
+  then discards the core. This uses S11's cipher without establishing
+  anything about filesystem counter wrap or carry.
 - Everything below is S4: candidate computations over `encrypted.img` (the
   fixtures artifact of CI run 39021762764, 2026-10-17), with the master key
   read from its crypt field, by a scratch program outside this repository
