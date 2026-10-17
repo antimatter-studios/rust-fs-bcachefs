@@ -163,7 +163,8 @@ tasks:
       # #262 adds one journal-length oracle case.
       # #329 adds two encrypted-compressed fixture oracle cases.
       # #334 adds two encrypted wide_macs fixture oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 238'
+      # #337 adds two encrypted unclean fixture oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 240'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -235,7 +236,8 @@ tasks:
       # #262 adds one unit, one host and one live-reference case.
       # #329 adds two encrypted-compressed fixture oracle cases.
       # #334 adds two encrypted wide_macs fixture oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 370'
+      # #337 adds two encrypted unclean fixture oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 372'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
