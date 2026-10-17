@@ -173,6 +173,12 @@ jobs:
           cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_aged_1659486_xattr_size_mismatch_is_reported -- --show-output 2>&1 | tee "$RUNNER_TEMP/xattr258.log"
           grep -q '^test the_aged_1659486_xattr_size_mismatch_is_reported \.\.\. ok$' "$RUNNER_TEMP/xattr258.log"
           grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/xattr258.log"
+      - name: The exact aged-unclean journal length mismatch is reported (#262)
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_aged_unclean_1659479_journal_length_mismatch_is_reported -- --show-output 2>&1 | tee "$RUNNER_TEMP/journal262.log"
+          grep -q '^test the_aged_unclean_1659479_journal_length_mismatch_is_reported \.\.\. ok$' "$RUNNER_TEMP/journal262.log"
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/journal262.log"
       - name: An unused malformed superblock copy agrees with the reference (#261)
         run: |
           set -euo pipefail

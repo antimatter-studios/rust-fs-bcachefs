@@ -115,7 +115,8 @@ tasks:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 70'
+      # #262 adds one journal-length unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 71'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
@@ -144,7 +145,8 @@ tasks:
       # #271 adds two encrypted-node oracle cases.
       # #272 adds four encrypted-extent oracle cases.
       # #261 adds one selected-copy optional-field regression.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 230'
+      # #262 adds one journal-length oracle case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 231'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -208,7 +210,8 @@ tasks:
       # #272 adds four encrypted-extent unit cases and four oracle cases.
       # #251 adds the CLI stat against the reference mount's lstat.
       # #261 adds one host case and one independent reference case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 350'
+      # #262 adds one unit, one host and one live-reference case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 353'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -341,7 +344,8 @@ tasks:
       # #271's eleven encrypted-node cases run here.
       # #272's eight encrypted-extent cases run here.
       # #261's host optional-field regression also runs here.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 164'
+      # #262 adds one unit and one host oracle case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 166'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
