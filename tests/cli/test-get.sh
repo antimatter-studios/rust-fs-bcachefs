@@ -3,11 +3,14 @@
 # shellcheck disable=SC2016 # Dollar names in single quotes are jq variables.
 source "$(dirname "$0")/lib.sh"
 
-for set in default lz4 zstd gzip nocsum xxhash crc64 block4k aged write-study/base; do
+for set in default lz4 zstd gzip nocsum xxhash crc64 block4k labeled aged write-study/base; do
     need_fixture "$set"
     img="$FIXTURES/$set.img"
     check "$set: VM property oracle exists" python3 "$REPO/tests/cli/get-oracle.py" \
         "$FIXTURES/$set" >"$SANDBOX/want.json"
+    if [ "$set" = labeled ]; then
+        check "the labeled fixture has a filesystem label" jq -e '.label == "PROPERTIES"' "$SANDBOX/want.json" >/dev/null
+    fi
     for verb in get info; do
         fs.bcachefs "$img" "$verb" >"$SANDBOX/got.json" 2>"$SANDBOX/err"
         check "$set: $verb succeeds" test $? -eq 0
