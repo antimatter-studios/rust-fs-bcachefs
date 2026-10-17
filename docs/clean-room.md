@@ -36,6 +36,8 @@ be learned this way is an **open question**, not a guess.
 | S9 | J.-P. Aumasson and D. J. Bernstein, "SipHash: a fast short-input PRF" (2012), https://www.aumasson.jp/siphash/siphash.pdf, and its published test vector | prose documentation | The SipHash-2-4 algorithm `src/siphash.rs` is written from. |
 | S10 | The package repository index at https://apt.bcachefs.org/ and its `Packages` metadata (package names, versions, dependencies), fetched 2026-10-07 | metadata | That the reference kernel module is packaged for DKMS and needs kernel headers 6.16 or newer, and (fetched again 2026-10-09) that the `trixie` suite carries `bcachefs-kernel-dkms` 1:1.39.7, the tools' pinned version. Since #110 a Debian 13 container on the CI runner installs that package, as an oracle at arm's length: DKMS builds the module in the container, which is discarded with its source, and the module runs in a VM QEMU boots there (`scripts/kernel-oracle.sh`). No package was opened on a workstation. |
 | S7 | `bcachefs-tools` GitHub API metadata (tag list, `Cargo.toml` `rust-version` field only) | metadata | Which release to pin (v1.39.7) and the minimum Rust to build it with in the VM. No source file was opened. |
+| S11 | Y. Nir and A. Langley, "ChaCha20 and Poly1305 for IETF Protocols", RFC 8439 (2018), https://www.rfc-editor.org/rfc/rfc8439 | public specification | The ChaCha20 state (constants, key, 32-bit block counter in word 12, 96-bit nonce in words 13..15), the Poly1305 MAC, and its one-time key as the first 32 bytes of a ChaCha20 block; test vectors 2.4.2 and 2.6.2 anchor `src/crypt.rs`. See "Encryption: btree nodes". |
+| S12 | OpenSSL 3.6.5 (2026-09-29), `enc -chacha20`, run 2026-10-17 | independent cipher oracle | The final two ChaCha20 blocks for a zero key and IV `feffffff4433221188776655ccbbaa99`, encrypting 128 zero bytes, anchor the counter-boundary regression in `src/crypt.rs` (#318). Only cipher output was used; no filesystem format fact was inferred. |
 
 ## The specification's own licence
 
@@ -324,9 +326,11 @@ all eight fixture sets.
 - Encryption: the formatter's `--encrypted --no_passphrase` adds a `crypt`
   field (type 2, S1's field order; the printer's `Sections` line) and the
   btree nodes no longer parse (S3, S4). The reader reads the field (see
-  "Encryption: the crypt field" below) and refuses any image with it,
-  naming whether a passphrase seals the master key (#270). Key derivation
-  and nonces remain open question 6.
+  "Encryption: the crypt field" below) and refuses to open any image with
+  it, naming whether a passphrase seals the master key (#270). With an
+  unsealed key its btree nodes are decrypted and read (#271, "Encryption:
+  btree nodes"); its data, and passphrase unsealing, remain open question
+  6.
 - Multiple devices: each member's superblock carries `nr_devices` 2 (the
   printer's `Devices`, checked); the reader refuses it.
 
@@ -353,7 +357,8 @@ all eight fixture sets.
   24..56 are 32 bytes of no evident structure. Taken together with the
   help's "stored unencrypted", bytes 16..24 are the magic S1 describes and
   24..56 the master key, both in the clear. That those 32 bytes are the
-  key is not yet established by decrypting anything with them (#271).
+  key is established by decrypting every btree node with them (#271, see
+  "Encryption: btree nodes" below).
 - `encrypted-passphrase` (S3, S4, the fixtures artifact of CI run
   39021762764, 2026-10-17): the formatter exited 0, but wrote only its
   initial superblocks: the three copies carry seq 0 and four fields
@@ -377,6 +382,95 @@ all eight fixture sets.
   has not been observed and is refused. Checked by
   `tests/oracle_refused.rs` on both images, against the printer: it reads
   the unsealed one and refuses the sealed one for want of a passphrase.
+
+### Encryption: btree nodes (`src/crypt.rs`, `src/btree.rs`) -- documented scheme, observed layout
+
+- S1 (2.1.2, 9.1.4) gives the scheme in prose: ChaCha20 under the master
+  key with a 128-bit nonce, separate domain separators for data and for
+  the Poly1305 key (`BCH_NONCE_EXTENT`, `BCH_NONCE_POLY`; no values), a
+  Poly1305 MAC stored where a checksum would be, 128 bits for metadata,
+  and all metadata but the superblock encrypted and authenticated. It
+  says nothing of how a btree node's nonce is made or which of its bytes
+  are encrypted. The ciphers are RFC 8439's (S11): ChaCha20 (2.3, 2.4), the
+  Poly1305 MAC (2.5) and its one-time key, the first 32 bytes of a
+  ChaCha20 block (2.6). The implementations are RustCrypto's `chacha20`
+  and `poly1305` crates (MIT OR Apache-2.0), checked against RFC 8439's
+  vectors 2.4.2 and 2.6.2 in `src/crypt.rs`.
+- The counter boundary (#318) is checked against OpenSSL (S12): with a
+  zero key, IV `feffffff4433221188776655ccbbaa99`, and 128 zero input
+  bytes, the first block starts at counter `0xffff_fffe` and the second
+  at `0xffff_ffff`; all three nonce words are nonzero. The regression
+  checks full and partial blocks, XOR with nonzero input, and refusal
+  without changing input when a request exceeds that range. RustCrypto
+  0.9.1's slice wrapper reserves the final block; the reader generates
+  that block once through its core after checking the complete range,
+  then discards the core. This uses S11's cipher without establishing
+  anything about filesystem counter wrap or carry.
+- Everything below is S4: candidate computations over `encrypted.img` (the
+  fixtures artifact of CI run 39021762764, 2026-10-17), with the master key
+  read from its crypt field, by a scratch program outside this repository
+  that walked every node from the clean field's roots: 33 nodes, 192
+  records (14 btrees have a root; 9 nodes hold no keys in their first
+  record). A candidate was kept only where it reproduced the stored
+  128-bit MAC of every record, or decrypted a header to the bounds its
+  parent's pointer names. A wrong candidate matches a 128-bit MAC by
+  chance with probability 2^-128.
+- **In the clear**: the magic (bytes 16..24) of every node, which matches
+  the unencrypted formula above; and every bset header, whose seq equals
+  the parent pointer's, whose journal sequence numbers run 0..0x2b, and
+  whose checksum type is 4 on all 192. S1's metadata MAC is 128 bits, so
+  type 4 is read as ChaCha20/Poly1305 with a 128-bit MAC; no other type
+  has been seen in a node and none is read as a MAC.
+- **The nonce** is four little-endian u32 words loaded into ChaCha20's
+  state words 12..15, word 0 being RFC 8439's 32-bit block counter: word 0
+  the record's byte offset in the node (0 for the first record; 512 to
+  28160 for the 159 later ones), words 1..2 the node's seq (low half
+  first; the seqs are random 64-bit values), word 3 `0x2000_0000` XOR the
+  bset's journal sequence number. Established by the MAC (next item): with
+  word 0 any other candidate (the sector, the block) the later records'
+  MACs do not reproduce, and without the journal sequence number only the
+  33 first records' do (their journal sequence numbers are 0).
+- **The MAC** is the record's first 16 bytes. It is Poly1305 over the
+  record from byte 16 to the end of its keys, as stored (ciphertext, and
+  the magic or the bset header in the clear), keyed with the first 32
+  keystream bytes of the record's nonce with `0x8000_0000` XORed into word
+  3. Of the 16 x 16 candidates `k << 28` for the data nonce's top nibble
+  and `m << 28` for the Poly1305 key's, every pair with `k ^ m = 0xa`
+  reproduces all 192 MACs (only the Poly1305 nonce enters the MAC) and no
+  other pair reproduces any; `k` is then fixed by decryption.
+- **The header**: bytes 24..136 (flags, min and max key, the 8 unread
+  bytes, the key format) are encrypted with the first record's keystream
+  from its start. Known plaintext fixed it: XORing bytes 32..72 with the
+  min and max keys the parent's pointer names (the root key's position,
+  for a root) gives keystream bytes 8..48 of the nonce with `k = 2` on all
+  33 nodes, and with no other of the 16 values of `k`, at no offset in its
+  first 4096 bytes. The decrypted flags name the btree id and level the
+  parent says, on all 33.
+- **The keys**: the first record's keys are encrypted with the same
+  keystream from byte 128 (the 64-byte block after the header's 112
+  bytes); a later record's keys from byte 0 of its own nonce's keystream.
+  Every one of the 24 first records with keys, and the 159 later ones,
+  decodes at that offset to keys that are well-formed, in order and
+  inside the node's bounds (as the reader decodes them). The interior
+  nodes' keys are the child pointers the walk followed.
+- What is not observed, and refused rather than guessed: a journal
+  sequence number of 2^28 or more (how its high bits share word 3 with the
+  domain separator), a keystream running past the 32-bit block counter
+  (whether it wraps or carries), and a node's MAC of any other width.
+- The reader verifies each record's MAC before decrypting it, and refuses
+  a record whose MAC does not reproduce as a bad checksum naming the MAC.
+  With a master key it also refuses a node or bset that carries a checksum
+  instead of a MAC: S1 (2.1.2) says all metadata is authenticated.
+- Checked: `tests/oracle_encrypted.rs` lists every btree of `encrypted.img`
+  key for key (type, position, size, in order) against the reference
+  lister, which decrypts it with the same key, and refuses the image with
+  one byte of a node changed. `src/btree.rs`'s unit tests read one real
+  node of it (`tests/data/encrypted-backpointers-root-39021762764.bin`,
+  two records, both kinds) and refuse it with a byte changed, without its
+  key, and with another key. On the same image the scratch program's walk
+  of inodes and dirents gave the same positions and sizes as the reference
+  lister's listing of `default`, formatted from the same tree; its extents
+  differ only where three extents were split at a bucket boundary.
 ### What each write changes (the write study, `fixtures/write-study`, S8)
 
 Each pair is the same settled base image before and after one operation
@@ -777,7 +871,9 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    plaintext: #159, broken down into #270 to #277. The crypt field's
    layout is observed (#270, "Encryption: the crypt field" above); the
    scrypt parameters' place in it, the salt and how the master key is
-   sealed are #273's, learned from `encrypted-passphrase`.
+   sealed are #273's, learned from `encrypted-passphrase`. The btree
+   nodes' nonce, MAC and encrypted bytes are observed (#271, "Encryption:
+   btree nodes" above); the data extents' nonce is #272's.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`

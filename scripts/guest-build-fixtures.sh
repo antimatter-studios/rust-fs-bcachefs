@@ -625,12 +625,22 @@ for i in 0 1 2; do rm -f "$ROOT$ec-$i.img"; done
 # THE REFUSED SETS: what this reader must recognise and refuse with a clear
 # error rather than misread. An encrypted filesystem (its master key stored
 # unencrypted, so no passphrase is involved), and both members of a
-# two-device filesystem. Only the superblock printer's view is recorded.
+# two-device filesystem. The superblock printer's view of each is recorded.
 step "encrypted (--encrypted --no_passphrase)"
 truncate -s 64M "$out/encrypted.img"
 bcachefs-ref format -q --encrypted --no_passphrase --source="${src#"$ROOT"}" "$out/encrypted.img" \
     > "$out/encrypted.format.txt" 2>&1
 bcachefs-ref show-super "$out/encrypted.img" > "$out/encrypted.super.txt" 2>&1
+# Every btree of the unsealed image, as the reference lister reads it once
+# it has decrypted the nodes (#271): tests/oracle_encrypted.rs reads the
+# same keys. A lister that fails is recorded, not fatal here; the test fails
+# printing what it said.
+for b in extents inodes dirents xattrs alloc quotas stripes reflink subvolumes \
+    snapshots lru freespace need_discard backpointers bucket_gens snapshot_trees \
+    deleted_inodes logged_ops reconcile_work subvolume_children accounting; do
+    bcachefs-ref list -b "$b" "$out/encrypted.img" > "$out/encrypted.$b.txt" 2>&1 ||
+        echo "list: exit $?" >> "$out/encrypted.$b.txt"
+done
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
