@@ -175,6 +175,33 @@ fn reference_mount_reads(img: &Path, files: &[(&str, &[u8])]) -> bool {
     read.is_ok()
 }
 
+/// `fs.bcachefs stat` reports what the reference mount's own lstat reports,
+/// for every path of the kernel-made tree, subvolumes and snapshots among
+/// them, and for a name that is not UTF-8 (tests/cli/stat-oracle.py).
+#[cfg(feature = "cli")]
+#[test]
+fn cli_stat_reports_what_the_reference_mount_reports() {
+    let img = scratch("kernel.img", "stat");
+    let mut writer = Writer::open(FileDevice::open_rw(&*img).unwrap()).unwrap();
+    writer.symlink(4096, b"raw-\xff", b"absent").unwrap();
+    drop(writer);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli/stat-oracle.py");
+    with_reference_mount(&img, |m| {
+        let out = Command::new("python3")
+            .arg(&script)
+            .arg(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+            .arg(&*img)
+            .arg(m)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
+}
+
 /// Recursive CLI output is judged by FUSE's find and the reference lister.
 #[cfg(feature = "cli")]
 #[test]
