@@ -197,6 +197,7 @@ sets=(
     "xxhash|--data_checksum=xxhash --metadata_checksum=xxhash"
     "crc64|--data_checksum=crc64 --metadata_checksum=crc64"
     "block4k|--block_size=4096"
+    "labeled|--fs_label=PROPERTIES"
     # Names hashed with crc32c instead of SipHash (S1 7.7): the reader must
     # still find every name (by scanning), the writer must refuse to place
     # one, and the lister's `hash_type=` pairs the number with the name.
@@ -221,7 +222,7 @@ for entry in "${sets[@]}"; do
     bcachefs-ref format -q $opts --source="${src#"$ROOT"}" "$img" > "$out/$name.format.txt" 2>&1
     manifest "$src" "$out/$name.json"
     bcachefs-ref show-super "$img" > "$out/$name.super.txt" 2>&1
-    for b in inodes dirents extents; do
+    for b in inodes dirents extents freespace; do
         bcachefs-ref list -b "$b" "$img" > "$out/$name.$b.txt" 2>&1
     done
     if ! bcachefs-ref fsck -n "$img" > "$out/$name.fsck.txt" 2>&1; then
@@ -383,8 +384,11 @@ grep -q '^Clean: *1' "$out/aged.super.txt" || {
     exit 1
 }
 bcachefs-ref list -b xattrs "$img" > "$out/aged.xattrs.txt" 2>&1
-for b in inodes dirents extents; do
+for b in inodes dirents extents freespace; do
     bcachefs-ref list -b "$b" "$img" > "$out/aged.$b.txt" 2>&1
+done
+# The packed key formats of the btrees tests/oracle_formats.rs reads (#82).
+for b in inodes dirents extents; do
     bcachefs-ref list -b "$b" -m formats "$img" > "$out/aged.$b.formats.txt" 2>&1
 done
 if ! bcachefs-ref fsck -n "$img" > "$out/aged.fsck.txt" 2>&1; then
