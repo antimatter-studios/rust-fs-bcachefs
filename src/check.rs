@@ -1522,6 +1522,29 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_key_with_a_nonzero_inode_is_named() {
+        // Reference run 39018152705 rejects the root snapshot at
+        // U64_MAX:U32_MAX:0 as snapshot_pos_bad (#253).
+        for inode in [0, 1, u64::MAX] {
+            let mut k = key(KEY_SNAPSHOT, u64::from(u32::MAX), snapshot(1, [0; 3]));
+            k.pos.inode = inode;
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOTS, &k, &mut report);
+            if inode == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "snapshot_pos_bad");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
     fn each_broken_snapshot_link_is_named() {
         let parents = [(100, 0), (99, 100)];
         let snaps = |skip: u32| [(100, snapshot(1, [0; 3])), (99, snapshot(1, [skip, 0, 0]))];

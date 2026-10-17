@@ -31,9 +31,11 @@ use fs_core::FileDevice;
 /// Btrees and key types by number, in the Principles of Operation's list
 /// order (S1 11.3, 11.5).
 const SUBVOLUMES: u8 = 8;
+const SNAPSHOTS: u8 = 9;
 const SNAPSHOT_TREES: u8 = 15;
 const ACCOUNTING: u8 = 20;
 const SUBVOLUME: u8 = 21;
+const SNAPSHOT: u8 = 22;
 const SNAPSHOT_TREE: u8 = 31;
 const ACCOUNTING_KEY: u8 = 34;
 /// An accounting key's kind, the top byte of its position's inode: the
@@ -113,6 +115,22 @@ fn a_subvolume_at_inode_u64_max_is_refused() {
     let to_max = |k: &mut Bkey| k.pos.inode = u64::MAX;
     let kind = "subvol_pos_bad";
     refused("kernel-rootsnap", SUBVOLUMES, SUBVOLUME, any, to_max, kind);
+}
+
+/// Run 39018152705, default/block4k seed 1659458: the reference
+/// rejects the root snapshot at U64_MAX:U32_MAX:0 as snapshot_pos_bad.
+#[test]
+fn a_snapshot_at_inode_u64_max_is_refused() {
+    for set in ["default", "block4k"] {
+        refused(
+            set,
+            SNAPSHOTS,
+            SNAPSHOT,
+            |k| k.pos.inode == 0 && k.pos.offset == u64::from(u32::MAX),
+            |k| k.pos.inode = u64::MAX,
+            "snapshot_pos_bad",
+        );
+    }
 }
 
 #[test]
