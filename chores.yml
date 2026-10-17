@@ -147,7 +147,8 @@ tasks:
       # #261 adds one selected-copy optional-field regression.
       # #262 adds one journal-length oracle case.
       # #329 adds two encrypted-compressed fixture oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 233'
+      # #334 adds two encrypted wide_macs fixture oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 235'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -213,7 +214,8 @@ tasks:
       # #261 adds one host case and one independent reference case.
       # #262 adds one unit, one host and one live-reference case.
       # #329 adds two encrypted-compressed fixture oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 355'
+      # #334 adds two encrypted wide_macs fixture oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 357'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
