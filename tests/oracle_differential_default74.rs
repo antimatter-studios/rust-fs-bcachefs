@@ -39,6 +39,55 @@ const COMPUTED: u64 = 0xa2f1ba7;
 const FIXTURE_DIGEST: &str =
     "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e";
 
+/// #261: the reference checker 1.39.7 accepts both of the exact reported
+/// seed-1659440 cases (exit 0), despite the primary's zero-length field.
+#[test]
+fn a_zero_length_field_in_an_unused_superblock_copy_stays_clean() {
+    assert_eq!(
+        std::fs::read_to_string(common::fixtures_dir().join("../fixtures-pin"))
+            .expect("differential.yml must fetch and verify the pinned fixtures")
+            .trim(),
+        FIXTURE_DIGEST
+    );
+    for set in ["aged-unclean", "kernel"] {
+        let base = Arc::new(std::fs::read(common::fixture(&format!("{set}.img"))).unwrap());
+        let t = targets(&base);
+        let dev = Overlay::new(Arc::clone(&base), false);
+        assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
+        let original = Superblock::read_at(&*dev, 8).unwrap();
+        let before = dev.bytes(4096, 8248);
+        assert_eq!(le32(&before, 7288), 3);
+        assert_eq!(le32(&before, 7292), 16);
+        assert_eq!(
+            apply_case(&dev, &t, 1659440),
+            "superblock at byte 4096 (8248 bytes), re-stamped"
+        );
+        let after = dev.bytes(4096, 8248);
+        let mut expected = before;
+        expected[7288..7292].fill(0);
+        assert_eq!(
+            &after[16..],
+            &expected[16..],
+            "only the field length changes"
+        );
+        assert_eq!(
+            le64(&after, 0),
+            fs_bcachefs::csum::compute(original.csum_type(), &after[16..]).unwrap()
+        );
+        assert!(Superblock::read_at(&*dev, 8)
+            .unwrap_err()
+            .to_string()
+            .contains("field at 6536 has zero length"));
+        assert_ne!(Superblock::read(&*dev).unwrap().offset, 8);
+        let report = fs_bcachefs::check::check(&*dev).unwrap();
+        assert!(
+            report.clean(),
+            "{set}: reference exit 0; {:?}",
+            report.problems
+        );
+    }
+}
+
 /// CRC-32C, the reflected Castagnoli polynomial, one bit at a time from
 /// `init`, with no final inversion.
 fn castagnoli(init: u32, data: &[u8]) -> u32 {

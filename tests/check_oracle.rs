@@ -9,6 +9,8 @@ mod backpointer;
 mod common;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
+#[path = "common/superblock_field.rs"]
+mod superblock_field;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,6 +37,66 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The chroot the reference tools live in (scripts/vm-setup.sh).
 const REF_ROOT: &str = "/srv/ref-trixie";
+
+/// #261's selected/unselected-copy controls, judged independently before
+/// comparison with this crate. Reference 1.39.7 returns exactly 0 or 1.
+#[test]
+fn the_reference_validates_only_the_selected_copys_optional_fields() {
+    let dir = ScratchDir::new("check-sb-fields");
+    assert_seen_by_reference(&dir);
+    for (name, indexes, newer, expected) in [
+        ("control", vec![], false, 0),
+        ("primary", vec![0], false, 0),
+        ("middle", vec![1], false, 0),
+        ("last", vec![2], false, 1),
+        ("newer", vec![0], true, 1),
+        ("all", vec![0, 1, 2], false, 1),
+    ] {
+        let img = dir.join(format!("{name}.img"));
+        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        let sb = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(sb.layout.sb_offsets.len(), 3);
+        for index in indexes {
+            superblock_field::zero_field_length(&img, sb.layout.sb_offsets[index], newer, true);
+        }
+        let native = Command::new("timeout")
+            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
+            .arg(&img)
+            .output()
+            .expect("chore test:vm provides the reference checker");
+        let text = String::from_utf8_lossy(&native.stdout).into_owned()
+            + &String::from_utf8_lossy(&native.stderr);
+        assert!(
+            matches!(native.status.code(), Some(0 | 1))
+                && ![
+                    ".c:",
+                    ".h:",
+                    ".rs:",
+                    "BUG",
+                    "assertion",
+                    "Assertion",
+                    "backtrace",
+                    "Backtrace",
+                    "Call Trace"
+                ]
+                .iter()
+                .any(|s| text.contains(s)),
+            "reference fault or timeout: no case details retained"
+        );
+        assert_eq!(native.status.code(), Some(expected), "{name}: {text}");
+        if expected == 1 {
+            assert!(text.contains("invalid_sb_field_size"), "{name}: {text}");
+            assert!(
+                text.contains("optional field with size 0 (type 16)"),
+                "{name}: {text}"
+            );
+        } else {
+            assert!(!text.contains("error reading superblock"), "{name}: {text}");
+        }
+        let r = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(r.clean(), expected == 0, "{name}: {:?}\n{text}", r.problems);
+    }
+}
 
 /// The reference tools' chroot sees `dir` at the same absolute path: the
 /// test runner (scripts/test-scratch-run.sh, with FLTH_GUEST=1) bind-mounts
