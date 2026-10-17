@@ -439,6 +439,18 @@ by operation (positions `inode:offset:snapshot`):
   btrees of the write-study base and of the aged image (level-1 roots)
   leaves images the reference checker passes with nothing to fix.
 
+- Selected-copy regression (#250, S3, S4, S8): on a copy of the
+  reference-made write-study base, give either backup a sequence one above
+  the primary and the distinct label `writer-selected-copy`, then recompute
+  its checksum. A second case zeros the primary's header and fields,
+  leaving the standalone layout intact. Both cases select the backup before
+  creating `/d/selected-copy.txt`; every published copy must retain its
+  sequence and label and record its own location. The guest regression
+  requires the reference checker to find nothing to fix, the reference
+  lister to name the file, and the read-only reference mount to list and
+  read both the new file and the existing file. These are black-box
+  observations using the header offsets above; no reference source is read.
+
 ### Creating a file (`Writer::create_file`) -- learned from the write study, judged
 
 - Dirent offset = SipHash-2-4 keyed `(directory's hash_seed, 0)` over the

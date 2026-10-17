@@ -30,7 +30,6 @@ mod journal_commit;
 #[path = "write_nodes.rs"]
 mod nodes;
 
-const SB_OFFSET: u64 = 4096;
 pub(crate) const SB_HEADER_BYTES: usize = 0x2f0;
 const HEADER_BSET: usize = 136;
 const BSET_HEADER: usize = 24;
@@ -79,7 +78,7 @@ fn with_sectors_written(k: &Bkey, sectors: u16) -> Result<Bkey> {
 pub struct Writer<D: BlockDevice> {
     dev: D,
     sb: Superblock,
-    /// The primary superblock's bytes, header and fields.
+    /// The selected superblock copy's bytes, header and fields.
     sb_raw: Vec<u8>,
     /// The journal sequence number new bsets carry: the one the clean
     /// field records as the last.
@@ -126,7 +125,11 @@ impl<D: BlockDevice> Writer<D> {
         }
         let len = SB_HEADER_BYTES + sb.u64s as usize * 8;
         let mut sb_raw = vec![0u8; len];
-        dev.read_at(SB_OFFSET, &mut sb_raw)?;
+        let at = sb
+            .offset
+            .checked_mul(512)
+            .ok_or_else(|| Error::Corrupt(format!("superblock sector {} overflows", sb.offset)))?;
+        dev.read_at(at, &mut sb_raw)?;
         let clean = sb
             .field(FIELD_CLEAN)
             .ok_or_else(|| Error::Corrupt("a clean filesystem with no clean field".into()))?;
