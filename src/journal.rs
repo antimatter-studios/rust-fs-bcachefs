@@ -192,7 +192,8 @@ fn scan(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<(Jset, Option<Error>
 }
 
 /// Parse one jset at the start of `b`; `None` when it is not one (wrong
-/// magic, impossible length or a checksum that does not hold).
+/// magic or a checksum that does not hold). A matching header whose length
+/// exceeds the available bucket bytes is corruption, even outside replay.
 pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
     match parse_jset_checked(b, magic)? {
         None => Ok(None),
@@ -208,13 +209,17 @@ fn parse_jset_checked(b: &[u8], magic: u64) -> Result<Option<(Jset, Option<Error
         return Ok(None);
     }
     let flags = le32(b, 36);
-    let u64s = le32(b, 40) as usize;
-    let Some(end) = u64s.checked_mul(8).and_then(|n| n.checked_add(JSET_HEADER)) else {
-        return Ok(None);
-    };
-    if end > b.len() {
-        return Ok(None);
+    let end = u64::from(le32(b, 40)) * 8 + JSET_HEADER as u64;
+    if end > b.len() as u64 {
+        // #262's black-box controls: the reference reports this before
+        // checksum validation, including in stale entries outside replay.
+        return Err(Error::Corrupt(format!(
+            "jset_past_bucket_end: journal entry seq {} too big ({end} bytes, {} available)",
+            le64(b, 24),
+            b.len()
+        )));
     }
+    let end = end as usize;
     let csum_type = (flags & 0xf) as u8;
     if !crate::csum::is_known(csum_type) {
         return Err(Error::Unsupported(format!(
@@ -301,6 +306,25 @@ fn decode_keys(b: &[u8]) -> Result<Vec<Bkey>> {
         p = end;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod length_tests {
+    use super::*;
+
+    #[test]
+    fn an_impossible_journal_length_is_not_a_missing_entry() {
+        let magic = 0x1234u64;
+        let mut b = vec![0; JSET_HEADER];
+        b[16..24].copy_from_slice(&magic.to_le_bytes());
+        b[24..32].copy_from_slice(&206u64.to_le_bytes());
+        b[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+        let e = parse_jset(&b, magic).unwrap_err().to_string();
+        assert!(e.contains("jset_past_bucket_end"), "{e}");
+        assert!(e.contains("34359738416"), "{e}");
+        b[16..24].fill(0);
+        assert!(parse_jset(&b, magic).unwrap().is_none());
+    }
 }
 
 /// What a replay of the journal adds to the btrees on disk.

@@ -121,7 +121,8 @@ tasks:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture --quiet'
       # Runs 38997027177 and 39037096192 each executed 52 unit cases.
       # #253/#254 add two, and #218's recorded-verdict regressions add two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 72'
+      # #262 adds one journal-length unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 73'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -159,7 +160,8 @@ tasks:
       # #271 adds two encrypted-node oracle cases.
       # #272 adds four encrypted-extent oracle cases.
       # #261 adds one selected-copy optional-field regression.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 233'
+      # #262 adds one journal-length oracle case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 234'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -228,7 +230,8 @@ tasks:
       # #272 adds four encrypted-extent unit cases and four oracle cases.
       # #251 adds the CLI stat against the reference mount's lstat.
       # #261 adds one host case and one independent reference case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 363'
+      # #262 adds one unit, one host and one live-reference case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 366'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -364,7 +367,8 @@ tasks:
       # #271's eleven encrypted-node cases run here.
       # #272's eight encrypted-extent cases run here.
       # #261's host optional-field regression also runs here.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 166'
+      # #262 adds one unit and one host oracle case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 168'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
