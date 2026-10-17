@@ -193,7 +193,7 @@ impl<D: BlockRead> Filesystem<D> {
     /// the first word and its root inode in the second (S3 + S4: the
     /// kernel oracle's subvolumes, against the lister's `root` and
     /// `snapshot id`).
-    fn subvolume(&self, id: u32) -> Result<Node> {
+    pub fn subvolume(&self, id: u32) -> Result<Node> {
         let mut c = match self.cursor(SUBVOLUMES) {
             Err(Error::NotFound(_)) => return Err(Error::NotFound(format!("subvolume {id}"))),
             r => r?,
@@ -492,15 +492,19 @@ impl<D: BlockRead> Filesystem<D> {
     /// parent's in the high half (S3 + S4: the kernel oracle's `sv` and
     /// `snap`, against the lister's `sv -> 1 -> 2`).
     pub fn resolve(&self, path: &str) -> Result<Node> {
+        self.resolve_bytes(path.as_bytes())
+    }
+
+    /// [`Filesystem::resolve`] for a path whose names need not be UTF-8.
+    pub fn resolve_bytes(&self, path: &[u8]) -> Result<Node> {
+        let missing = || Error::NotFound(String::from_utf8_lossy(path).into_owned());
         let mut n = self.root();
-        for part in path.split('/').filter(|p| !p.is_empty()) {
+        for part in path.split(|b| *b == b'/').filter(|p| !p.is_empty()) {
             let dir = self.inode_at(n)?;
             if !dir.is_dir() {
-                return Err(Error::NotFound(path.to_string()));
+                return Err(missing());
             }
-            let d = self
-                .find(&dir, n.snapshot, part.as_bytes())?
-                .ok_or_else(|| Error::NotFound(path.to_string()))?;
+            let d = self.find(&dir, n.snapshot, part)?.ok_or_else(missing)?;
             n = if d.d_type == DT_SUBVOL {
                 self.subvolume(d.inum as u32)?
             } else {

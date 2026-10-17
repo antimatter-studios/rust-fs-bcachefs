@@ -198,7 +198,8 @@ tasks:
       # #250 adds two host and two guest cases to the stack's 322-case floor.
       # #295 adds one mandatory offset CLI write test against the live reference.
       # #271 adds nine encrypted-node unit cases and two oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 338'
+      # #260 adds the CLI walk against the reference lister and FUSE find.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 339'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -224,11 +225,13 @@ tasks:
   # #295 adds more than 400 mandatory checks over the actual verb table,
   # malformed/range errors, four flag placements, manifest hashes and writes
   # inside a container. Its one new test file adds exactly three log lines.
+  # #260 adds 86 bounded-walk checks and four manifest comparisons. Its
+  # new CLI file adds three lines (under 150 bytes) to the tier's log.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 37 1550 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 5250'
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 40 1700 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 5340'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
