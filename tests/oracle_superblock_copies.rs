@@ -6,6 +6,8 @@
 //! says.
 
 mod common;
+#[path = "common/superblock_copy.rs"]
+mod superblock_copy;
 
 use common::fixture;
 use fs_bcachefs::check;
@@ -127,4 +129,29 @@ fn when_no_copy_reads_the_error_is_the_primarys() {
         Superblock::read(&FileDevice::open(&img).unwrap()),
         Err(fs_bcachefs::Error::BadMagic { what: "superblock" })
     ));
+}
+
+/// Nightly differential run 38878947701, aged seed 1659384: only the
+/// primary's bucket_size changed from 256 to 8448 sectors, with a valid
+/// checksum and unchanged sequence. The reference checker stayed clean.
+#[test]
+fn a_primary_bucket_size_change_at_the_same_sequence_stays_clean() {
+    let img = common::ScratchDir::new("sb-copies").into_image("bucket-size-tie.img");
+    std::fs::copy(fixture("aged.img"), &img).unwrap();
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    assert_eq!(sb.members().unwrap()[0].bucket_size, 256);
+    assert!(check::check(&dev).unwrap().clean(), "unchanged control");
+
+    superblock_copy::change_bucket_size(&img, SB_OFFSET / 512, 8448, false);
+    let dev = FileDevice::open(&img).unwrap();
+    let primary = Superblock::read_at(&dev, SB_OFFSET / 512).unwrap();
+    assert_eq!(primary.seq, sb.seq, "the mutation keeps its sequence");
+    assert_eq!(primary.members().unwrap()[0].bucket_size, 8448);
+    let report = check::check(&dev).unwrap();
+    assert!(
+        report.clean(),
+        "the reference accepts the primary-only mutation: {:?}",
+        report.problems
+    );
 }

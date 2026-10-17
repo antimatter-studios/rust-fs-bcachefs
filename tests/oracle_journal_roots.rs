@@ -95,6 +95,9 @@ fn a_superblock_root_that_names_another_btrees_node_is_read_through_the_journal(
         .expect("the subvolumes root key is in the primary superblock")
         + start;
     raw[at..at + donor.len()].copy_from_slice(&donor);
+    // Only the primary is damaged, and the later copy wins a tie on seq, so
+    // the primary is made the newest copy for the read to choose it.
+    raw[start + 0x70..start + 0x78].copy_from_slice(&(sb.seq + 1).to_le_bytes());
     let csum = fs_bcachefs::csum::compute(sb.csum_type(), &raw[start + 16..end]).unwrap();
     raw[start..start + 16].fill(0);
     raw[start..start + 8].copy_from_slice(&csum.to_le_bytes());
