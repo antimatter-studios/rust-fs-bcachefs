@@ -4,9 +4,9 @@
 use std::ffi::OsString;
 use std::io::Write;
 
-use clap::{value_parser, Arg, ArgMatches, Command as Cmd};
+use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
-use fs_bcachefs::superblock::{format_uuid, Superblock};
+use fs_bcachefs::superblock::format_uuid;
 use fs_bcachefs::Filesystem;
 use fs_core::cli::{CliError, Json, Outcome, Tool};
 use fs_core::FileDevice;
@@ -20,6 +20,16 @@ pub const TOOL: Tool = Tool {
     command,
     run,
 };
+
+const KEYS: &[&str] = &[
+    "fs",
+    "label",
+    "total_bytes",
+    "free_bytes",
+    "block_size",
+    "dirty",
+    "bcachefs",
+];
 
 fn command() -> Cmd {
     super::fs_write::subcommands(read_command())
@@ -37,7 +47,22 @@ fn read_command() -> Cmd {
         )
         .args(fs_core::cli::format_args().map(|a| a.global(true)))
         .subcommand_required(true)
-        .subcommand(Cmd::new("info").about("The superblock: identity, version, geometry"))
+        .subcommand(key_command("get"))
+        .subcommand(key_command("info"))
+        .subcommand(
+            Cmd::new("set")
+                .about("Change a property (not implemented)")
+                .arg(Arg::new("key").value_name("KEY").required(true))
+                .arg(Arg::new("value").value_name("VALUE").required(true))
+                .after_help("Example:\n  fs.bcachefs disk.img set label BACKUP\n\nAnswers not implemented (exit 3), before opening the target."),
+        )
+        .subcommand(
+            Cmd::new("resize")
+                .about("Grow or shrink the filesystem (not implemented)")
+                .arg(Arg::new("size").value_name("SIZE").required(true).allow_hyphen_values(true))
+                .arg(Arg::new("force").long("force").action(ArgAction::SetTrue).help("Do it without asking"))
+                .after_help("Example:\n  fs.bcachefs disk.img resize 20G --force\n\nAnswers not implemented (exit 3), before opening the target."),
+        )
         .subcommand(
             Cmd::new("ls")
                 .about("List a directory: name, type, inode, size")
@@ -72,35 +97,34 @@ fn read_command() -> Cmd {
         )
 }
 
+fn key_command(name: &'static str) -> Cmd {
+    Cmd::new(name)
+        .about("Report every filesystem property, or one KEY; get and info are identical")
+        .arg(Arg::new("key").value_name("KEY").help("A shared key or bcachefs.<field>"))
+        .after_help(format!(
+            "Examples:\n  fs.bcachefs disk.img {name}\n  fs.bcachefs disk.img {name} label --text\n  fs.bcachefs disk.img {name} bcachefs.uuid\n\nShared keys: {}. Empty labels are null. Filesystem-specific fields are nested under bcachefs.",
+            KEYS.join(", ")
+        ))
+}
+
 fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
     let target = m.get_one::<OsString>("target").expect("required");
     if let Some((verb, sub)) = m.subcommand() {
+        if matches!(verb, "set" | "resize") {
+            return Err(CliError::not_implemented(format!(
+                "{verb}: not implemented by this driver"
+            )));
+        }
         if let Some(r) = super::fs_write::run(target, verb, sub) {
             return r;
         }
     }
     let dev = FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?;
     match m.subcommand() {
-        Some(("info", _)) => {
-            let sb = Superblock::read(&dev).map_err(failed)?;
-            Ok(Outcome::report(Json::object([
-                ("fs", Json::Str("bcachefs".into())),
-                ("label", Json::Str(sb.label_str())),
-                ("uuid", Json::Str(format_uuid(&sb.user_uuid))),
-                (
-                    "version",
-                    Json::Str(format!("{}.{}", sb.version.major(), sb.version.minor())),
-                ),
-                ("block_size", Json::UInt(sb.block_size as u64 * 512)),
-                (
-                    "btree_node_size",
-                    Json::UInt(sb.btree_node_size() as u64 * 512),
-                ),
-                ("devices", Json::UInt(sb.nr_devices as u64)),
-                ("encrypted", Json::Bool(sb.is_encrypted())),
-                ("clean", Json::Bool(sb.is_clean())),
-            ])))
-        }
+        Some(("get" | "info", sub)) => get(
+            &open(dev)?,
+            sub.get_one::<String>("key").map(String::as_str),
+        ),
         Some(("ls", sub)) => {
             let fs = open(dev)?;
             let path = sub.get_one::<String>("path").expect("defaulted");
@@ -157,6 +181,58 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
         }
         _ => Err(CliError::usage("unknown subcommand")),
     }
+}
+
+fn get(fs: &Filesystem<FileDevice>, key: Option<&str>) -> Result<Outcome, CliError> {
+    let sb = fs.superblock();
+    let usage = fs.usage().map_err(failed)?;
+    let label = sb.label_str();
+    let all = Json::object([
+        ("fs", Json::Str("bcachefs".into())),
+        (
+            "label",
+            if label.is_empty() {
+                Json::Null
+            } else {
+                Json::Str(label)
+            },
+        ),
+        ("total_bytes", Json::UInt(usage.total_bytes)),
+        ("free_bytes", Json::UInt(usage.free_bytes)),
+        ("block_size", Json::UInt(u64::from(sb.block_size) * 512)),
+        ("dirty", Json::Bool(!sb.is_clean())),
+        (
+            "bcachefs",
+            Json::object([
+                ("uuid", Json::Str(format_uuid(&sb.user_uuid))),
+                (
+                    "version",
+                    Json::Str(format!("{}.{}", sb.version.major(), sb.version.minor())),
+                ),
+                (
+                    "btree_node_size",
+                    Json::UInt(u64::from(sb.btree_node_size()) * 512),
+                ),
+                ("devices", Json::UInt(u64::from(sb.nr_devices))),
+                ("encrypted", Json::Bool(sb.is_encrypted())),
+                ("clean", Json::Bool(sb.is_clean())),
+            ]),
+        ),
+    ]);
+    let Some(key) = key else {
+        return Ok(Outcome::report(all));
+    };
+    let mut value = Some(&all);
+    for part in key.split('.') {
+        value = value.and_then(|v| v.get(part));
+    }
+    let value = value.ok_or_else(|| {
+        CliError::usage(format!(
+            "no key {key:?}; the keys are {} (and bcachefs.<field>)",
+            KEYS.join(", ")
+        ))
+    })?;
+    Ok(Outcome::report(Json::object([(key, value.clone())])).with_text(value.to_text()))
 }
 
 fn read(
