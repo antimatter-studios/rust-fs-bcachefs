@@ -157,9 +157,15 @@ jobs:
       - name: The default-74 regression runs over them
         run: |
           set -euo pipefail
-          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 -- --show-output 2>&1 | tee "$RUNNER_TEMP/default74.log"
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_default_74_extent_data_mismatch_is_in_the_image -- --show-output 2>&1 | tee "$RUNNER_TEMP/default74.log"
           grep -q '^test the_default_74_extent_data_mismatch_is_in_the_image \.\.\. ok$' "$RUNNER_TEMP/default74.log" || { echo "the default-74 test did not run and pass" >&2; exit 1; }
           grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/default74.log" || { echo "expected exactly one executed test" >&2; exit 1; }
+      - name: The exact block4k backpointer mismatch is reported (#256)
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_block4k_1659443_backpointer_value_mismatch_is_reported -- --show-output 2>&1 | tee "$RUNNER_TEMP/backpointer256.log"
+          grep -q '^test the_block4k_1659443_backpointer_value_mismatch_is_reported \.\.\. ok$' "$RUNNER_TEMP/backpointer256.log"
+          grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/backpointer256.log"
       # The reference checker's own verdict on the same bytes: `fsck -n` on
       # the fixture unchanged and on default-74's mutation, in the
       # differential harness's container, failed unless each is expected.
