@@ -133,7 +133,8 @@ tasks:
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       # #247 adds the primary-only bucket-size regression to this tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 221'
+      # #250 adds two host cases to the stack's 221-case floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 223'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -190,7 +191,8 @@ tasks:
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # #247 adds that oracle case and one live-reference comparison.
       # #293 adds one mandatory CLI write test against the live reference.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 322'
+      # #250 adds two host and two guest cases to the stack's 322-case floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 326'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -307,6 +309,7 @@ tasks:
       # 30% over that is 720 lines; the bytes still fit 40,000.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       # #247's primary-only regression also runs under coverage.
+      # #250's write-feature cases do not run in this default-feature tier.
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 144'
 
   check:semver:
