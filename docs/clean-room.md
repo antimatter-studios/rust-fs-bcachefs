@@ -218,6 +218,33 @@ all eight fixture sets.
   by its lowercase, which is its folded form in every case seen, and
   matches any other name as stored, by a scan; the writer refuses a
   casefolded directory (checked: tests/oracle_casefold.rs).
+- One path's metadata, as `fs.bcachefs stat` reports it (#251). The four
+  times are the first varint of each pair, in the order the lister prints
+  them, `bi_atime`, `bi_ctime`, `bi_mtime`, `bi_otime` (S3: every inode of
+  every `<set>.inodes.txt`). `otime` is reported as the creation time
+  (`btime`), as its name says; the mount's lstat carries no creation time,
+  so it is judged against the lister only: `btime - mtime` must equal
+  `bi_otime - bi_mtime` for every stat'd path of four fixture sets, the
+  time precision being 1. Generation and sectors are judged against the
+  lister's `bi_generation` and `bi_sectors` the same way. The allocated
+  bytes are `bi_sectors` times 512, judged against the reference mount's
+  `st_blocks` (512-byte units) for the aged set and every path of the
+  kernel tree, with the owner, link count and the other three times
+  (tests/cli/test-stat-tree.sh, tests/cli/stat-oracle.py). bi_flags is the
+  flags word's low 20 bits; only bit 10 has a name the lister has printed
+  (`has_case_insensitive`), so every other set bit is reported as hex. A
+  device node's numbers are open question 21. No reference source was read.
+- A stored time is a SIGNED count from the time base, two's complement
+  (S3, #251). The formatter copies each file's times from its source tree,
+  made moments before the base: the `default` set's `/link` stores
+  `bi_atime=18446744073627977305`, which is 2^64 - 81574311, beside
+  `bi_otime=210425689`. Read unsigned it is a time in the year 2611; read
+  signed it is 81.6 ms before the base and 0.29 s before the inode's
+  creation. The CLI tier requires every time of the four stat'd sets to
+  fall within a day of the superblock's "Time of last write"
+  (tests/cli/test-stat-tree.sh). The C ABI's `fs_bcachefs_stat_times`
+  still reads the count unsigned (#307); it is judged on the aged set only,
+  whose times all follow the base.
 
 ### Extents and data (`src/extent.rs`, `src/fs.rs`, `src/compress.rs`)
 
@@ -1126,6 +1153,12 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
     passes the reference checker (`kernel-written.img`). Data on a gzip
     filesystem is written gzip-compressed; where the reference mount's
     daemon still cannot read it, the module's read is the judge.
+21. **How `bi_dev` holds a device node's numbers** (#251). It is a varint
+    field after `bi_generation` (S3), but no image has held a character or
+    block device, so how it splits into a major and a minor number has not
+    been seen. `fs.bcachefs stat` reports both as null and the stored value
+    as `bcachefs.dev`. A fixture with device nodes the reference mount made,
+    compared with the mount's `st_rdev`, would answer it.
 
 ### Reflinks -- read
 

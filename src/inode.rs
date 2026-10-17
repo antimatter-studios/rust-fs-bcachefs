@@ -586,6 +586,16 @@ impl InodeV3Raw {
         )
     }
 
+    /// The time named `name` (`atime`, `ctime`, `mtime` or `otime`, the
+    /// lister's `bi_<name>`) as stored: the first of its two varints, 0 when
+    /// the inode stores fewer fields; `None` for another name.
+    pub fn time(&self, name: &str) -> Option<u64> {
+        let i = FIELDS[..TWO_VARINT_FIELDS]
+            .iter()
+            .position(|&(n, _)| n == name)?;
+        Some(self.varints.get(2 * i).copied().unwrap_or(0))
+    }
+
     pub fn parse(v: &[u8]) -> Result<Self> {
         if v.len() < 48 {
             return Err(Error::Corrupt(
