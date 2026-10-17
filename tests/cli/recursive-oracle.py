@@ -57,6 +57,9 @@ if mode == "mount":
     assert not any(p.startswith((b"/dirlink/", b"/ancestor/")) for p in paths)
     raw = walk(os.fsdecode(b"/raw-\xff"))
     assert raw.returncode == 0 and json.loads(raw.stdout)[0]["depth"] == 0, raw.stderr
+elif mode == "lister":
+    assert out.returncode == 0, out.stderr
+    by_path = {r["path"]: r for r in rows}
     listed = subprocess.run(
         ["bcachefs-ref", "list", "-b", "subvolumes", image],
         capture_output=True,
