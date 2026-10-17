@@ -5,6 +5,8 @@
 //! Nothing skips: a skipped oracle reads exactly like a passing one.
 #![allow(dead_code)]
 
+pub mod plant;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

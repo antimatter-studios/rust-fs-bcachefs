@@ -97,7 +97,16 @@ tasks:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 54'
+      # Runs 38997027177 and 39037096192 each executed 52 unit cases.
+      # #253/#254 add two, and #218's recorded-verdict regressions add two.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 56'
+      # The key-type matrix's reference-output parser cases (#163) need no
+      # fixture, so they run here and fail in minutes rather than after the
+      # fixture build. The filter keeps the fixture-reading matrix test in
+      # test:oracle. Budget copied from the unit row until a run measures it.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-key-type-parser 150 12000 -- cargo test --locked --features write --test check_oracle_key_types -- a_key_'
+      # The same run executed five parser cases; the boundary guard adds one.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-key-type-parser 6'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
@@ -121,7 +130,9 @@ tasks:
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 217'
+      # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
+      # and #218's planted-dirent regressions add three.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 220'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -176,7 +187,12 @@ tasks:
         FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1060 52000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 310'
+      # Run 38997027177 executed the full 304 cases; #253/#254 add six.
+      # Run 39037096192 stopped the oracle command early: its 176 cases
+      # (173 passed, three failed) are not a full-suite baseline. #218 adds
+      # two unit, three oracle, one exact-dirent and seven matrix/parser
+      # cases to the full baseline: 304 + 6 + 13 = 323.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 323'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -283,7 +299,10 @@ tasks:
       # moving to rust-fs-core 0.3.12 missing the cache the same way. About
       # 30% over that is 720 lines; the bytes still fit 40,000.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 140'
+      # Runs 38997027177 and 39037096192 each executed 138 coverage cases.
+      # #253/#254 add two unit cases, and #218 adds two more; the new
+      # write-feature oracle and parser cases are outside this command.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 142'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

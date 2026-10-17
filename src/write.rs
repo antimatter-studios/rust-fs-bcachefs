@@ -199,6 +199,29 @@ impl<D: BlockDevice> Writer<D> {
         self.commit_in_place(t)
     }
 
+    /// Rewrite btree `id`'s leaf root as one compact node holding only its
+    /// live keys: removed keys and their whiteouts, which the reference
+    /// validates bset by bset, are dropped. The old node's bucket is freed
+    /// and the accounting the rewrite adds is committed.
+    pub fn compact_root(&mut self, id: u8) -> Result<()> {
+        let (level, root_key) = self.root(id)?;
+        if level != 0 {
+            return Err(Error::Corrupt(format!(
+                "btree {id}'s root is at level {level}, not a leaf"
+            )));
+        }
+        let mut t = Txn::default();
+        let new = self.rewrite_node(id, level, &root_key, &[], &mut t)?;
+        let [new] = new.as_slice() else {
+            return Err(Error::Corrupt(format!(
+                "btree {id}'s root split while compacting"
+            )));
+        };
+        self.set_root(id, level, new)?;
+        self.write_superblock()?;
+        self.commit_in_place(t)
+    }
+
     /// Insert into one btree, collecting what rewriting nodes adds to other
     /// btrees and to accounting in `t`.
     fn insert_one(&mut self, id: u8, mut keys: Vec<Bkey>, t: &mut Txn) -> Result<()> {

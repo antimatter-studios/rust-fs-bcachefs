@@ -102,6 +102,34 @@ const DATA_NEED_DISCARD: u8 = 9;
 const ACCOUNTING: u8 = 20;
 const KEY_ACCOUNTING: u8 = 34;
 const ACCT_DEV_DATA_TYPE: u64 = 3;
+/// The logged_ops and reconcile_work_phys btrees.
+const LOGGED_OPS: u8 = 17;
+const RECONCILE_WORK_PHYS: u8 = 24;
+const KEY_COOKIE: u8 = 3;
+/// The key types the reference lets every btree hold: deleted, whiteout,
+/// error and cookie. It judges a key's type before its value size (an
+/// inode_generation key with no value is refused for its type in
+/// reconcile_work_phys, for its value size in inodes), and of the last
+/// three it refuses none for its type in any btree, only for its value
+/// size, size or snapshot (#163, run 39020187551).
+const KEY_TYPES_ANYWHERE: [u8; 4] = [
+    key_type::DELETED,
+    key_type::WHITEOUT,
+    key_type::ERROR,
+    KEY_COOKIE,
+];
+/// The key types a btree may hold beyond those, for the btrees whose
+/// foreign keys the reference checker reports as `invalid bkey` (#163):
+/// logged_ops holds logged operations and the inode allocation cursor,
+/// accounting holds accounting keys, and all three hold set keys.
+/// Run 39037096192 also reports no type refusal for unnamed type 40 in
+/// these three btrees; no other unnamed type has been judged.
+/// Every other btree is #305.
+const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
+    (LOGGED_OPS, &[KEY_SET, 32, 33, 35, 37, 39, 40]),
+    (ACCOUNTING, &[KEY_SET, KEY_ACCOUNTING, 40]),
+    (RECONCILE_WORK_PHYS, &[KEY_SET, 40]),
+];
 /// A dirent's type when it names a subvolume (the lister's `type subvol`).
 const DT_SUBVOL: u8 = 16;
 /// Deeper than any snapshot tree; a parent cycle stops here.
@@ -216,6 +244,21 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 trees.insert(id, keys);
             }
             None => continue,
+        }
+    }
+    for (id, allowed) in KEY_TYPES_ALLOWED {
+        for k in trees.get(id).into_iter().flatten() {
+            if !KEY_TYPES_ANYWHERE.contains(&k.key_type) && !allowed.contains(&k.key_type) {
+                r.add(
+                    "invalid_bkey",
+                    format!(
+                        "btree {}: key {} is of type {}, which the btree does not hold",
+                        journal::btree_name(*id),
+                        k.pos,
+                        k.key_type
+                    ),
+                );
+            }
         }
     }
 
@@ -1450,6 +1493,37 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
 mod tests {
     use super::*;
     use crate::bkey::Bpos;
+
+    #[test]
+    fn judged_key_types_match_the_recorded_reference_verdicts() {
+        // Non-crashing, one-key images judged in run 39037096192's
+        // guest suite. These are type verdicts, not value validation.
+        for (id, accepted) in [
+            (17, vec![0, 1, 2, 3, 25, 32, 33, 35, 37, 39, 40]),
+            (20, vec![0, 1, 2, 3, 25, 34, 40]),
+            (24, vec![0, 1, 2, 3, 25, 40]),
+        ] {
+            let allowed = KEY_TYPES_ALLOWED
+                .iter()
+                .find(|(tree, _)| *tree == id)
+                .unwrap()
+                .1;
+            for t in 0..=40 {
+                assert_eq!(
+                    KEY_TYPES_ANYWHERE.contains(&t) || allowed.contains(&t),
+                    accepted.contains(&t),
+                    "btree {id}, key type {t}: recorded reference verdict differs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_reconcile_tree_name_matches_the_reference_diagnostic() {
+        // Run 39037096192 prints this name when refusing the exact dirent.
+        assert_eq!(journal::btree_name(24), "reconcile_work_phys");
+        assert_eq!(journal::btree_name(255), "btree255");
+    }
 
     /// A key at `0:offset`, as the snapshot btrees file theirs.
     fn key(key_type: u8, offset: u64, value: Vec<u8>) -> Bkey {
