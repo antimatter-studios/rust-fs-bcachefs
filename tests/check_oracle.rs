@@ -7,6 +7,8 @@
 #[path = "common/backpointer.rs"]
 mod backpointer;
 mod common;
+#[path = "common/journal_length.rs"]
+mod journal_length;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
 #[path = "common/superblock_field.rs"]
@@ -37,6 +39,58 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The chroot the reference tools live in (scripts/vm-setup.sh).
 const REF_ROOT: &str = "/srv/ref-trixie";
+
+#[test]
+fn the_reference_reports_an_oversized_stale_journal_entry() {
+    let dir = ScratchDir::new("reference-journal-length");
+    assert_seen_by_reference(&dir);
+    for (oversized, unknown_version) in [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let img = dir.join(format!("{oversized}-{unknown_version}.img"));
+        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        journal_length::plant(&img, oversized, unknown_version);
+        let native = Command::new("timeout")
+            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
+            .arg(&img)
+            .output()
+            .expect("chore test:vm provides the reference checker");
+        let text = String::from_utf8_lossy(&native.stdout).into_owned()
+            + &String::from_utf8_lossy(&native.stderr);
+        assert!(
+            matches!(native.status.code(), Some(0 | 9))
+                && ![
+                    ".c:",
+                    ".h:",
+                    ".rs:",
+                    "BUG",
+                    "assertion",
+                    "Assertion",
+                    "backtrace",
+                    "Backtrace",
+                    "Call Trace"
+                ]
+                .iter()
+                .any(|s| text.contains(s)),
+            "reference fault or timeout: no case details retained"
+        );
+        assert_eq!(
+            native.status.code(),
+            Some(if oversized { 9 } else { 0 }),
+            "{text}"
+        );
+        if oversized {
+            assert!(
+                text.contains("journal entry too big (34359738416 bytes), fixing"),
+                "{text}"
+            );
+            assert!(text.contains("jset_past_bucket_end  1"), "{text}");
+        } else {
+            assert!(!text.contains("invalid journal entry"), "{text}");
+        }
+        let r = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(r.clean(), !oversized, "{:?}", r.problems);
+    }
+}
 
 /// #261's selected/unselected-copy controls, judged independently before
 /// comparison with this crate. Reference 1.39.7 returns exactly 0 or 1.

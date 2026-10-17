@@ -299,6 +299,25 @@ fn decode_keys(b: &[u8]) -> Result<Vec<Bkey>> {
     Ok(out)
 }
 
+#[cfg(test)]
+mod length_tests {
+    use super::*;
+
+    #[test]
+    fn an_impossible_journal_length_is_not_a_missing_entry() {
+        let magic = 0x1234u64;
+        let mut b = vec![0; JSET_HEADER];
+        b[16..24].copy_from_slice(&magic.to_le_bytes());
+        b[24..32].copy_from_slice(&206u64.to_le_bytes());
+        b[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+        let e = parse_jset(&b, magic).unwrap_err().to_string();
+        assert!(e.contains("jset_past_bucket_end"), "{e}");
+        assert!(e.contains("34359738416"), "{e}");
+        b[16..24].fill(0);
+        assert!(parse_jset(&b, magic).unwrap().is_none());
+    }
+}
+
 /// What a replay of the journal adds to the btrees on disk.
 #[derive(Debug, Clone, Default)]
 pub struct Replay {
