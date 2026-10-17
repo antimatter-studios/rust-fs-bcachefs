@@ -1,8 +1,10 @@
 //! Filesystems this reader recognises and refuses with a clear error rather
-//! than misreading: an encrypted one, and each member of a two-device one.
-//! Both made by the reference formatter, which also printed each superblock.
-//! The encrypted filesystem comes twice (#270): its master key stored
-//! unsealed (`--no_passphrase`), and sealed by a known passphrase.
+//! than misreading: an encrypted one whose master key a passphrase seals,
+//! and each member of a two-device one. Both made by the reference
+//! formatter, which also printed each superblock. The encrypted filesystem
+//! comes twice (#270): its master key stored unsealed (`--no_passphrase`),
+//! which is read (#272, tests/oracle_encrypted.rs), and sealed by a known
+//! passphrase, which is refused.
 
 mod common;
 
@@ -25,20 +27,22 @@ fn printer(name: &str, key: &str) -> String {
         .unwrap_or_else(|| panic!("{name}: no {key:?} line"))
 }
 
+/// Of the two encrypted images, only the one whose key is sealed is
+/// refused, and as encrypted.
 #[test]
-fn an_encrypted_filesystem_is_refused_as_encrypted() {
-    assert!(
-        printer("encrypted.super.txt", "Sections").contains("crypt"),
-        "the fixture is not encrypted"
-    );
-    match open("encrypted.img") {
-        Err(Error::Unsupported(m)) => assert!(
-            m.contains("encrypted"),
-            "refused, but not as encrypted: {m}"
-        ),
-        Err(e) => panic!("refused with the wrong error: {e}"),
-        Ok(_) => panic!("opened an encrypted filesystem"),
+fn an_encrypted_filesystem_is_refused_only_when_its_key_is_sealed() {
+    for stem in ["encrypted", "encrypted-passphrase"] {
+        let sb =
+            Superblock::read(&FileDevice::open(fixture(&format!("{stem}.img"))).unwrap()).unwrap();
+        assert!(
+            sb.crypt().unwrap().is_some(),
+            "{stem}: the fixture has no crypt field"
+        );
     }
+    if let Err(e) = open("encrypted.img") {
+        panic!("formatted with --no_passphrase, but refused: {e}");
+    }
+    encrypted_refusal("encrypted-passphrase");
 }
 
 /// The message `Filesystem::open` refuses an encrypted fixture with,
@@ -58,18 +62,26 @@ fn encrypted_refusal(stem: &str) -> String {
 }
 
 /// Formatted with `--no_passphrase`: the reference printer reads its
-/// superblock with no passphrase and lists the crypt field.
+/// superblock with no passphrase and lists the crypt field, and this
+/// reader opens it with the key stored there, unsealed.
 #[test]
-fn a_master_key_stored_unsealed_is_named_in_the_refusal() {
+fn a_master_key_stored_unsealed_is_not_refused() {
     assert!(
         printer("encrypted.super.txt", "Sections").contains("crypt"),
         "the fixture is not encrypted"
     );
-    let m = encrypted_refusal("encrypted");
+    let sb = Superblock::read(&FileDevice::open(fixture("encrypted.img")).unwrap()).unwrap();
     assert!(
-        m.contains("unsealed"),
-        "formatted with --no_passphrase, but not refused as unsealed: {m}"
+        !sb.crypt().unwrap().unwrap().is_sealed(),
+        "formatted with --no_passphrase, but the key reads as sealed"
     );
+    match open("encrypted.img") {
+        Ok(fs) => assert!(
+            !fs.readdir(fs.root().ino).unwrap().is_empty(),
+            "opened, but its root directory lists nothing"
+        ),
+        Err(e) => panic!("formatted with --no_passphrase, but refused: {e}"),
+    }
 }
 
 /// Formatted with a passphrase: the reference printer will not read its
