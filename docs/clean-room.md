@@ -1750,6 +1750,48 @@ fixtures, 80 mutations per fixture and first seed 1659440. Only #261's exact
 baseline allowance is removed. Suites run in CI, not locally. No reference
 source was read; the observations above came only from its executable output.
 
+## Oversized stale journal entries (#262, 2026-10-17)
+
+Source: black-box execution of the harness guest's installed reference
+checker, build marker `1.39.7 fuse`, on the reference-made aged-unclean
+image from CI run 38741040375, artifact 11977252185. Artifact digest:
+`sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`;
+tarball SHA-256:
+`27b15c9dffa3240b2ec3f3f3a84221c255c210b157f5888d2285f4e358025869`.
+[Retained observations](../tests/data/journal-length-262-reference.txt)
+record the command, mutations, statuses and exact verdict lines. No reference
+source was read.
+
+The exact seed 1659479 changes jset-relative bytes [34,48) to ff at image
+byte 2490368 (sector 4864, sequence 206). The baseline checker reports clean;
+the reference exits 9, names `jset_past_bucket_end`, and prints
+`journal entry too big (34359738416 bytes), fixing`. Its version label is
+`(unknown version) (65473.39)`. The emitter calls this mutation re-stamped,
+but its restamper actually leaves the checksum unchanged because the claimed
+length exceeds its input buffer.
+
+Isolation controls distinguish the cause from that version label. Changing
+only the word at [40,44) to `u32::MAX`, without changing its checksum, gives
+the same size diagnostic and exit 9 with the original version. Changing
+only [34,36) to ff, with a recomputed CRC32C, is accepted with exit 0.
+Changing [34,40) while preserving the size is also accepted. Thus this
+evidence does not establish an unknown-version rejection rule. The printed
+size equals 56 + 8 * the little-endian word at offset 40, corroborating the
+existing header and length interpretation. The unchanged image and a control
+with zeroed magic and an oversized length also exit 0.
+
+The reference replays sequences 304 through 306 in all these cases, so the
+size violation at sequence 206 is diagnosed even outside the replay window,
+and before a checksum can be verified. The reader now reports an oversized
+matching journal header immediately instead of treating it as absent. This
+does not change the existing treatment of sub-entry damage outside replay,
+wrong magic, or torn checksums. Tests cover the exact pinned mutation and
+size/version isolation on freshly generated reference fixtures; the native
+case requires the exact reference statuses and size diagnostic. Floors rise
+by one unit, one oracle and one native case. Suites remain CI-only under the
+issue-agent brief; local validation builds the test targets and reproduces
+the differential verdict directly. Only #262's exact allowance is removed.
+
 ## No comparison against the reference source
 
 Decided 2026-10-17 (#160). This record is evidence about the *process*: the
