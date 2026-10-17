@@ -96,11 +96,15 @@ tasks:
   # FLOORS RAISED for #255 from that measured run plus #253 and #254:
   # one inode-position unit case, one oracle case and one native reference
   # case; vm runs all three, coverage runs the unit case only.
+  # FLOORS RAISED for #256 from the same measured baseline and stack:
+  # one backpointer unit case, one oracle case and one native reference
+  # case; vm runs all three, coverage runs the unit case only. The two
+  # exact pinned mutations also run in differential.yml's pinned job.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 55'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 56'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
@@ -125,7 +129,7 @@ tasks:
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       # #247 adds the primary-only bucket-size regression to this tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 219'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 220'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -181,7 +185,7 @@ tasks:
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # #247 adds that oracle case and one live-reference comparison.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 315'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 318'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -289,7 +293,7 @@ tasks:
       # 30% over that is 720 lines; the bytes still fit 40,000.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       # #247's primary-only regression also runs under coverage.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 142'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 143'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
