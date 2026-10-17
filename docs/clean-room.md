@@ -1489,8 +1489,9 @@ changed together, before comparing this crate's verdicts.
 the on-disk format. `tests/cli/test-offset.sh` embeds the reference-made
 default fixture at byte 1048576, compares read-only verb output byte for byte
 with the offset-zero image, and checks every regular file against the guest's
-recorded SHA-256 manifest (S3). The verb table also requires all commands,
-including later additions, to reject a past-end device offset.
+recorded SHA-256 manifest (S3). The verb table requires every implemented
+command, including later additions, to reject a past-end device offset;
+unimplemented commands retain their refusal before opening any target.
 
 `tests/cli/test-write.sh` repeats every write verb in place and through the
 journal on an embedded reference-made image. Prefix and suffix sentinels

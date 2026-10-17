@@ -105,6 +105,7 @@ fs.bcachefs whole-disk.img write /hello.txt --from hello.txt --offset 1048576
 
 Malformed or overflowing offsets return the shared exit-2 argument error.
 An offset at or beyond the target's end fails before any filesystem operation.
+Unimplemented verbs still refuse before opening a target.
 
 ## Writing files (experimental)
 

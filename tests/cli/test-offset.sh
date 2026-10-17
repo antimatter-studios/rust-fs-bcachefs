@@ -16,6 +16,8 @@ size="$(wc -c <"$FIXTURES/default.img" | tr -d ' ')"
 # an otherwise valid offset-zero filesystem before doing anything else.
 fs.bcachefs --help >"$SANDBOX/help"
 check 'the command help is available' test $? -eq 0
+check 'the command help documents the device offset' grep -q -- '--offset' "$SANDBOX/help"
+check 'the verb table is not empty' grep -q '^  get ' "$SANDBOX/help"
 while read -r verb; do
     expected=1
     case "$verb" in
@@ -94,4 +96,12 @@ for verb in write put; do
 done
 check 'all read and refused commands preserve the container' cmp -s "$img" "$SANDBOX/saved.img"
 check 'past-end refusals preserve the entire raw image' cmp -s "$SANDBOX/raw.img" "$FIXTURES/default.img"
+rust-fs-bcachefs generate man "$SANDBOX/share" >"$SANDBOX/out" 2>"$SANDBOX/err"
+check 'manual generation succeeds' test $? -eq 0
+check 'the manual documents the offset' grep -q offset "$SANDBOX/share/man/man1/fs.bcachefs.1"
+rust-fs-bcachefs generate completions "$SANDBOX/share" >"$SANDBOX/out" 2>"$SANDBOX/err"
+check 'completion generation succeeds' test $? -eq 0
+for completion in zsh/site-functions/_fs.bcachefs bash-completion/completions/fs.bcachefs fish/vendor_completions.d/fs.bcachefs.fish; do
+    check "$completion offers offset" grep -qw offset "$SANDBOX/share/$completion"
+done
 finish
