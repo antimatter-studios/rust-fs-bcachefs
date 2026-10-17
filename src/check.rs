@@ -1333,12 +1333,12 @@ fn walk_checked(
 /// What the reference refuses in a key's own fields (#219): a size on a
 /// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
-/// snapshot", `bkey_snapshot_nonzero`), a subvolume or snapshot_tree at a
-/// position it cannot have, an accounting key holding more than its kind
-/// and btree, and an xattr whose lengths run past its value. Each pair of
-/// btree and key type below is one differential run 38579070302 saw the
-/// reference refuse; a pair nobody observed is not judged
-/// (docs/clean-room.md).
+/// snapshot", `bkey_snapshot_nonzero`), a subvolume, snapshot or snapshot_tree
+/// at a position it cannot have, an accounting key holding more than its
+/// kind and btree, and an xattr whose lengths run past its value. Each pair
+/// of btree and key type below is one differential run 38579070302 or the
+/// later nightly-seed run 39018152705 saw the reference refuse; a pair
+/// nobody observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const FREESPACE: u8 = 11;
     const SNAPSHOT_TREES: u8 = 15;
@@ -1389,6 +1389,12 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (SUBVOLUMES, KEY_SUBVOLUME) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
             "subvol_pos_bad",
             format!("btree {name}: subvolume at {}, not at 0:id", k.pos),
+        ),
+        // Nightly-seed run 39018152705: the root snapshot moved to
+        // inode U64_MAX is "bad pos"; run 38878947701 also saw inode 1.
+        (SNAPSHOTS, KEY_SNAPSHOT) if k.pos.inode != 0 => r.add(
+            "snapshot_pos_bad",
+            format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
         ),
         (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE) if k.pos.offset == 0 => r.add(
             "snapshot_tree_pos_bad",

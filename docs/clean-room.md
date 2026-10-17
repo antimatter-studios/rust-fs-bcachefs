@@ -1223,6 +1223,29 @@ The same report shows four more refusals, each after one change:
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.
 
+### Snapshot inode positions (S3, #253)
+
+The current-main nightly-equivalent [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
+at `08c02dc10add07ffce512a8787869c9a39abcd3c` judged 648 cases with reference
+checker 1.39.7, 80 mutations per fixture starting at seed 1659440. Its
+fixtures came from run 38741040375, artifact 11977252185, digest
+`sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`.
+
+Three cases moved a snapshot key to inode U64_MAX while leaving its value,
+offset and snapshot unchanged. The report's default and block4k examples
+(seed 1659458) move the root snapshot to `U64_MAX:4294967295:0`; the
+reference reports `snapshot_pos_bad` ("bad pos, deleting") and this crate
+reported clean. Run 38878947701 had already observed the same refusal at
+inode 1 (`default` seed 1659387). The checker now reports that problem for
+snapshot keys in the snapshots btree with a nonzero inode position. No
+rule for another key type, or for a snapshot's offset, is inferred here.
+
+`oracle_check_key_positions.rs` repeats the U64_MAX mutation on default and
+block4k; `check_oracle.rs` independently judges inode 1 and U64_MAX against
+the reference checker in the guest, with unchanged controls and a check
+that the stored snapshot value is unchanged. The unit regression keeps
+inode 0 accepted and confines this rule to the observed btree/key-type pair.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)
