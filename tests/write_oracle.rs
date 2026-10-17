@@ -11,6 +11,8 @@
 #![cfg(feature = "write")]
 
 mod common;
+#[path = "common/writer_superblock.rs"]
+mod writer_superblock;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -200,6 +202,46 @@ fn an_identity_edit_passes_the_reference_checker() {
         let theirs = with_reference_mount(&img, |m| std::fs::read_dir(m).unwrap().count());
         assert_eq!(root, theirs, "{test}: entries in /");
     }
+}
+
+fn selected_superblock_write_passes_reference(erase_primary: bool) {
+    for backup in [1, 2] {
+        let img = scratch("write-study/base.img", "selected-superblock");
+        let selected = writer_superblock::prepare(&img, backup, erase_primary);
+        writer_superblock::create_and_check(&img, &selected);
+        assert_fsck_clean(&img);
+        let (ok, listed) = reference(&["list", "-b", "dirents", img.to_str().unwrap()]);
+        assert!(
+            ok && listed
+                .lines()
+                .any(|line| line.contains(writer_superblock::NAME)),
+            "the reference lister did not list the written file:\n{listed}"
+        );
+        with_reference_mount(&img, |m| {
+            let dir = m.join("d");
+            assert!(std::fs::read_dir(&dir)
+                .unwrap()
+                .any(|entry| entry.unwrap().file_name() == writer_superblock::NAME));
+            assert_eq!(
+                std::fs::read(dir.join(writer_superblock::NAME)).unwrap(),
+                writer_superblock::DATA
+            );
+            assert_eq!(
+                std::fs::read(dir.join("existing")).unwrap(),
+                b"an existing file\n"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_write_from_a_newer_superblock_copy_passes_the_reference() {
+    selected_superblock_write_passes_reference(false);
+}
+
+#[test]
+fn a_write_after_a_zeroed_primary_passes_the_reference() {
+    selected_superblock_write_passes_reference(true);
 }
 
 /// Files this crate creates in an existing directory: the reference
