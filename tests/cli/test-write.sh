@@ -76,11 +76,18 @@ refusal() {
     fs.bcachefs "$img" "$verb" "$@" < /dev/null >"$SANDBOX/out" 2>"$SANDBOX/err"
     check "$verb: $description status" test $? -eq "$code"
     check "$verb: $description has no stdout" test ! -s "$SANDBOX/out"
+    # shellcheck disable=SC2016 # $c belongs to jq's --argjson.
     check "$verb: $description is a shared JSON error" \
         jq -e --argjson c "$code" '.code == $c and (.error | type) == "string"' "$SANDBOX/err" >/dev/null
     check "$verb: $description preserves the image" cmp -s "$img" "$SANDBOX/saved.img"
 }
 printf '\0\377binary\n' >"$SANDBOX/input"
+for fixture in casefold.img kernel-rootsnap.img; do
+    if [ ! -f "$FIXTURES/$fixture" ]; then
+        fail "$FIXTURES/$fixture is missing -- build it with \`chore fixtures\`"
+        finish
+    fi
+done
 for verb in write put; do
     for mode in in-place journal; do
         img="$SANDBOX/shared-$verb-$mode.img"
@@ -89,6 +96,7 @@ for verb in write put; do
         [ "$mode" = journal ] && args+=(--journal)
         fs.bcachefs "$img" "$verb" /d/shared --mode 640 "${args[@]}" <"$SANDBOX/input" >"$SANDBOX/out" 2>"$SANDBOX/err"
         check "$verb $mode: stdin succeeds" test $? -eq 0
+        # shellcheck disable=SC2016 # $j belongs to jq's --argjson.
         check "$verb $mode: the report uses the canonical verb" \
             jq -e --argjson j "$([ "$mode" = journal ] && echo true || echo false)" \
             '.verb == "write" and .size == 9 and .ino > 0 and .journal == $j' "$SANDBOX/out" >/dev/null
@@ -112,6 +120,7 @@ for verb in write put; do
         refusal 1 'missing parent' /missing/file "${args[@]}"
         refusal 1 'file parent' /d/shared/file "${args[@]}"
         refusal 1 'missing input' /d/new --from "$SANDBOX/missing" "${args[@]}"
+        refusal 1 'directory input' /d/new --from "$SANDBOX" "${args[@]}"
         refusal 2 'invalid mode' /d/new --mode 888 "${args[@]}"
         refusal 2 'out-of-range mode' /d/new --mode 10000 "${args[@]}"
         refusal 2 'missing path' "${args[@]}"
@@ -129,6 +138,15 @@ for verb in write put; do
     cp "$img" "$SANDBOX/saved.img"
     refusal 1 'symlink destination' /d/link
     refusal 1 'symlink parent' /d/link/new
+    for fixture in casefold kernel-rootsnap; do
+        img="$SANDBOX/capability.img"
+        cp "$FIXTURES/$fixture.img" "$img"
+        cp "$img" "$SANDBOX/saved.img"
+        refusal 3 "$fixture creation" /new
+        if [ "$fixture" = kernel-rootsnap ]; then
+            refusal 3 'snapshotted file replacement' /kept.txt
+        fi
+    done
 done
 
 finish
