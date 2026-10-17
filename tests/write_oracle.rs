@@ -201,9 +201,7 @@ fn cli_recursive_walk_matches_the_reference_and_ends_on_damaged_directories() {
             String::from_utf8_lossy(&out.stderr)
         );
     };
-    with_reference_mount(&img, |m| {
-        check(&img, "mount", &[m, &common::fixtures_dir()])
-    });
+    with_reference_mount(&img, |m| check(&img, "mount", &[m]));
     for fault in ["cycle", "twice", "unreadable"] {
         let damaged = scratch("default.img", fault);
         let dev = FileDevice::open(&*damaged).unwrap();
