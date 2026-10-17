@@ -8,6 +8,8 @@
 mod common;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
+#[path = "common/superblock_field.rs"]
+mod superblock_field;
 
 use common::fixture;
 use fs_bcachefs::check;
@@ -154,4 +156,42 @@ fn a_primary_bucket_size_change_at_the_same_sequence_stays_clean() {
         "the reference accepts the primary-only mutation: {:?}",
         report.problems
     );
+}
+
+/// Black-box reference 1.39.7: only the sequence-winning copy's optional
+/// fields are validated; a bad checksum still diagnoses a damaged copy.
+#[test]
+fn optional_fields_are_validated_only_in_the_selected_copy() {
+    for (name, indexes, newer, restamp, clean) in [
+        ("primary", vec![0], false, true, true),
+        ("middle", vec![1], false, true, true),
+        ("last", vec![2], false, true, false),
+        ("newer", vec![0], true, true, false),
+        ("all", vec![0, 1, 2], false, true, false),
+        ("checksum", vec![0], false, false, false),
+    ] {
+        let img = common::ScratchDir::new("sb-fields").into_image(format!("{name}.img"));
+        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        let sb = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(sb.layout.sb_offsets.len(), 3);
+        assert!(check::check(&FileDevice::open(&img).unwrap())
+            .unwrap()
+            .clean());
+        for index in indexes {
+            superblock_field::zero_field_length(&img, sb.layout.sb_offsets[index], newer, restamp);
+        }
+        let r = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(r.clean(), clean, "{name}: {:?}", r.problems);
+        if !clean {
+            assert_eq!(r.problems.len(), 1, "{name}: {:?}", r.problems);
+            assert_eq!(
+                r.problems[0].kind,
+                if restamp {
+                    "superblock"
+                } else {
+                    "superblock_copy"
+                }
+            );
+        }
+    }
 }

@@ -263,15 +263,25 @@ impl Superblock {
     /// Parse a superblock from `b`, which starts at the superblock and holds
     /// at least its header and fields. Verifies magic and checksum.
     pub fn parse(b: &[u8]) -> Result<Self> {
-        let sb = Self::parse_unchecked(b)?;
+        let mut sb = Self::parse_header(b)?;
         let end = SB_HEADER_BYTES + sb.u64s as usize * 8;
         sb.verify_checksum(&b[..end])?;
+        sb.fields = parse_fields(&b[SB_HEADER_BYTES..end])?;
         Ok(sb)
     }
 
     /// [`Superblock::parse`] without verifying the checksum: for a writer
     /// that has changed the bytes and has not checksummed them yet.
     pub fn parse_unchecked(b: &[u8]) -> Result<Self> {
+        let mut sb = Self::parse_header(b)?;
+        let end = SB_HEADER_BYTES + sb.u64s as usize * 8;
+        sb.fields = parse_fields(&b[SB_HEADER_BYTES..end])?;
+        Ok(sb)
+    }
+
+    /// Header and bounds only: copy selection precedes optional-field
+    /// validation (S3, #261). Checksum validation still precedes selection.
+    fn parse_header(b: &[u8]) -> Result<Self> {
         if b.len() < SB_HEADER_BYTES {
             return Err(Error::Corrupt("superblock shorter than its header".into()));
         }
@@ -281,7 +291,7 @@ impl Superblock {
             return Err(Error::BadMagic { what: "superblock" });
         }
         let u64s = le32(b, 0x7c);
-        let end = (u64s as usize)
+        (u64s as usize)
             .checked_mul(8)
             .and_then(|n| n.checked_add(SB_HEADER_BYTES))
             .filter(|&e| e <= b.len().min(SB_MAX_BYTES))
@@ -318,7 +328,7 @@ impl Superblock {
             features: [le64(b, 0xd0), le64(b, 0xd8)],
             compat: [le64(b, 0xe0), le64(b, 0xe8)],
             layout: Layout::parse(&b[0xf0..SB_HEADER_BYTES])?,
-            fields: parse_fields(&b[SB_HEADER_BYTES..end])?,
+            fields: Vec::new(),
         };
         Ok(sb)
     }
@@ -333,19 +343,21 @@ impl Superblock {
     /// standalone layout at sector 7 is a fallback, read only if the
     /// primary superblock is unreadable. So: the primary first, its embedded
     /// layout naming the copies; failing that, the layout at 3584; then
-    /// every copy, and a copy that does not parse is skipped (the checker
-    /// reports it, [`Superblock::read_copies`]). Observed (S4): every
+    /// every copy's header and checksum. Optional fields are parsed only
+    /// after selecting the winner (S3, #261); an invalid selected field is
+    /// an error, not a reason to use an older copy. Observed (S4): every
     /// fixture carries three copies, at sectors 8 and 2056 and at the end
     /// of the device, all with the same `seq`.
     pub fn read(dev: &dyn BlockRead) -> Result<Self> {
         Self::read_copies(dev).map(|(sb, _)| sb)
     }
 
-    /// [`Superblock::read`], also returning every copy that could not be
-    /// read, by sector, for the checker. An error only when no copy reads.
+    /// [`Superblock::read`], also returning copies whose header or checksum
+    /// could not be read, by sector, for the checker. Invalid optional
+    /// fields in the selected copy are an error.
     pub fn read_copies(dev: &dyn BlockRead) -> Result<(Self, Vec<(u64, Error)>)> {
         let mut failed: Vec<(u64, Error)> = Vec::new();
-        let primary = Self::read_at(dev, SB_OFFSET / 512);
+        let primary = Self::read_header_at(dev, SB_OFFSET / 512);
         let layout = match &primary {
             Ok(sb) => sb.layout.clone(),
             Err(e) => {
@@ -358,22 +370,22 @@ impl Superblock {
                 }
             }
         };
-        let mut best = primary.ok();
+        let mut best = primary.ok().map(|sb| (SB_OFFSET / 512, sb));
         for &sector in &layout.sb_offsets {
             if sector == SB_OFFSET / 512 {
                 continue;
             }
-            match Self::read_at(dev, sector) {
+            match Self::read_header_at(dev, sector) {
                 Ok(sb) => {
-                    if best.as_ref().is_none_or(|b| sb.seq >= b.seq) {
-                        best = Some(sb);
+                    if best.as_ref().is_none_or(|(_, b)| sb.seq >= b.seq) {
+                        best = Some((sector, sb));
                     }
                 }
                 Err(e) => failed.push((sector, e)),
             }
         }
         match best {
-            Some(sb) => Ok((sb, failed)),
+            Some((sector, _)) => Self::read_at(dev, sector).map(|sb| (sb, failed)),
             None => Err(failed
                 .into_iter()
                 .next()
@@ -391,6 +403,17 @@ impl Superblock {
 
     /// One superblock copy, at `sector`, parsed and checksummed.
     pub fn read_at(dev: &dyn BlockRead, sector: u64) -> Result<Self> {
+        Self::parse(&Self::read_bytes_at(dev, sector)?)
+    }
+
+    fn read_header_at(dev: &dyn BlockRead, sector: u64) -> Result<Self> {
+        let bytes = Self::read_bytes_at(dev, sector)?;
+        let sb = Self::parse_header(&bytes)?;
+        sb.verify_checksum(&bytes)?;
+        Ok(sb)
+    }
+
+    fn read_bytes_at(dev: &dyn BlockRead, sector: u64) -> Result<Vec<u8>> {
         let at = sector
             .checked_mul(512)
             .ok_or_else(|| Error::Corrupt(format!("superblock sector {sector} overflows")))?;
@@ -405,7 +428,7 @@ impl Superblock {
         }
         let mut b = vec![0u8; total];
         dev.read_at(at, &mut b)?;
-        Self::parse(&b)
+        Ok(b)
     }
 
     /// Whether the filesystem is encrypted: it carries a `crypt` field
