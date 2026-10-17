@@ -669,13 +669,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     };
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
     // Where the device's backpointers are, when the filesystem keeps them.
-    let backpointers: Option<std::collections::BTreeSet<u64>> = trees
+    let backpointers: Option<BTreeMap<u64, &Bkey>> = trees
         .get(&BACKPOINTERS)
         .filter(|_| judge_alloc)
         .map(|keys| {
             keys.iter()
                 .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
-                .map(|k| k.pos.offset)
+                .map(|k| (k.pos.offset, k))
                 .collect()
         });
 
@@ -968,30 +968,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     r.add("alloc_key_data_type_wrong", d);
                 }
             }
-            // Its backpointer, at its device sector << 16 plus its offset
-            // into a checksummed region it is a piece of (#163: the
-            // reference's "missing backpointer"; the aged image: the piece
-            // at offset 136 of the region at sector 26880 has its
-            // backpointer at 26880 << 16 | 136). Only for the shapes whose
-            // backpointer is known to sit there: not an unwritten extent,
-            // and not a piece of a compressed region.
-            let known = e.crc.is_none_or(|c| {
-                c.compression_type == crate::extent::compression::NONE
-                    || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
-            });
-            let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
             if let Some(bps) = &backpointers {
-                if known && !e.ptr.is_unwritten() && !bps.contains(&at) {
-                    r.add(
-                        "missing_backpointer",
-                        format!(
-                            "extent {}: no backpointer at device sector {} offset {}",
-                            k.pos,
-                            e.ptr.offset,
-                            at & 0xffff
-                        ),
-                    );
-                }
+                data_backpointer(k, &e, bps, &mut r);
             }
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
@@ -1274,6 +1252,29 @@ fn nearest<'a>(chain: &[u32], keys: &[&'a Bkey]) -> Option<&'a Bkey> {
 }
 
 /// Read one extent's stored bytes and verify its checksum.
+/// The observed backpointer lookup for a written data extent (#163).
+fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mut Report) {
+    // The aged image's piece at offset 136 of the region at sector 26880
+    // has its backpointer at 26880 << 16 | 136. Only uncompressed pieces
+    // and whole compressed regions have an observed lookup rule.
+    let known = e.crc.is_none_or(|c| {
+        c.compression_type == crate::extent::compression::NONE
+            || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
+    });
+    let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
+    if known && !e.ptr.is_unwritten() && !bps.contains_key(&at) {
+        r.add(
+            "missing_backpointer",
+            format!(
+                "extent {}: no backpointer at device sector {} offset {}",
+                k.pos,
+                e.ptr.offset,
+                at & 0xffff
+            ),
+        );
+    }
+}
+
 fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     let Some(crc) = e.crc else { return Ok(()) };
     if !crate::csum::is_known(crc.csum_type) {
