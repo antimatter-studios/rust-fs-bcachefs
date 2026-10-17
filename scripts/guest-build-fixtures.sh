@@ -626,6 +626,29 @@ for b in extents inodes dirents xattrs alloc quotas stripes reflink subvolumes \
     bcachefs-ref list -b "$b" "$out/encrypted.img" > "$out/encrypted.$b.txt" 2>&1 ||
         echo "list: exit $?" >> "$out/encrypted.$b.txt"
 done
+# Its files (#272): the tree it was formatted from, which every file must
+# read back as; the reference checker's verdict; and the tree as the
+# reference implementation reads it, mounted over a scratch copy so the
+# published image is never written. Nothing here fails the build:
+# tests/oracle_encrypted.rs fails, printing the record, when the reference
+# did not read the image.
+step "encrypted: the reference reads its files"
+manifest "$src" "$out/encrypted.json"
+bcachefs-ref fsck -n "$out/encrypted.img" > "$out/encrypted.fsck.txt" 2>&1 ||
+    echo "fsck: exit $?" >> "$out/encrypted.fsck.txt"
+img="$age_dir/encrypted.img"
+rm -f "$out/encrypted.mounted.json"
+{
+    rm -f "$ROOT$img"
+    cp --sparse=always "$out/encrypted.img" "$ROOT$img"
+    if fuse_mount "$img" rw,noatime "$work/fuse-encrypted.log"; then
+        manifest "$ROOT$mnt" "$out/encrypted.mounted.json" live
+        fuse_kill
+    else
+        echo "mount: failed"
+    fi
+    rm -f "$ROOT$img"
+} > "$out/encrypted.mounted.txt" 2>&1 || echo "the steps stopped: exit $?" >> "$out/encrypted.mounted.txt"
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
