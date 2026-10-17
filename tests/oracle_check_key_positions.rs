@@ -26,6 +26,7 @@ use fs_bcachefs::btree::{self, btree_id};
 use fs_bcachefs::check;
 use fs_bcachefs::superblock::Superblock;
 use fs_bcachefs::write::Writer;
+use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
 
 /// Btrees and key types by number, in the Principles of Operation's list
@@ -145,6 +146,27 @@ fn a_snapshot_tree_at_inode_1_is_refused() {
             |k| k.pos.inode == 0 && k.pos.offset == 1 && k.pos.snapshot == 0,
             |k| k.pos.inode = 1,
             "snapshot_tree_pos_bad",
+        );
+    }
+}
+
+/// Run 39018152705, default/block4k seed 1659490: the reference rejects
+/// inode_v3 at U64_MAX:2147483849:U32_MAX as inode_pos_inode_nonzero (#255).
+/// Select a regular file by path so freshly generated inode numbers work too.
+#[test]
+fn an_inode_key_at_inode_u64_max_is_refused() {
+    for set in ["default", "block4k"] {
+        let ino = Filesystem::open(FileDevice::open(fixture(&format!("{set}.img"))).unwrap())
+            .unwrap()
+            .lookup("/many/file-0200.txt")
+            .unwrap();
+        refused(
+            set,
+            btree_id::INODES,
+            key_type::INODE_V3,
+            |k| k.pos.inode == 0 && k.pos.offset == ino && k.pos.snapshot == u32::MAX,
+            |k| k.pos.inode = u64::MAX,
+            "inode_pos_inode_nonzero",
         );
     }
 }

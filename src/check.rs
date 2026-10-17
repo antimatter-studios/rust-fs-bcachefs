@@ -1376,12 +1376,12 @@ fn walk_checked(
 /// What the reference refuses in a key's own fields (#219): a size on a
 /// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
-/// snapshot", `bkey_snapshot_nonzero`), a subvolume, snapshot or snapshot_tree
-/// at a position it cannot have, an accounting key holding more than its
-/// kind and btree, and an xattr whose lengths run past its value. Each pair
-/// of btree and key type below is one differential run 38579070302 or the
-/// later nightly-seed run 39018152705 saw the reference refuse; a pair
-/// nobody observed is not judged (docs/clean-room.md).
+/// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot or
+/// snapshot_tree at a position it cannot have, an accounting key holding
+/// more than its kind and btree, and an xattr whose lengths run past its
+/// value. Each pair of btree and key type below is one differential run
+/// 38579070302 or nightly-seed run 39018152705 saw the reference refuse;
+/// a pair nobody observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const FREESPACE: u8 = 11;
     const SNAPSHOT_TREES: u8 = 15;
@@ -1427,6 +1427,12 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     }
     let v = &k.value;
     match (id, k.key_type) {
+        // Run 39018152705 rejects inode_v3 at inode U64_MAX as
+        // "nonzero k.p.inode"; its inode number belongs in the offset (#255).
+        (btree_id::INODES, key_type::INODE_V3) if k.pos.inode != 0 => r.add(
+            "inode_pos_inode_nonzero",
+            format!("btree {name}: inode_v3 at {}, not at inode 0", k.pos),
+        ),
         // A subvolume is at `0:id` ("Snapshots and subvolumes"): one at
         // offset 0, or at another inode, is "invalid pos".
         (SUBVOLUMES, KEY_SUBVOLUME) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
@@ -1651,6 +1657,33 @@ mod tests {
                 check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
                 assert!(unrelated.clean(), "{unrelated:?}");
             }
+        }
+    }
+
+    #[test]
+    fn an_inode_key_with_a_nonzero_inode_position_is_named() {
+        // Run 39018152705, seed 1659490 (#255): the reference rejects
+        // inode_v3 at U64_MAX:2147483849:U32_MAX, leaving its value intact.
+        for inode in [0, 1, u64::MAX] {
+            let mut k = key(key_type::INODE_V3, 2147483849, Vec::new());
+            k.pos.inode = inode;
+            k.pos.snapshot = u32::MAX;
+            let mut report = Report::default();
+            check_key_fields(btree_id::INODES, &k, &mut report);
+            if inode == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "inode_pos_inode_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::DIRENTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+            k.key_type = key_type::DIRENT;
+            check_key_fields(btree_id::INODES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
         }
     }
 

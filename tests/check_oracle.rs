@@ -719,6 +719,77 @@ fn both_checkers_reject_a_snapshot_tree_key_with_a_nonzero_inode() {
     }
 }
 
+/// Nightly-seed run 39018152705, default/block4k seed 1659490 (#255):
+/// inode_v3 with a nonzero inode position is refused. Resolve the regular
+/// file by path because freshly generated fixtures may renumber inodes.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_inode_key_with_a_nonzero_inode_position() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+    use fs_bcachefs::Filesystem;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for inode in [1, u64::MAX] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("inode-position-{inode}.img"));
+        std::fs::copy(fixture("default.img"), &img).unwrap();
+        let (control_bad, text) = reference_finds_a_problem(&img);
+        assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let ino = Filesystem::open(FileDevice::open(&img).unwrap())
+            .unwrap()
+            .lookup("/many/file-0200.txt")
+            .unwrap();
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, btree_id::INODES)
+            .unwrap()
+            .into_iter()
+            .find(|k| {
+                k.key_type == key_type::INODE_V3
+                    && k.pos.inode == 0
+                    && k.pos.offset == ino
+                    && k.pos.snapshot == u32::MAX
+            })
+            .expect("the regular file's inode_v3 key exists");
+        let original = k.clone();
+        k.pos.inode = inode;
+        let pos = k.pos;
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(btree_id::INODES, vec![k]).unwrap();
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut stored = btree::walk(&dev, &sb, btree_id::INODES)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == key_type::INODE_V3 && k.pos == pos)
+            .expect("the mutated inode key is stored");
+        stored.pos.inode = 0;
+        assert_eq!(stored, original, "only the inode position must change");
+        let (damaged, text) = reference_finds_a_problem(&img);
+        assert!(damaged, "the reference must reject inode {inode}:\n{text}");
+        assert!(
+            text.contains("inode_pos_inode_nonzero"),
+            "wrong native finding:\n{text}"
+        );
+        let ours = check(&dev).unwrap();
+        assert!(
+            ours.problems.iter().any(|p| p.kind == "inode_pos_inode_nonzero"
+                && p.detail.contains(&pos.to_string())),
+            "the inode position must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// A bucket_gens key has no extent size: kernel.img seed 1 in differential
 /// run 38749903964 stored one with a nonzero size, which the reference
 /// rejected (`bkey_size_nonzero`) and this checker called clean.

@@ -1315,6 +1315,29 @@ Tree 24 is now named using S1's existing documented order, also recorded
 in the planting helper. These observations use only the reference tools'
 printed output, never their source.
 
+### Inode key inode positions (S3, #255)
+
+The same [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
+and pinned fixtures recorded above for #253 contain five inode-position
+disagreements. The report's default and block4k examples (seed 1659490)
+move an inode_v3 key to `U64_MAX:2147483849:U32_MAX` in the inodes btree,
+keeping its value, offset and snapshot unchanged. The reference checker
+1.39.7 exits 9 and reports `inode_pos_inode_nonzero` ("nonzero k.p.inode,
+deleting"); this crate reported clean. Only black-box output was read.
+
+The checker now reports that problem for an inode_v3 key in the inodes
+btree whose position's inode field is nonzero. The inode number remains in
+the offset field. The unit regression uses the reported offset and
+snapshot, accepts inode 0, rejects inode 1 and U64_MAX, and confines the
+rule to this btree/key-type pair. `oracle_check_key_positions.rs` repeats
+the inode-only U64_MAX mutation on default and block4k; it selects a
+regular file by path because newly generated fixtures can renumber inodes.
+`check_oracle.rs` requires the independent reference checker to reject
+inode 1 and U64_MAX after both checkers accept unchanged controls, and
+verifies that all other stored key fields remain unchanged. These new
+regressions run in CI, not locally. No position rule for other inode key
+versions or other btrees is inferred, and no GPL source was read.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)

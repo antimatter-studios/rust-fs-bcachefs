@@ -93,13 +93,16 @@ tasks:
   # FLOORS RAISED for #254 from the same measured run plus #253: one
   # snapshot-tree unit case, one oracle case and one native reference
   # case; vm runs all three, coverage runs the unit case only.
+  # FLOORS RAISED for #255 from that measured run plus #253 and #254:
+  # one inode-position unit case, one oracle case and one native reference
+  # case; vm runs all three, coverage runs the unit case only.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
       # Runs 38997027177 and 39037096192 each executed 52 unit cases.
       # #253/#254 add two, and #218's recorded-verdict regressions add two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 56'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 57'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -132,7 +135,7 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 220'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 221'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -192,7 +195,7 @@ tasks:
       # (173 passed, three failed) are not a full-suite baseline. #218 adds
       # two unit, three oracle, one exact-dirent and seven matrix/parser
       # cases to the full baseline: 304 + 6 + 13 = 323.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 323'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 326'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -302,7 +305,7 @@ tasks:
       # Runs 38997027177 and 39037096192 each executed 138 coverage cases.
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 142'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 143'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
