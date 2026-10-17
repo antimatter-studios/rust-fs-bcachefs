@@ -71,6 +71,22 @@ chore staticlib    # dist/libfs_bcachefs.a and its headers
 chore cli:install  # the tools, staged in tmp/cli
 ```
 
+## Reading files
+
+`fs.bcachefs` reads an image or device directly, without mounting it:
+
+```sh
+fs.bcachefs disk.img read /hello.txt
+fs.bcachefs disk.img read /big/random.bin -o random.bin
+```
+
+`read` streams regular-file bytes to stdout. With `-o FILE`, it writes
+`FILE.partial` and renames that file to `FILE` after a successful read;
+an existing partial is refused. `cat` is an identical alias. Both refuse
+directories, special files and symlinks; a symlink error names its target
+so it can be read explicitly. Errors use JSON on stderr by default, or
+text with `--text`.
+
 ## Changelog
 
 The latest releases; every release, with the reasoning behind each change, is in [CHANGELOG.md](CHANGELOG.md).
