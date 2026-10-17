@@ -9,7 +9,7 @@ vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_bcachefs
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.3.13
+  FS_CORE_REF: v0.3.14
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.4.1
 
@@ -275,8 +275,11 @@ tasks:
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 40 1700 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7529'
+      # #341 adds three scripts: nine fixed header/verdict lines, 274 bytes
+      # at their 168 + 11 + 17 success counts, above the existing budget.
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 49 2000 -- scripts/test-cli.sh'
+      # #341 adds 168 export, 11 documentation and 17 kernel export checks.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7725'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
