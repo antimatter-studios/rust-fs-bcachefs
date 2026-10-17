@@ -4,6 +4,8 @@
 //! problem, this crate's checker must find one too.
 
 mod common;
+#[path = "common/superblock_copy.rs"]
+mod superblock_copy;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -104,6 +106,84 @@ fn reference_finds_a_problem(img: &Path) -> (bool, String) {
         !l.trim_start().starts_with("with options") && (l.contains("error") || l.contains("fixing"))
     });
     (!out.status.success() || named, text)
+}
+
+/// #247's primary-only mutation, with equal-sequence backup controls and
+/// a newer-primary control. Ask the actual checker before comparing ours.
+#[test]
+fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let sb = Superblock::read(&FileDevice::open(fixture("aged.img")).unwrap()).unwrap();
+    let copies = &sb.layout.sb_offsets;
+    assert_eq!(copies.len(), 3, "three reference-written copies");
+    let dir = ScratchDir::new("check-superblock-selection");
+    assert_seen_by_reference(&dir);
+    let cases = [
+        ("control", Vec::new(), false),
+        ("primary-tie", vec![copies[0]], false),
+        ("middle-tie", vec![copies[1]], false),
+        ("last-tie", vec![copies[2]], false),
+        ("primary-newer", vec![copies[0]], true),
+        ("all-tie", copies.clone(), false),
+    ];
+    let mut observations = Vec::new();
+    for (name, sectors, newer) in cases {
+        let img = dir.join(format!("{name}.img"));
+        std::fs::copy(fixture("aged.img"), &img).unwrap();
+        for sector in sectors {
+            superblock_copy::change_bucket_size(&img, sector, 8448, newer);
+        }
+        let native = Command::new("timeout")
+            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
+            .arg(&img)
+            .output()
+            .expect("the guest provides timeout and the reference checker");
+        let text = String::from_utf8_lossy(&native.stdout).into_owned()
+            + &String::from_utf8_lossy(&native.stderr);
+        // A fault's output can quote GPL source. Keep no observation or
+        // case detail if the reference faults or exceeds its deadline.
+        assert!(
+            matches!(native.status.code(), Some(0 | 8 | 9))
+                && ![
+                    ".c:",
+                    ".h:",
+                    ".rs:",
+                    "BUG",
+                    "assertion",
+                    "Assertion",
+                    "backtrace",
+                    "Backtrace",
+                    "Call Trace",
+                    "panicked at",
+                    "Kernel panic",
+                ]
+                .iter()
+                .any(|marker| text.contains(marker)),
+            "one reference invocation failed or faulted; no case details retained"
+        );
+        let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+        observations.push((name, native.status.success(), text, ours));
+    }
+    // Collect every independent observation before asserting agreement, so
+    // the red run records the controls as well as the original mismatch.
+    for (name, clean, text, ours) in &observations {
+        println!(
+            "{name}: reference clean={clean}; ours clean={}; findings={:?}\n{text}",
+            ours.clean(),
+            ours.problems
+        );
+    }
+    assert!(
+        observations[0].1,
+        "the unchanged reference control is clean"
+    );
+    assert!(observations[1].1, "the reference still accepts #247's case");
+    for (name, clean, _, ours) in observations {
+        assert_eq!(ours.clean(), clean, "{name}: {:?}", ours.problems);
+    }
 }
 
 #[test]
