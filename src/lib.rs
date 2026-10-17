@@ -19,6 +19,7 @@ pub mod capi;
 pub mod capi_write;
 pub mod check;
 pub mod compress;
+pub mod crypt;
 pub mod csum;
 pub mod error;
 pub mod extent;
