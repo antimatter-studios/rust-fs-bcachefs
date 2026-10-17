@@ -142,8 +142,10 @@ make_tree() {
 
 # manifest ROOT DEST [live]: every path under ROOT with its type, mode, size,
 # symlink target and SHA-256. `live` is for a mounted filesystem: it also
-# records each inode number and link count, and leaves out lost+found, which
-# the filesystem made and nobody put there.
+# records each inode number, link count, owner, 512-byte block count and the
+# access, modification and change times (seconds plus nanoseconds) the
+# mount reports, and leaves out lost+found, which the filesystem made and
+# nobody put there.
 manifest() {
     local root="$1" dest="$2" live="${3:-}"
     python3 - "$root" "$dest" "$live" <<'PY'
@@ -164,6 +166,11 @@ for dirpath, dirnames, filenames in os.walk(root):
         if live:
             e["ino"] = st.st_ino
             e["nlink"] = st.st_nlink
+            e["uid"] = st.st_uid
+            e["gid"] = st.st_gid
+            e["blocks"] = st.st_blocks
+            for t in ("atime", "mtime", "ctime"):
+                e[t], e[t + "_nsec"] = divmod(getattr(st, "st_" + t + "_ns"), 10**9)
             # Extended attributes as one flat, sorted "name=hex;..." string.
             names = sorted(os.listxattr(full, follow_symlinks=False))
             if names:
@@ -366,11 +373,17 @@ manifest "$ROOT$mnt" "$work/aged.replayed.json" live
 fuse_unmount
 # What the reference sees after its own replay is the expected view of both
 # images. Everything outside /late must also be what the mount wrote.
+# The owner, blocks and times are left out of that comparison: they are the
+# replayed mount's report, for stat (tests/cli/test-stat-tree.sh), not part
+# of what the tree is.
 python3 - "$work/aged.mounted.json" "$work/aged.replayed.json" <<'PY'
 import json, sys
-before = json.load(open(sys.argv[1]))["entries"]
-after = [e for e in json.load(open(sys.argv[2]))["entries"]
-         if e["path"] != "/late" and not e["path"].startswith("/late/")]
+STAT = {"uid", "gid", "blocks", "atime", "atime_nsec", "mtime", "mtime_nsec", "ctime", "ctime_nsec"}
+def tree(es):
+    return [{k: v for k, v in e.items() if k not in STAT} for e in es]
+before = tree(json.load(open(sys.argv[1]))["entries"])
+after = tree([e for e in json.load(open(sys.argv[2]))["entries"]
+              if e["path"] != "/late" and not e["path"].startswith("/late/")])
 if before != after:
     print("aged: the replayed tree differs from what the mount wrote, outside /late", file=sys.stderr)
     sys.exit(1)

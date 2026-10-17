@@ -225,7 +225,8 @@ tasks:
       # #271 adds nine encrypted-node unit cases and two oracle cases.
       # #260 adds the CLI walk against the reference lister and FUSE find.
       # #272 adds four encrypted-extent unit cases and four oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 360'
+      # #251 adds the CLI stat against the reference mount's lstat.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 361'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -253,11 +254,18 @@ tasks:
   # inside a container. Its one new test file adds exactly three log lines.
   # #260 adds 86 bounded-walk checks and four manifest comparisons. Its
   # new CLI file adds three lines (under 150 bytes) to the tier's log.
+  # #251 adds 2189 stat checks to test-stat-tree.sh: nine per stat'd path
+  # (shape, types, old keys, target, times within a day of the superblock's
+  # last write, and the reference lister's otime, generation, sectors and
+  # flags) over 18 paths in each of three sets and 113 in aged, six more per
+  # aged path from the reference mount (owner, allocated bytes, three
+  # times), and eight refusal and --text checks. It adds no file, so no log
+  # line.
   test:cli:
     desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 40 1700 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 5340'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7529'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
