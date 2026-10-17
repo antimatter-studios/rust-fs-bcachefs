@@ -1473,6 +1473,101 @@ mod tests {
         }
     }
 
+    /// Backpointer fields observed by the reference tools, checked against
+    /// the extent they are supposed to describe.
+    #[test]
+    fn a_backpointer_value_must_agree_with_its_extent() {
+        // #256, reference run 39018152705, block4k seed 1659443.
+        let mut extent = key(key_type::EXTENT, 8, Vec::new());
+        extent.pos.inode = 2147483766;
+        extent.pos.snapshot = u32::MAX;
+        extent.size = 8;
+        let e = DataExtent {
+            file_start: 0,
+            len: 8,
+            ptr: crate::extent::Ptr {
+                dev: 0,
+                offset: 17040,
+                gen: 0,
+                flags: 0,
+            },
+            crc: None,
+            skip: 0,
+        };
+        let mut value = vec![0, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let bp = key(KEY_BACKPOINTER, 1116733440, value);
+        let findings = |bp: &Bkey, e: &DataExtent| {
+            let mut r = Report::default();
+            data_backpointer(&extent, e, &BTreeMap::from([(bp.pos.offset, bp)]), &mut r);
+            r.problems
+        };
+        assert!(findings(&bp, &e).is_empty());
+        // The exact mutation changes length and snapshot in one word.
+        let mut bad = bp.clone();
+        bad.value[8..16].copy_from_slice(&1u64.to_le_bytes());
+        let problems = findings(&bad, &e);
+        assert!(problems
+            .iter()
+            .any(|p| p.kind == "backpointer_to_missing_ptr"
+                && p.detail.contains(&extent.pos.to_string())));
+        // Each documented field, and every short value, is checked safely.
+        for at in [0, 1, 2, 8, 12, 16, 24] {
+            let mut bad = bp.clone();
+            bad.value[at] ^= 1;
+            assert_eq!(
+                findings(&bad, &e)[0].kind,
+                "backpointer_to_missing_ptr",
+                "byte {at}"
+            );
+        }
+        for len in 0..32 {
+            let mut bad = bp.clone();
+            bad.value.truncate(len);
+            assert_eq!(
+                findings(&bad, &e)[0].kind,
+                "backpointer_to_missing_ptr",
+                "length {len}"
+            );
+        }
+        let mut missing = Report::default();
+        data_backpointer(&extent, &e, &BTreeMap::new(), &mut missing);
+        assert_eq!(missing.problems[0].kind, "missing_backpointer");
+
+        // Whole compressed regions use their physical length; an
+        // uncompressed piece uses its live length and offset in the region.
+        let mut e = e;
+        e.crc = Some(crate::extent::Crc {
+            compressed_size: 2,
+            uncompressed_size: 8,
+            offset: 0,
+            nonce: 0,
+            csum_type: 5,
+            compression_type: crate::extent::compression::LZ4,
+            csum_hi: 0,
+            csum_lo: 0,
+        });
+        let mut compressed = bp.clone();
+        compressed.value[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert!(findings(&compressed, &e).is_empty());
+        let c = e.crc.as_mut().unwrap();
+        c.compression_type = crate::extent::compression::NONE;
+        c.offset = 136;
+        c.uncompressed_size = 256;
+        let mut piece = bp.clone();
+        piece.pos.offset |= 136;
+        assert!(findings(&piece, &e).is_empty());
+        // The existing exclusions stay excluded.
+        e.crc.as_mut().unwrap().compression_type = crate::extent::compression::LZ4;
+        assert!(findings(&bad, &e).is_empty());
+        e.crc = None;
+        e.ptr.flags = crate::extent::PTR_UNWRITTEN;
+        assert!(findings(&bad, &e).is_empty());
+    }
+
     /// A snapshot tree's value: master subvolume, then root snapshot.
     fn tree(subvol: u32, root: u32) -> Vec<u8> {
         [subvol.to_le_bytes(), root.to_le_bytes()].concat()
