@@ -1251,6 +1251,35 @@ identity. The differential class remains open under #219; this evidence
 establishes the distinction between the reference checker's acceptance
 and its data reader's integrity refusal for this one pinned case.
 
+## No comparison against the reference source
+
+Decided 2026-10-17 (#160). This record is evidence about the *process*: the
+sources used and what each told us. The other half of a clean-room defence is
+evidence about the *outcome*, that no expression of the GPL implementation
+ended up here, and the obvious way to produce it is to compare this crate
+against the reference source. **The project does not do that, in any form**:
+no similarity scan, no CI job and no tool in this repository reads the
+reference source beside this crate's code.
+
+The reason is that a comparison needs the reference source as an input.
+Built into the project, it becomes a standing channel from that source to the
+people writing this crate: a report that a passage resembles the reference
+tells its reader something about the reference, and a rewrite made to clear
+the report is shaped by it. That is the contamination this record exists to
+rule out. Shipping the tool would also invite the reading that the project
+consults GPL code as a matter of routine, which is the opposite of what it
+is meant to show. The DKMS oracle (S10) is different in kind: its container
+builds the reference module and runs it, and nothing in it reads the source
+or reports on its text.
+
+If outcome evidence is ever needed, it comes from outside the project: an
+independent audit commissioned by the owner, in which the auditor (a person
+or a third-party agent) is given both this crate and the reference source,
+and everything it worked with is discarded afterwards. The audit's report is
+its only artifact. The report names this crate's side only and quotes
+nothing from the reference, and nothing from the audit becomes part of this
+repository's tooling.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
