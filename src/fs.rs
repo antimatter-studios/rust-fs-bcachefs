@@ -79,11 +79,19 @@ pub struct Filesystem<D: BlockRead> {
 impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
-        if sb.is_encrypted() {
-            // Its btree nodes and data are encrypted; how the keys and
-            // nonces are derived has no clean-room source yet.
+        if let Some(crypt) = sb.crypt()? {
+            // Its btree nodes and data are encrypted, and are not read yet
+            // (#159). Whether a passphrase is needed is said, since that is
+            // what the person holding the image can act on.
             return Err(Error::Unsupported(
-                "the filesystem is encrypted: encrypted filesystems are not read".into(),
+                if crypt.is_sealed() {
+                    "the filesystem is encrypted, its master key sealed by a passphrase: \
+                     encrypted filesystems are not read"
+                } else {
+                    "the filesystem is encrypted, its master key stored unsealed (formatted \
+                     without a passphrase): encrypted filesystems are not read"
+                }
+                .into(),
             ));
         }
         if sb.nr_devices != 1 {

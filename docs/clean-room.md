@@ -323,10 +323,60 @@ all eight fixture sets.
 
 - Encryption: the formatter's `--encrypted --no_passphrase` adds a `crypt`
   field (type 2, S1's field order; the printer's `Sections` line) and the
-  btree nodes no longer parse (S3, S4). The reader refuses any image with
-  that field. Key derivation and nonces remain open question 6.
+  btree nodes no longer parse (S3, S4). The reader reads the field (see
+  "Encryption: the crypt field" below) and refuses any image with it,
+  naming whether a passphrase seals the master key (#270). Key derivation
+  and nonces remain open question 6.
 - Multiple devices: each member's superblock carries `nr_devices` 2 (the
   printer's `Devices`, checked); the reader refuses it.
+
+### Encryption: the crypt field (`src/crypt.rs`) -- documented purpose, observed layout
+
+- S1 (9.1.4.1) says what the field is for: a random 256-bit master key
+  kept in the superblock, sealed by a 256-bit key derived from the
+  passphrase through scrypt with parameters stored in the crypt field,
+  and a magic value stored with the master key that verifies the
+  passphrase. It gives no byte layout.
+- The reference formatter's help (S3, `reference-help.txt`) names three
+  options: `--encrypted`, `--passphrase_file` (a file holding the
+  passphrase) and `--no_passphrase` (the master key is stored unencrypted
+  in the superblock). The fixture build makes one image each way from the
+  same tree: `encrypted` with `--no_passphrase`, and
+  `encrypted-passphrase` with `--passphrase_file`, the passphrase's exact
+  bytes (no trailing newline) recorded beside it as
+  `encrypted-passphrase.passphrase`.
+- The superblock printer shows nothing of the field but its name in the
+  `Sections` line (S3, `encrypted`).
+- `encrypted` (S4, hexdump of the image in the fixtures artifact of CI run
+  39018127117, 2026-10-17): the field is 8 u64s, so its body is 56 bytes.
+  Bytes 0..16 are zero; bytes 16..24 are the ASCII `bch**key`; bytes
+  24..56 are 32 bytes of no evident structure. Taken together with the
+  help's "stored unencrypted", bytes 16..24 are the magic S1 describes and
+  24..56 the master key, both in the clear. That those 32 bytes are the
+  key is not yet established by decrypting anything with them (#271).
+- `encrypted-passphrase` (S3, S4, the fixtures artifact of CI run
+  39021762764, 2026-10-17): the formatter exited 0, but wrote only its
+  initial superblocks: the three copies carry seq 0 and four fields
+  (ext, members_v2, crypt and members_v1, by S1's type numbers), there is
+  no clean field or journal,
+  and only 4 of the image's 16384 4K blocks are not zero. So the image
+  holds a reference-made crypt field and nothing else; reading files from
+  a passphrase image needs a complete one (#273). Its crypt field is also
+  8 u64s, a 56-byte body: bytes 0..8 zero, bytes 8..16 `0e 00 03 00 04 00
+  00 00`, bytes 16..56 of no evident structure, with no magic in the clear.
+  S1 puts scrypt's parameters in this field, so bytes 8..16 are the
+  candidates for them; their encoding is #273's to establish by
+  computation, not read off these bytes.
+- The superblock printer will not print this image without its
+  passphrase: it reports `Error reading passphrase` and exits 1 (S3), where
+  it prints `encrypted` in full. That refusal is the reference's own view
+  that the key is sealed.
+- The rule the reader applies (`CryptField::is_sealed`): a body of 56
+  bytes whose bytes 16..24 read the magic holds an unsealed key; any other
+  56-byte body holds a sealed one. A shorter body is corrupt, a longer one
+  has not been observed and is refused. Checked by
+  `tests/oracle_refused.rs` on both images, against the printer: it reads
+  the unsealed one and refuses the sealed one for want of a passphrase.
 ### What each write changes (the write study, `fixtures/write-study`, S8)
 
 Each pair is the same settled base image before and after one operation
@@ -697,7 +747,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    type and uncompressed size, with a per-CRC offset) and where the MAC
    sits (the CRC entry; 80 bits for data by default, 128 for metadata). The
    byte layouts are still to be learned by computation over known
-   plaintext: #159.
+   plaintext: #159, broken down into #270 to #277. The crypt field's
+   layout is observed (#270, "Encryption: the crypt field" above); the
+   scrypt parameters' place in it, the salt and how the master key is
+   sealed are #273's, learned from `encrypted-passphrase`.
 7. **Varint fields beyond `dev`** (#81). Their names and order are
    SETTLED (S3): every field of every inode of every dumped image decodes
    to the value the lister prints as `bi_<name>`
