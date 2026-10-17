@@ -1,6 +1,6 @@
 ## Checking
 
-| `fsck.bcachefs` on snapshot key positions: a snapshot key in the snapshots btree with a nonzero inode position | Supported | Unreleased | #253 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit tests |
+| `fsck.bcachefs` on snapshot key positions: a snapshot key in the snapshots btree with a nonzero inode position | Supported | Unreleased (#269) | #253 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit tests |
 | Snapshot-tree keys with nonzero inode positions | Not supported for one measured disagreement class | | #254 | `differential.yml` report 39018152705 |
 | Inode keys with nonzero inode positions | Not supported for one measured disagreement class | | #255 | `differential.yml` report 39018152705 |
 | Backpointer values that disagree with their extents | Not supported for one measured disagreement class | | #256 | `differential.yml` report 39018152705 |
