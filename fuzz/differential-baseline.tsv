@@ -80,7 +80,6 @@ ours-only	node	check:extent_data	not a defect: this crate verifies extent data c
 ref-only	key-type	invalid bkey in btree_node btree=subvolumes level=#: u#s # type accounting # len # ver # : nr_inodes	#163: allocation metadata and allowed key types
 ref-only	key-snapshot	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type bucket_gens # len # ver # : # # # #	#163: allocation metadata and allowed key types
 ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # type indirect_inline_data # len # ver # :	#163: allocation metadata and allowed key types
-ours-only	superblock	check:missing_fragmentation_lru_entry	#247: a missing fragmentation lru entry after a superblock change
 ref-only	key-inode	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type alloc_v# pos_min len # ver # :	#163: allocation metadata and allowed key types
 ref-only	key-size	invalid bkey in btree_node btree=need_discard level=#: u#s # type set # len # ver #	#163: allocation metadata and allowed key types

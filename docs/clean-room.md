@@ -1318,6 +1318,33 @@ identity. The differential class remains open under #219; this evidence
 establishes the distinction between the reference checker's acceptance
 and its data reader's integrity refusal for this one pinned case.
 
+### A primary-only bucket-size change (S3, S4, #247)
+
+Nightly differential run
+[38878947701](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38878947701)
+reported `aged.img` seed 1659384 as a crate-only
+`missing_fragmentation_lru_entry`; the reference checker 1.39.7 accepted
+the control and the changed image with exit 0. Its inputs were fixtures
+artifact 11977252185 from run 38741040375, archive SHA-256
+`9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e`,
+tarball SHA-256
+`27b15c9dffa3240b2ec3f3f3a84221c255c210b157f5888d2285f4e358025869`.
+
+Replaying the mutation's RNG over the recorded 8272-byte superblock
+identifies one flipped bit before re-stamping: byte 915, bit 5. The
+fixture's bytes put that byte in member 0's `bucket_size` in `members_v2`:
+the field starts at superblock byte 872, its member at 888, and the
+little-endian bucket size at 914 changes from 256 to 8448 sectors.
+Only the primary at sector 8 changes; its sequence stays 133, equal to
+the copies at sectors 2056 and 522240. These are observations of the
+image and the reference's output, not implementation-source facts.
+
+`oracle_superblock_copies.rs` retains the primary-only regression by
+locating the member field, so it also runs over rebuilt fixtures.
+`check_oracle.rs` asks the reference checker about the control, each
+changed copy at the same sequence, a newer primary, and all copies
+changed together, before comparing this crate's verdicts.
+
 ## No comparison against the reference source
 
 Decided 2026-10-17 (#160). This record is evidence about the *process*: the
