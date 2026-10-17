@@ -12,7 +12,7 @@ use super::device::{Device, Target};
 use fs_bcachefs::inode::{Dirent, Inode, INODE_HAS_CASE_INSENSITIVE};
 use fs_bcachefs::superblock::{format_uuid, Superblock};
 use fs_bcachefs::{fs::Node, Filesystem};
-use fs_core::cli::{CliError, Format, Json, Outcome, Tool};
+use fs_core::cli::{transfer, CliError, Format, Json, Outcome, Tool};
 
 pub const TOOL: Tool = Tool {
     name: "fs.bcachefs",
@@ -92,6 +92,20 @@ fn read_command() -> Cmd {
                 ),
         )
         .subcommand(listing_command("tree"))
+        .subcommand(
+            Cmd::new("export")
+                .about("Copy a regular file out through the shared bounded transfer")
+                .args(transfer::export_args())
+                .after_help(
+                    "Examples:\n  fs.bcachefs disk.img export /hello.txt hello.txt\n  \
+                     fs.bcachefs disk.img export --replace /big/random.bin random.bin\n  \
+                     fs.bcachefs disk.img export /hello.txt -\n\n\
+                     Files are copied in fixed chunks. A local destination is published only \
+                     when complete; an existing name is refused unless --replace is given. \
+                     The report includes the byte count and SHA-256; DEST - writes only raw \
+                     bytes to stdout. Directories, symlinks and special files are refused.",
+                ),
+        )
         .subcommand(
             Cmd::new("read")
                 .visible_alias("cat")
@@ -198,6 +212,10 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
                 .expect("required")
                 .as_bytes(),
         ),
+        Some(("export", sub)) => {
+            let request = transfer::ExportRequest::from_matches(sub)?;
+            export(&open(dev)?, &request)
+        }
         Some(("read", sub)) => {
             let fs = open(dev)?;
             let path = sub.get_one::<String>("path").expect("required");
@@ -362,6 +380,48 @@ fn epoch_time(sb: &Superblock, stored: u64) -> (i64, u64) {
         + i128::from(stored as i64) * i128::from(sb.time_precision.max(1));
     let s = i64::try_from(ns.div_euclid(1_000_000_000)).unwrap_or(i64::MAX);
     (s, ns.rem_euclid(1_000_000_000) as u64)
+}
+
+/// The driver supplies bounded positioned reads; core owns the transfer,
+/// digest and complete-file publication. Node retains the resolved snapshot.
+struct ExportSource<'a> {
+    fs: &'a Filesystem<Device>,
+    node: Node,
+    size: u64,
+}
+
+impl transfer::FileSource for ExportSource<'_> {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, CliError> {
+        let data = self
+            .fs
+            .read_range_at(self.node, offset, buf.len())
+            .map_err(failed)?;
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
+    }
+}
+
+fn export(fs: &Filesystem<Device>, request: &transfer::ExportRequest) -> Result<Outcome, CliError> {
+    let node = fs.resolve_bytes(request.path.as_bytes()).map_err(failed)?;
+    let inode = fs.inode_at(node).map_err(failed)?;
+    if !inode.is_file() {
+        return Err(CliError::failed(format!(
+            "{}: not a regular file; directories, symlinks and special files cannot be exported",
+            request.path.to_string_lossy()
+        )));
+    }
+    transfer::export(
+        request,
+        &mut ExportSource {
+            fs,
+            node,
+            size: inode.size,
+        },
+    )
 }
 
 fn read(
