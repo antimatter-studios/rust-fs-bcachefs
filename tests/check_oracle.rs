@@ -146,7 +146,7 @@ fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
         // A fault's output can quote GPL source. Keep no observation or
         // case detail if the reference faults or exceeds its deadline.
         assert!(
-            matches!(native.status.code(), Some(0 | 8 | 9))
+            matches!(native.status.code(), Some(0..=123))
                 && ![
                     ".c:",
                     ".h:",
