@@ -175,12 +175,61 @@ impl Node {
         max_journal_seq: u64,
         blacklist: &[(u64, u64)],
     ) -> Result<Self> {
+        Self::parse_keyed(
+            b,
+            magic,
+            block_bytes,
+            expect_seq,
+            max_journal_seq,
+            blacklist,
+            None,
+        )
+    }
+
+    /// [`Node::parse_filtered`] for a node of an encrypted filesystem,
+    /// whose master key is `key`: every record's MAC is verified and the
+    /// record decrypted before it is read ([`decrypt_node`]). A node whose
+    /// records carry MACs is refused without a key; with one, a node whose
+    /// records do not is refused too, because an encrypted filesystem
+    /// authenticates all of its metadata (S1 2.1.2).
+    pub fn parse_keyed(
+        b: &[u8],
+        magic: u64,
+        block_bytes: usize,
+        expect_seq: Option<u64>,
+        max_journal_seq: u64,
+        blacklist: &[(u64, u64)],
+        key: Option<&crate::crypt::MasterKey>,
+    ) -> Result<Self> {
         if b.len() < HEADER_BSET + BSET_HEADER {
             return Err(Error::Corrupt("btree node shorter than its header".into()));
         }
         if le64(b, 16) != magic {
             return Err(Error::BadMagic { what: "btree node" });
         }
+        let block = block_bytes.max(512);
+        let encrypted =
+            (le32(b, HEADER_BSET + 16) & 0xf) as u8 == crate::crypt::CSUM_CHACHA20_POLY1305_128;
+        let decrypted;
+        let b = match (encrypted, key) {
+            (false, None) => b,
+            (false, Some(_)) => {
+                return Err(Error::Corrupt(
+                    "a btree node with no MAC in an encrypted filesystem".into(),
+                ))
+            }
+            (true, None) => {
+                return Err(Error::Unsupported(
+                    "an encrypted btree node, and no master key to decrypt it".into(),
+                ))
+            }
+            (true, Some(key)) => {
+                let mut copy = b.to_vec();
+                decrypt_node(&mut copy, block, key)?;
+                decrypted = copy;
+                &decrypted[..]
+            }
+        };
         let format = BkeyFormat::parse(&b[80..80 + BkeyFormat::BYTES])?;
         let seq = le64(b, HEADER_BSET);
         if let Some(e) = expect_seq {
@@ -203,7 +252,6 @@ impl Node {
         let mut start = 0usize; // where this record's checksum starts
         let mut bset_at = HEADER_BSET;
         let mut index = 0usize;
-        let block = block_bytes.max(512);
         loop {
             if bset_at + BSET_HEADER > b.len() {
                 break;
@@ -222,19 +270,29 @@ impl Node {
                 ));
             }
             let csum_type = (bflags & 0xf) as u8;
-            if !crate::csum::is_known(csum_type) {
-                return Err(Error::Unsupported(format!(
-                    "btree node checksum type {csum_type}"
-                )));
-            }
-            let stored = le64(b, start) & csum_mask(csum_type);
-            crate::csum::verify(csum_type, &b[start + 16..end], stored).map_err(|computed| {
-                Error::BadChecksum {
-                    what: "btree node",
-                    stored,
-                    computed,
+            if encrypted {
+                // decrypt_node verified this record's MAC, and stops at
+                // the first record that carries none.
+                if csum_type != crate::crypt::CSUM_CHACHA20_POLY1305_128 {
+                    return Err(Error::Corrupt(format!(
+                        "a bset with checksum type {csum_type} in an encrypted btree node"
+                    )));
                 }
-            })?;
+            } else {
+                if !crate::csum::is_known(csum_type) {
+                    return Err(Error::Unsupported(format!(
+                        "btree node checksum type {csum_type}"
+                    )));
+                }
+                let stored = le64(b, start) & csum_mask(csum_type);
+                crate::csum::verify(csum_type, &b[start + 16..end], stored).map_err(
+                    |computed| Error::BadChecksum {
+                        what: "btree node",
+                        stored,
+                        computed,
+                    },
+                )?;
+            }
             let journal_seq = le64(b, bset_at + 8);
             let committed = journal_seq <= max_journal_seq
                 && !blacklist
@@ -302,6 +360,61 @@ impl Node {
         node.keys = merged;
         Ok(node)
     }
+}
+
+/// The bytes of a node's header that are encrypted: the flags, the min and
+/// max keys, the 8 unread bytes and the key format. OBSERVED: the magic
+/// before them reads in the clear on every node of `encrypted.img`, and
+/// these bytes decrypt to the bounds each node's parent pointer names.
+const HEADER_ENCRYPTED: std::ops::Range<usize> = 24..HEADER_BSET;
+
+/// Verify the MAC of, and decrypt in place, every record of an encrypted
+/// node, walking the records as [`Node::parse_keyed`] does: the first after
+/// the header, each later one in a `btree_node_entry` at the next block
+/// boundary, while its bset carries the node's seq and a MAC. OBSERVED on
+/// every record of `encrypted.img` (S4, docs/clean-room.md "Encryption:
+/// btree nodes"):
+///
+/// - a record's MAC is its first 16 bytes, over the record from byte 16 to
+///   the end of its keys as stored: the ciphertext, and the magic or the
+///   bset header in the clear;
+/// - the first record's encrypted header and its keys share one keystream,
+///   the keys starting at the 64-byte block after the header's;
+/// - a later record encrypts only its keys, from the start of its nonce's
+///   keystream;
+/// - every bset header is in the clear.
+///
+/// A record is decrypted only after its MAC verifies.
+fn decrypt_node(b: &mut [u8], block: usize, key: &crate::crypt::MasterKey) -> Result<()> {
+    let seq = le64(b, HEADER_BSET);
+    let mut start = 0usize;
+    let mut bset_at = HEADER_BSET;
+    while bset_at + BSET_HEADER <= b.len() && le64(b, bset_at) == seq {
+        let csum_type = (le32(b, bset_at + 16) & 0xf) as u8;
+        let keys_at = bset_at + BSET_HEADER;
+        let end = keys_at + le16(b, bset_at + 22) as usize * 8;
+        if csum_type != crate::crypt::CSUM_CHACHA20_POLY1305_128 || end > b.len() {
+            break; // the parse names what is wrong
+        }
+        let nonce = crate::crypt::btree_node_nonce(start, seq, le64(b, bset_at + 8))?;
+        let mac = key.mac(nonce, &b[start + 16..end])?;
+        if b[start..start + 16] != mac {
+            return Err(Error::BadChecksum {
+                what: "btree node MAC",
+                stored: le64(b, start),
+                computed: u64::from_le_bytes(mac[..8].try_into().expect("8 bytes")),
+            });
+        }
+        let mut keys_nonce = nonce;
+        if start == 0 {
+            key.apply(nonce, &mut b[HEADER_ENCRYPTED])?;
+            keys_nonce[0] += HEADER_ENCRYPTED.len().div_ceil(64) as u32;
+        }
+        key.apply(keys_nonce, &mut b[keys_at..end])?;
+        start = end.div_ceil(block) * block;
+        bset_at = start + 16;
+    }
+    Ok(())
 }
 
 /// How many bytes of the 16-byte checksum field a type uses.
@@ -801,13 +914,15 @@ fn read_node_upto(
     }
     let mut b = vec![0u8; len];
     dev.read_at(p.offset * 512, &mut b)?;
-    Node::parse_filtered(
+    let key = sb.crypt()?.and_then(|c| c.master_key());
+    Node::parse_keyed(
         &b,
         node_magic(&sb.uuid),
         sb.block_size as usize * 512,
         Some(ptr.seq),
         max_seq,
         blacklist,
+        key.as_ref(),
     )
 }
 
@@ -971,6 +1086,115 @@ mod tests {
         assert!(matches!(
             Node::parse_filtered(&b, MAGIC, 512, Some(SEQ), u64::MAX, &[(10, 20)]),
             Err(Error::BadChecksum { .. })
+        ));
+    }
+
+    /// The backpointers btree's root of `encrypted.img`, from the fixtures
+    /// of CI run 39021762764, as the reference formatter wrote it: an
+    /// interior node of two records, the header's (bytes 0..304, journal
+    /// sequence 0) and an entry at byte 512 (512..696, journal sequence
+    /// 0x2b), each holding two `btree_ptr_v2` keys, ChaCha20-encrypted and
+    /// MAC'd under the master key below, which the image's crypt field
+    /// stores unsealed. The clean field gives the root's level (1) and its
+    /// position (SPOS_MAX).
+    const ENCRYPTED_NODE: &[u8] =
+        include_bytes!("../tests/data/encrypted-backpointers-root-39021762764.bin");
+    const ENCRYPTED_MAGIC: u64 = 0x1d5a_a64f_da25_5056;
+    const ENCRYPTED_SEQ: u64 = 0x20fc_092d_3613_f1cd;
+
+    fn encrypted_key() -> crate::crypt::MasterKey {
+        crate::crypt::MasterKey::new([
+            0x4b, 0xb0, 0x49, 0x86, 0xf2, 0x3a, 0x34, 0x30, 0x7c, 0x1f, 0xf3, 0x81, 0xd3, 0x34,
+            0x4a, 0x8a, 0x6a, 0xe1, 0xcf, 0x6c, 0xc2, 0x89, 0xfc, 0x8e, 0xf8, 0x4b, 0xb4, 0x10,
+            0x70, 0x88, 0x9c, 0xc3,
+        ])
+    }
+
+    fn parse_encrypted(b: &[u8], key: Option<&crate::crypt::MasterKey>) -> Result<Node> {
+        Node::parse_keyed(
+            b,
+            ENCRYPTED_MAGIC,
+            512,
+            Some(ENCRYPTED_SEQ),
+            u64::MAX,
+            &[],
+            key,
+        )
+    }
+
+    #[test]
+    fn an_encrypted_node_is_verified_and_decrypted() {
+        let node = parse_encrypted(ENCRYPTED_NODE, Some(&encrypted_key())).unwrap();
+        // The decrypted header names the btree and level, and the bounds,
+        // that the superblock's root pointer gives.
+        assert_eq!(flags_id_and_level(node.flags), (13, 1));
+        assert_eq!((node.min_key, node.max_key), (Bpos::default(), Bpos::MAX));
+        let keys: Vec<(u8, Bpos)> = node.keys.iter().map(|k| (k.key_type, k.pos)).collect();
+        assert_eq!(
+            keys,
+            [
+                (
+                    key_type::BTREE_PTR_V2,
+                    Bpos {
+                        inode: 0,
+                        offset: 954_662_912,
+                        snapshot: 0
+                    }
+                ),
+                (key_type::BTREE_PTR_V2, Bpos::MAX),
+            ]
+        );
+    }
+
+    /// One byte changed in either record -- its MAC, the first record's
+    /// encrypted header, a bset header stored in the clear, the keys -- is
+    /// refused by name before anything is decrypted.
+    #[test]
+    fn an_encrypted_node_whose_mac_does_not_verify_is_refused() {
+        let key = encrypted_key();
+        for at in [0, 90, 144, 200, 512, 536, 600] {
+            let mut b = ENCRYPTED_NODE.to_vec();
+            b[at] ^= 1;
+            match parse_encrypted(&b, Some(&key)) {
+                Err(Error::BadChecksum { what, .. }) => {
+                    assert_eq!(what, "btree node MAC", "byte {at}")
+                }
+                other => panic!("byte {at}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_encrypted_node_is_refused_without_its_key_or_with_another() {
+        assert!(matches!(
+            parse_encrypted(ENCRYPTED_NODE, None),
+            Err(Error::Unsupported(_))
+        ));
+        let other = crate::crypt::MasterKey::new([0x5a; 32]);
+        assert!(matches!(
+            parse_encrypted(ENCRYPTED_NODE, Some(&other)),
+            Err(Error::BadChecksum { .. })
+        ));
+    }
+
+    /// An encrypted filesystem authenticates all of its metadata (S1
+    /// 2.1.2): a node, or a later bset, that carries a checksum instead of
+    /// a MAC is refused, not read unauthenticated.
+    #[test]
+    fn a_bset_without_a_mac_is_refused_in_an_encrypted_filesystem() {
+        let key = encrypted_key();
+        assert!(matches!(
+            Node::parse_keyed(&node(6), MAGIC, 512, Some(SEQ), u64::MAX, &[], Some(&key)),
+            Err(Error::Corrupt(_))
+        ));
+        // The second record's flags (bset at 528, flags at 544): checksum
+        // type 4, the MAC, becomes crc32c.
+        let mut b = ENCRYPTED_NODE.to_vec();
+        assert_eq!(b[544] & 0xf, crate::crypt::CSUM_CHACHA20_POLY1305_128);
+        b[544] = (b[544] & !0xf) | 1;
+        assert!(matches!(
+            parse_encrypted(&b, Some(&key)),
+            Err(Error::Corrupt(_))
         ));
     }
 }
