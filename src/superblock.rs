@@ -324,7 +324,8 @@ impl Superblock {
     }
 
     /// Read the superblock from a device: every copy the layout names,
-    /// the one with the highest valid `seq` winning.
+    /// the one with the highest valid `seq` winning, and the later copy
+    /// winning a tie.
     ///
     /// The Principles of Operation (S1, 9.5.1): each write of the
     /// superblock carries a `seq` one above the last, and of the copies a
@@ -364,7 +365,7 @@ impl Superblock {
             }
             match Self::read_at(dev, sector) {
                 Ok(sb) => {
-                    if best.as_ref().is_none_or(|b| sb.seq > b.seq) {
+                    if best.as_ref().is_none_or(|b| sb.seq >= b.seq) {
                         best = Some(sb);
                     }
                 }

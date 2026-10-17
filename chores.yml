@@ -124,7 +124,8 @@ tasks:
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 218'
+      # #247 adds the primary-only bucket-size regression to this tier.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 219'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -179,7 +180,8 @@ tasks:
         FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1060 52000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 313'
+      # #247 adds that oracle case and one live-reference comparison.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 315'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -286,7 +288,8 @@ tasks:
       # moving to rust-fs-core 0.3.12 missing the cache the same way. About
       # 30% over that is 720 lines; the bytes still fit 40,000.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 141'
+      # #247's primary-only regression also runs under coverage.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 142'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
