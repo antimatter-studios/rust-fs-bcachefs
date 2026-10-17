@@ -1381,6 +1381,7 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SIZE_ZERO: &[(u8, u8)] = &[
         (btree_id::INODES, key_type::INODE_V3),
         (btree_id::DIRENTS, key_type::DIRENT),
+        (btree_id::XATTRS, key_type::XATTR),
         (SUBVOLUMES, KEY_SUBVOLUME),
         (LRU, KEY_SET),
         (BACKPOINTERS, KEY_BACKPOINTER),
