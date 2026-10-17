@@ -4,7 +4,7 @@
 source "$(dirname "$0")/lib.sh"
 
 for set in default lz4 zstd gzip nocsum xxhash crc64 block4k labeled aged write-study/base; do
-    need_fixture "$set"
+    need_image "$set"
     img="$FIXTURES/$set.img"
     check "$set: VM property oracle exists" python3 "$REPO/tests/cli/get-oracle.py" \
         "$FIXTURES/$set" >"$SANDBOX/want.json"
