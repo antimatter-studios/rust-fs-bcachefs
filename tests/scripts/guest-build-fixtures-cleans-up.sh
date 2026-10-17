@@ -35,6 +35,9 @@ def image(arg):
 if name == 'mktemp':
     p = tempfile.mkdtemp(prefix='fixture-build.', dir=root / 'var/tmp')
     record('allocation', scratch=p)
+    if mode == 'foreign-mount':
+        state.write_text(json.dumps(dict(mount=str(Path(p) / 'mnt'), pid=os.getpid())))
+        record('foreign-mount')
     print(p)
 elif name == 'bcachefs-ref':
     op = args[0]
@@ -59,6 +62,12 @@ elif name == 'bcachefs-ref':
         for p in mnt.iterdir():
             if p.is_dir(): shutil.rmtree(p)
             else: p.unlink()
+        if mode in ('mount-dead', 'mount-unrecorded-hold'):
+            (case / 'mount-started').write_text(str(os.getpid()))
+            deadline = time.monotonic() + 10
+            while not (case / 'empty-mount-lookup').exists():
+                assert time.monotonic() < deadline, 'mount lookup did not begin'
+                time.sleep(.01)
         state.write_text(json.dumps(dict(mount=str(mnt), pid=os.getpid())))
         if mode == 'mount-dead':
             print('native daemon exited after attaching its mount', file=sys.stderr)
@@ -82,8 +91,8 @@ elif name == 'mountpoint':
             sys.exit(1)
     if mode == 'mount-hold' and mounted and not (case / 'signalled').exists():
         # The supervisor calls readiness only after recording the kernel ID.
-        # Daemon attachment alone can precede that ownership handoff; a signal
-        # then correctly refuses to detach an as-yet unrecorded mount.
+        # The mount-unrecorded-hold control separately covers a signal before
+        # the supervisor records an attached mount's identity.
         record('owned-mount-ready', mount=args[-1])
         (case / 'ready').write_text(str(os.getpid()))
         sys.exit(1)
@@ -91,7 +100,32 @@ elif name == 'mountpoint':
 elif name == 'findmnt':
     assert '--nocanonicalize' in args and '--kernel' in args
     target = args[args.index('--mountpoint') + 1]
-    if not state.exists(): sys.exit(1)
+    if not state.exists():
+        started = case / 'mount-started'
+        if mode in ('mount-dead', 'mount-unrecorded-hold') and started.exists():
+            # Snapshot an empty table, then let the daemon attach before this
+            # lookup returns. The supervisor must not mistake that old snapshot
+            # for proof that its terminated child left no mount behind.
+            pid = int(started.read_text())
+            (case / 'empty-mount-lookup').touch()
+            deadline = time.monotonic() + 10
+            while not state.exists():
+                assert time.monotonic() < deadline, 'daemon did not attach'
+                time.sleep(.01)
+            if mode == 'mount-dead':
+                while True:
+                    try: os.kill(pid, 0)
+                    except ProcessLookupError: break
+                    assert time.monotonic() < deadline, 'daemon did not exit'
+                    time.sleep(.01)
+                record('dead-after-empty-lookup')
+            else:
+                record('unrecorded-mount-ready')
+                (case / 'ready').touch()
+                while not (case / 'signalled').exists():
+                    assert time.monotonic() < deadline, 'supervisor was not signalled'
+                    time.sleep(.01)
+        sys.exit(1)
     data = json.loads(state.read_text())
     assert data['mount'] == target, 'mount lookup targeted another invocation'
     identity = 1000
@@ -265,18 +299,25 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                 assert any(e['kind'] == 'refusal-preserved' for e in records)
                 assert not any(e['kind'] == 'unmount' for e in records)
             else:
-                assert any(e['kind'] == 'unmount' for e in records), 'dead endpoint was not detached'
+                assert any(e['kind'] == 'dead-after-empty-lookup' for e in records), 'race was not exercised'
+                assert sum(e['kind'] == 'unmount' for e in records) == 1, 'dead endpoint was not detached once'
+        proc, case = start('foreign-mount', 'foreign-mount')
+        finish(proc, case, 1, retained=True)
+        assert any(e['kind'] == 'foreign-mount' for e in events(case))
+        assert not any(e['kind'] in ('fuse', 'unmount') for e in events(case)), 'foreign mount was adopted'
         proc, case = start('changed-mount', 'mount-identity-changed')
         finish(proc, case, 1, retained=True)
         assert 'mount identity changed; refusing to detach' in (case / 'log').read_text()
         assert not any(e['kind'] == 'unmount' for e in events(case))
         for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-            for mode in ('format-hold', 'mount-hold', 'copy-hold'):
+            for mode in ('format-hold', 'mount-hold', 'mount-unrecorded-hold', 'copy-hold'):
                 proc, case = start(f'{sig.name}-{mode}', mode)
                 await_ready(proc, case)
                 if mode == 'mount-hold':
                     assert any(e['kind'] == 'owned-mount-ready' for e in events(case))
                     assert not any(e['kind'] == 'unmount' for e in events(case))
+                if mode == 'mount-unrecorded-hold':
+                    assert any(e['kind'] == 'unrecorded-mount-ready' for e in events(case))
                 (case / 'signalled').touch()
                 proc.send_signal(sig)
                 finish(proc, case, 128 + sig)
