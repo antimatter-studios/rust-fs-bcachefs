@@ -7,11 +7,11 @@
 use std::ffi::OsString;
 use std::io::Read;
 
+use super::device::{Device, Target};
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 use fs_bcachefs::write::Writer;
 use fs_bcachefs::Filesystem;
 use fs_core::cli::{CliError, Json, Outcome};
-use fs_core::FileDevice;
 
 const VERBS: &[&str] = &[
     "write", "mkdir", "rm", "rmdir", "mv", "ln", "chmod", "chown", "setfattr", "rmfattr",
@@ -136,7 +136,7 @@ fn failed(e: fs_bcachefs::Error) -> CliError {
 }
 
 /// A path's parent directory, by inode, and its last component.
-fn split(target: &OsString, p: &str) -> Result<(u64, Vec<u8>), CliError> {
+fn split(target: &Target<'_>, p: &str) -> Result<(u64, Vec<u8>), CliError> {
     let trimmed = p.trim_end_matches('/');
     let (dir, name) = match trimmed.rfind('/') {
         Some(i) => (&trimmed[..i], &trimmed[i + 1..]),
@@ -145,19 +145,15 @@ fn split(target: &OsString, p: &str) -> Result<(u64, Vec<u8>), CliError> {
     if name.is_empty() {
         return Err(CliError::usage(format!("{p:?} names no entry")));
     }
-    let fs =
-        Filesystem::open(FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?)
-            .map_err(failed)?;
+    let fs = Filesystem::open(target.open()?).map_err(failed)?;
     let dir = fs
         .lookup(if dir.is_empty() { "/" } else { dir })
         .map_err(failed)?;
     Ok((dir, name.as_bytes().to_vec()))
 }
 
-fn lookup(target: &OsString, p: &str) -> Result<u64, CliError> {
-    let fs =
-        Filesystem::open(FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?)
-            .map_err(failed)?;
+fn lookup(target: &Target<'_>, p: &str) -> Result<u64, CliError> {
+    let fs = Filesystem::open(target.open()?).map_err(failed)?;
     fs.lookup(p).map_err(failed)
 }
 
@@ -165,7 +161,7 @@ fn octal(s: &str) -> Result<u32, CliError> {
     u32::from_str_radix(s, 8).map_err(|_| CliError::usage(format!("{s:?} is not an octal mode")))
 }
 
-fn writer(dev: FileDevice, journal: bool) -> Result<Writer<FileDevice>, CliError> {
+fn writer(dev: Device, journal: bool) -> Result<Writer<Device>, CliError> {
     if journal {
         Writer::open_journalled(dev).map_err(failed)
     } else {
@@ -177,7 +173,7 @@ fn writer(dev: FileDevice, journal: bool) -> Result<Writer<FileDevice>, CliError
 /// handle is opened. Only a missing final entry is a create; unsupported
 /// paths and damaged metadata must retain their own errors.
 fn write_path(
-    target: &OsString,
+    target: &Target<'_>,
     p: &str,
     journal: bool,
 ) -> Result<(u64, Vec<u8>, Option<u64>), CliError> {
@@ -187,13 +183,8 @@ fn write_path(
     }
     // These constructors only read. A read-only device lets the library
     // check its existing capabilities and journal without risking writes.
-    writer(
-        FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?,
-        journal,
-    )?;
-    let fs =
-        Filesystem::open(FileDevice::open(target).map_err(|e| CliError::failed(e.to_string()))?)
-            .map_err(failed)?;
+    writer(target.open()?, journal)?;
+    let fs = Filesystem::open(target.open()?).map_err(failed)?;
     if fs.root().snapshot != u32::MAX {
         return Err(CliError::not_implemented(
             "writing a snapshotted root subvolume",
@@ -260,17 +251,17 @@ fn write_path(
 }
 
 /// Run a write verb, or `None` when `verb` is not one.
-pub fn run(target: &OsString, verb: &str, m: &ArgMatches) -> Option<Result<Outcome, CliError>> {
+pub fn run(target: &Target<'_>, verb: &str, m: &ArgMatches) -> Option<Result<Outcome, CliError>> {
     if !VERBS.contains(&verb) {
         return None;
     }
     Some(run_verb(target, verb, m))
 }
 
-fn run_verb(target: &OsString, verb: &str, m: &ArgMatches) -> Result<Outcome, CliError> {
+fn run_verb(target: &Target<'_>, verb: &str, m: &ArgMatches) -> Result<Outcome, CliError> {
     let s = |k: &str| m.get_one::<String>(k).cloned().unwrap_or_default();
-    let open = || -> Result<Writer<FileDevice>, CliError> {
-        let dev = FileDevice::open_rw(target).map_err(|e| CliError::failed(e.to_string()))?;
+    let open = || -> Result<Writer<Device>, CliError> {
+        let dev = target.open_rw()?;
         if m.get_flag("journal") {
             // Continues a journal an earlier --journal left for replay.
             Writer::open_journalled(dev).map_err(failed)

@@ -2,6 +2,7 @@
 # Shared properties are compared with independent VM printer/lister reports.
 # shellcheck disable=SC2016 # Dollar names in single quotes are jq variables.
 source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/offset-lib.sh"
 
 for set in default lz4 zstd gzip nocsum xxhash crc64 block4k labeled aged write-study/base; do
     need_image "$set"
@@ -50,6 +51,24 @@ for set in default lz4 zstd gzip nocsum xxhash crc64 block4k labeled aged write-
         check "$set: $verb null label text is empty" test "$(cat "$SANDBOX/label")" = "$(jq -r '.label // ""' "$SANDBOX/want.json")"
     done
 done
+
+# An embedded reference-made image gives exactly the original VM-recorded
+# properties; --offset selects the device, never a position in a file.
+check 'embed the property fixture at byte 1048576' \
+    offset_embed "$FIXTURES/default.img" "$SANDBOX/whole.img" 1048576
+check 'the property oracle is available' python3 "$REPO/tests/cli/get-oracle.py" \
+    "$FIXTURES/default" >"$SANDBOX/want.json"
+for verb in get info; do
+    fs.bcachefs "$SANDBOX/whole.img" "$verb" --offset 1048576 >"$SANDBOX/got.json" 2>"$SANDBOX/err"
+    check "$verb reads properties at the device offset" test $? -eq 0
+    check "$verb properties agree with the VM reference reports" jq -e --slurpfile want "$SANDBOX/want.json" \
+        '. == $want[0]' "$SANDBOX/got.json" >/dev/null
+done
+while IFS="$(printf '\t')" read -r path sha; do
+    fs.bcachefs "$SANDBOX/whole.img" read "$path" --offset 1048576 >"$SANDBOX/out" 2>"$SANDBOX/err"
+    check "read $path selects the filesystem device" test $? -eq 0
+    check "read $path agrees with the guest manifest" test "$(shasum -a 256 <"$SANDBOX/out" | cut -d' ' -f1)" = "$sha"
+done < <(jq -r '.entries[] | select(.type == "file") | [.path, .sha256] | @tsv' "$FIXTURES/default.json")
 
 # The superblock printer recorded both clean states. Replay must not hide dirty.
 need_fixture aged-unclean

@@ -1483,6 +1483,23 @@ locating the member field, so it also runs over rebuilt fixtures.
 changed copy at the same sequence, a newer primary, and all copies
 changed together, before comparing this crate's verdicts.
 
+## CLI device windows (#295)
+
+`--offset` changes the device window, without adding any interpretation of
+the on-disk format. `tests/cli/test-offset.sh` embeds the reference-made
+default fixture at byte 1048576, compares read-only verb output byte for byte
+with the offset-zero image, and checks every regular file against the guest's
+recorded SHA-256 manifest (S3). The verb table requires every implemented
+command, including later additions, to reject a past-end device offset;
+unimplemented commands retain their refusal before opening any target.
+
+`tests/cli/test-write.sh` repeats every write verb in place and through the
+journal on an embedded reference-made image. Prefix and suffix sentinels
+must survive. `cli_offset_writes_are_read_by_the_reference` in
+`tests/write_oracle.rs` extracts the exact written partition bytes for the
+guest's reference checker, lister and read-only mount to judge (S3, S8).
+This is black-box CLI use only; no reference source is read or compared.
+
 ## No comparison against the reference source
 
 Decided 2026-10-17 (#160). This record is evidence about the *process*: the

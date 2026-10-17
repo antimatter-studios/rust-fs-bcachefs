@@ -3,6 +3,7 @@
 //! The dispatch and output contract are `fs_core::cli` (rust-fs-core's
 //! `cli` feature); `fs` is the tool itself.
 
+mod device;
 mod fs;
 mod fs_write;
 mod fsck;
