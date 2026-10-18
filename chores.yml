@@ -135,7 +135,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 34000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 221'
+      # #247 adds the primary-only bucket-size regression to this tier.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 222'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -195,7 +196,8 @@ tasks:
       # (173 passed, three failed) are not a full-suite baseline. #218 adds
       # two unit, three oracle, one exact-dirent and seven matrix/parser
       # cases to the full baseline: 304 + 6 + 13 = 323.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 326'
+      # #247 adds that oracle case and one live-reference comparison.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 328'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -305,7 +307,8 @@ tasks:
       # Runs 38997027177 and 39037096192 each executed 138 coverage cases.
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 143'
+      # #247's primary-only regression also runs under coverage.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 144'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
