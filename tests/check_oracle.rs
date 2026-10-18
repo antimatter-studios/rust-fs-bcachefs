@@ -3,6 +3,9 @@
 //! it fails naming that. Nothing skips. Wherever the reference finds a
 //! problem, this crate's checker must find one too.
 
+#[cfg(feature = "write")]
+#[path = "common/backpointer.rs"]
+mod backpointer;
 mod common;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
@@ -106,6 +109,77 @@ fn reference_finds_a_problem(img: &Path) -> (bool, String) {
         !l.trim_start().starts_with("with options") && (l.contains("error") || l.contains("fixing"))
     });
     (!out.status.success() || named, text)
+}
+
+/// #256's exact word-one change and each changed field independently,
+/// judged by the reference binary after unchanged controls pass. The
+/// reference accepts the target snapshot changed alone (run 39094186901,
+/// #348), so both checkers must call that case clean.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for set in ["default", "block4k"] {
+        for case in ["word-one", "length", "snapshot"] {
+            let dir = ScratchDir::new("check-backpointer-oracle");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("{set}-{case}.img"));
+            std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+            let (bad, text) = reference_finds_a_problem(&img);
+            assert!(!bad, "the unchanged control must be clean:\n{text}");
+            assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+            let (extent, original) = backpointer::pair(&img);
+            let mut changed = original.clone();
+            backpointer::change(&mut changed, case);
+            {
+                let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+                w.insert(backpointer::TREE, vec![changed.clone()]).unwrap();
+            }
+            let dev = FileDevice::open(&img).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            let stored = btree::walk(&dev, &sb, backpointer::TREE)
+                .unwrap()
+                .into_iter()
+                .find(|k| k.pos == changed.pos)
+                .expect("the changed backpointer is stored");
+            assert_eq!(stored, changed, "only the selected value bytes change");
+            assert!(
+                btree::walk(&dev, &sb, btree_id::EXTENTS)
+                    .unwrap()
+                    .contains(&extent),
+                "the extent is unchanged"
+            );
+            let rejected = case != "snapshot";
+            let (bad, text) = reference_finds_a_problem(&img);
+            assert_eq!(
+                bad && text.contains("backpointer doesn't match extent it points to:"),
+                rejected,
+                "{set}/{case}: wrong reference finding:\n{text}"
+            );
+            assert_eq!(bad, rejected, "{set}/{case}: reference verdict:\n{text}");
+            let ours = check(&dev).unwrap();
+            assert_eq!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == "backpointer_to_missing_ptr"
+                        && p.detail.contains(&extent.pos.to_string())),
+                rejected,
+                "{set}/{case}: {:?}\n{text}",
+                ours.problems
+            );
+            assert!(
+                rejected || ours.clean(),
+                "{set}/{case}: {:?}",
+                ours.problems
+            );
+        }
+    }
 }
 
 /// #247's primary-only mutation, with equal-sequence backup controls and

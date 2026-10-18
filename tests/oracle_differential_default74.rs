@@ -140,3 +140,64 @@ fn the_default_74_extent_data_mismatch_is_in_the_image() {
         "default-{SEED}: expected one extent storing {STORED:#x}, judged {judged}"
     );
 }
+
+/// Both non-crashing #256 cases from nightly run 39018152705.
+#[test]
+fn the_block4k_1659443_backpointer_value_mismatch_is_reported() {
+    assert_eq!(
+        std::fs::read_to_string(common::fixtures_dir().join("../fixtures-pin"))
+            .expect("differential.yml must fetch and verify the pinned fixtures")
+            .trim(),
+        FIXTURE_DIGEST
+    );
+    for (set, seed, bp_offset, inode, len, word) in [
+        ("block4k", 1659443, 1116733440, 2147483766, 8u32, 1u64),
+        ("aged", 1659460, 3114205184, 2147487978, 22, 0),
+    ] {
+        let base = Arc::new(std::fs::read(common::fixture(&format!("{set}.img"))).unwrap());
+        let t = targets(&base);
+        let dev = Overlay::new(Arc::clone(&base), false);
+        assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
+        let at = Bpos {
+            inode: 0,
+            offset: bp_offset,
+            snapshot: 0,
+        };
+        let target = Bpos {
+            inode,
+            offset: u64::from(len),
+            snapshot: u32::MAX,
+        };
+        let bp = |dev: &Overlay| {
+            let sb = Superblock::read(dev).unwrap();
+            btree::walk(dev, &sb, 13)
+                .unwrap()
+                .into_iter()
+                .find(|k| k.key_type == 28 && k.pos == at)
+                .expect("the reported backpointer exists")
+        };
+        let original = bp(&dev);
+        assert_eq!(Bpos::parse(&original.value[12..]).unwrap(), target);
+        assert_eq!(le32(&original.value, 8), len);
+        assert_eq!(
+            apply_case(&dev, &t, seed),
+            format!("btree 13 key at {at}: value changed, insert committed")
+        );
+        let mut expected = original;
+        expected.value[8..16].copy_from_slice(&word.to_le_bytes());
+        assert_eq!(
+            bp(&dev),
+            expected,
+            "the exact value-only mutation is replayed"
+        );
+        let r = fs_bcachefs::check::check(&*dev).unwrap();
+        assert!(
+            r.problems
+                .iter()
+                .any(|p| p.kind == "backpointer_to_missing_ptr"
+                    && p.detail.contains(&target.to_string())),
+            "{:?}",
+            r.problems
+        );
+    }
+}
