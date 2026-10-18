@@ -16,7 +16,7 @@ use fs_core::{BlockRead, FileDevice};
 
 /// Every `.img` in the fixtures and the write study whose superblock
 /// records its roots (a cleanly shut down image), except the refused sets:
-/// the encrypted one and the two members of the two-device filesystem,
+/// the encrypted ones and the two members of the two-device filesystem,
 /// which this reader declines by design.
 fn clean_images() -> Vec<String> {
     let mut out = Vec::new();
@@ -25,7 +25,7 @@ fn clean_images() -> Vec<String> {
             let name = e.unwrap().file_name().to_string_lossy().into_owned();
             if let Some(stem) = name
                 .strip_suffix(".img")
-                .filter(|s| *s != "encrypted" && !s.starts_with("multi-"))
+                .filter(|s| !s.starts_with("encrypted") && !s.starts_with("multi-"))
             {
                 let path = format!("{sub}{stem}");
                 let dev = FileDevice::open(fixture(&format!("{path}.img"))).unwrap();
