@@ -555,6 +555,19 @@ all eight fixture sets.
   compressed extent's is #275's. Nor are a version of 2^32 or more (whether
   its high bits are word 2 or share word 3 with the domain), a non-zero
   nonce offset, or a data MAC of another width observed.
+- **Incompressible extents (#356, part of #330)** take the uncompressed
+  extent's nonce. S4: candidate computations over `encrypted-compressed.img`
+  (formatted `--compression=lz4`; its random file's extents carry
+  compression type 5, incompressible), with each key's version as the
+  reference lister prints it. All 34 incompressible extents reproduce their
+  stored 80-bit MAC with `[0, version, 0, 0x1000_0000]`, so neither the
+  incompressible type nor their uncompressed sizes (13 to 64 sectors) enter
+  it. Its 10 LZ4 extents reproduce theirs with no nonce tried: the version
+  word, and each other word, XORed with every value below 2^22 (and those
+  values bit-reversed), and any two words XORed with the compression type
+  (0 to 15) and one of the uncompressed or compressed size, less one or
+  times 512, each shifted 0 to 31 bits. An LZ4 extent stays refused until
+  its nonce is found.
 - **The MAC** is Poly1305 over the extent's stored bytes (the ciphertext,
   all of its compressed size), keyed with the first 32 keystream bytes of
   its nonce with `0x8000_0000` XORed into word 3, as for a btree node. Its

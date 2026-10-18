@@ -15,9 +15,12 @@ mod common;
 use common::{fixture, fixtures_dir, read_text};
 use fs_bcachefs::bkey;
 use fs_bcachefs::btree;
+use fs_bcachefs::crypt;
 use fs_bcachefs::extent::{compression, DataExtent};
 use fs_bcachefs::superblock::Superblock;
-use fs_core::FileDevice;
+use fs_bcachefs::Error;
+use fs_core::{BlockRead, FileDevice};
+use std::collections::HashMap;
 
 /// The 80-bit Poly1305 MAC every encrypted data extent carries (S4,
 /// docs/clean-room.md), by the lister's name and by its checksum type.
@@ -109,5 +112,67 @@ fn the_reference_checked_and_read_the_image() {
     assert!(
         fixtures_dir().join("encrypted-compressed.json").exists(),
         "the reference implementation did not read encrypted-compressed.img:\n{record}"
+    );
+}
+
+/// The version of every extent key, as the lister printed it (`ver N`),
+/// by the key's position.
+fn lister_versions(text: &str) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    for l in text.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let pos = w.iter().position(|x| *x == "extent").map(|i| w[i + 1]);
+        let ver = w.iter().position(|x| *x == "ver").map(|i| w[i + 1]);
+        if let (Some(pos), Some(ver)) = (pos, ver) {
+            out.insert(pos.to_string(), ver.parse().unwrap());
+        }
+    }
+    out
+}
+
+/// An incompressible extent (#356, part of #330) is encrypted with the
+/// nonce an uncompressed one is: its MAC, which the reference
+/// implementation wrote, verifies under it, and a wrong nonce would match
+/// an 80-bit MAC with probability 2^-80. An LZ4 extent's nonce has not
+/// been found, so it is still refused, naming its compression type.
+#[test]
+fn incompressible_encrypted_extents_verify_with_the_uncompressed_nonce() {
+    let dev = FileDevice::open(fixture("encrypted-compressed.img")).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let key = sb
+        .crypt()
+        .unwrap()
+        .and_then(|c| c.master_key())
+        .expect("encrypted-compressed.img stores its master key unsealed");
+    let versions = lister_versions(&read_text("encrypted-compressed.extents.txt"));
+    let (mut incompressible, mut lz4) = (0, 0);
+    for k in btree::walk(&dev, &sb, btree::btree_id::EXTENTS).unwrap() {
+        if k.key_type != bkey::key_type::EXTENT {
+            continue;
+        }
+        let e = DataExtent::from_key(&k).unwrap();
+        let c = e.crc.expect("every extent of the image has a crc entry");
+        let pos = k.pos.to_string();
+        let ver = *versions
+            .get(&pos)
+            .unwrap_or_else(|| panic!("{pos}: the lister printed no version"));
+        let mut data = vec![0u8; c.compressed_size as usize * 512];
+        dev.read_at(e.ptr.offset * 512, &mut data).unwrap();
+        let got = crypt::decrypt_extent(&key, &c, 0, ver, &mut data);
+        match c.compression_type {
+            compression::INCOMPRESSIBLE => {
+                got.unwrap_or_else(|err| panic!("{pos} (version {ver}): {err}"));
+                incompressible += 1;
+            }
+            compression::LZ4 => match got {
+                Err(Error::Unsupported(m)) if m.contains("compression type") => lz4 += 1,
+                other => panic!("{pos}: an LZ4 extent was not refused: {other:?}"),
+            },
+            t => panic!("{pos}: compression type {t}, which the image was not built with"),
+        }
+    }
+    assert!(
+        incompressible > 0 && lz4 > 0,
+        "the image must hold both: {incompressible} incompressible, {lz4} LZ4 extents"
     );
 }

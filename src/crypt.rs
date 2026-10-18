@@ -282,12 +282,16 @@ pub fn btree_node_nonce(offset: usize, seq: u64, journal_seq: u64) -> Result<Non
 /// version is `version_hi:version_lo`. OBSERVED on all 441 extents of
 /// `encrypted.img`: the version (1 to 0x1b9, its high 64 bits zero) is word
 /// 1, and the uncompressed size, which runs from 1 to 64 sectors there,
-/// does not enter it. What was not seen is refused rather than given a
+/// does not enter it. OBSERVED on all 34 incompressible extents of
+/// `encrypted-compressed.img` (#356): the incompressible type does not
+/// enter it either. What was not seen is refused rather than given a
 /// guessed nonce: a compressed extent (S1 puts the compression type in the
-/// nonce, #275), a per-CRC nonce offset, and a version of 2^32 or more
+/// nonce, #330), a per-CRC nonce offset, and a version of 2^32 or more
 /// (whether its high bits are word 2 or share word 3).
 pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce> {
-    if crc.compression_type != compression::NONE {
+    if crc.compression_type != compression::NONE
+        && crc.compression_type != compression::INCOMPRESSIBLE
+    {
         return Err(Error::Unsupported(format!(
             "an encrypted extent with compression type {}: how a compressed extent's nonce is \
              made has not been observed",
@@ -625,7 +629,7 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         };
-        for t in [compression::LZ4, compression::INCOMPRESSIBLE] {
+        for t in [compression::GZIP, compression::LZ4, compression::ZSTD] {
             let m = unsupported(
                 Crc {
                     compression_type: t,
@@ -636,6 +640,15 @@ mod tests {
             );
             assert!(m.contains("compression type"), "{m}");
         }
+        // Incompressible takes the uncompressed nonce (#356).
+        let incompressible = Crc {
+            compression_type: compression::INCOMPRESSIBLE,
+            ..hello_crc()
+        };
+        assert_eq!(
+            extent_nonce(&incompressible, 0, HELLO_VERSION).unwrap(),
+            extent_nonce(&hello_crc(), 0, HELLO_VERSION).unwrap()
+        );
         let m = unsupported(
             Crc {
                 nonce: 1,
