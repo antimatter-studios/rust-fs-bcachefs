@@ -17,6 +17,8 @@
 //!   alloc keys add up to (the reference's "accounting mismatch").
 #![cfg(feature = "write")]
 
+#[path = "common/backpointer.rs"]
+mod backpointer;
 mod common;
 
 use common::fixture;
@@ -166,6 +168,39 @@ fn a_data_extent_whose_backpointer_is_gone_is_reported() {
         extent.pos,
         report.problems
     );
+}
+
+/// The reference accepts the target snapshot changed alone (run
+/// 39094186901, #348), so that case must stay clean here too.
+#[test]
+fn a_backpointer_whose_value_disagrees_with_its_extent_is_reported() {
+    for set in ["default", "block4k"] {
+        for case in ["word-one", "length", "snapshot"] {
+            let img = common::ScratchDir::new("check-backpointer")
+                .into_image(format!("{set}-{case}.img"));
+            std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+            assert!(check::check(&FileDevice::open(&img).unwrap())
+                .unwrap()
+                .clean());
+            let (extent, mut bp) = backpointer::pair(&img);
+            backpointer::change(&mut bp, case);
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(backpointer::TREE, vec![bp]).unwrap();
+            drop(w);
+            let r = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+            let rejected = case != "snapshot";
+            assert_eq!(
+                r.problems
+                    .iter()
+                    .any(|p| p.kind == "backpointer_to_missing_ptr"
+                        && p.detail.contains(&extent.pos.to_string())),
+                rejected,
+                "{set}/{case}: {:?}",
+                r.problems
+            );
+            assert!(rejected || r.clean(), "{set}/{case}: {:?}", r.problems);
+        }
+    }
 }
 
 #[test]
