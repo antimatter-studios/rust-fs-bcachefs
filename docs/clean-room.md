@@ -503,6 +503,21 @@ checker judged each attempt and named what was missing until nothing was.
   member's buckets from `First bucket` on as the capacity; both are
   checked against show-super and the lister's freespace listing (S3,
   tests/oracle_capi.rs).
+- The shared CLI property report (#294) uses the same capacity/free-space
+  definition. A black-box VM study on 2026-10-17 recorded the superblock
+  printer and freespace lister for default, labeled and 4096-byte-block
+  formatter images: 2048 usable 32768-byte buckets and a free run of 1922
+  buckets on each one. The formatter's help and printed report distinguish
+  `--fs_label` (the filesystem label) from `--label` (a device label).
+  `Label`, `External UUID`, `Version`, `Devices`,
+  `block_size`, `btree_node_size`, `Clean` and the presence of a `crypt`
+  section supply every remaining reported property (S3). `dirty` is the
+  inverse of the printed `Clean` flag, including the existing unclean
+  fixture; replay in memory does not change that observation. The fixture
+  builder now records freespace listings for fresh and aged images, plus
+  a labeled set. `tests/cli/test-get.sh` compares the complete JSON report
+  with these independent text reports via `tests/cli/get-oracle.py`; that
+  translator reads no image bytes and invokes no Rust reader.
 - alloc_v4 (type 27, alloc btree id 4) per bucket: word 0 journal seq when
   it became non-empty, word 1 flags in byte 0 (0x23 on every bucket in use;
   bit 0 need_discard, bit 1 need_inc_gen), gen byte 4, oldest_gen byte 5,
