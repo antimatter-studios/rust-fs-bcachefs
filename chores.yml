@@ -100,13 +100,17 @@ tasks:
   # one backpointer unit case, one oracle case and one native reference
   # case; vm runs all three, coverage runs the unit case only. The two
   # exact pinned mutations also run in differential.yml's pinned job.
+  # FLOORS RAISED for #258 from the same measured baseline and stack:
+  # one xattr-size unit case, one oracle case and one native reference
+  # case; vm runs all three, coverage runs the unit case only. The exact
+  # aged seed also runs in differential.yml's digest-pinned job.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
       # Runs 38997027177 and 39037096192 each executed 52 unit cases.
       # #253/#254 add two, and #218's recorded-verdict regressions add two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 58'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 59'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -140,7 +144,7 @@ tasks:
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 223'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 224'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -201,7 +205,7 @@ tasks:
       # two unit, three oracle, one exact-dirent and seven matrix/parser
       # cases to the full baseline: 304 + 6 + 13 = 323.
       # #247 adds that oracle case and one live-reference comparison.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 331'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 334'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -312,7 +316,7 @@ tasks:
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
       # #247's primary-only regression also runs under coverage.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 145'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 146'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

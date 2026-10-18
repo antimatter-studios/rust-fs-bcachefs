@@ -141,6 +141,57 @@ fn the_default_74_extent_data_mismatch_is_in_the_image() {
     );
 }
 
+/// The exact #258 size-only mutation from nightly run 39018152705.
+#[test]
+fn the_aged_1659486_xattr_size_mismatch_is_reported() {
+    assert_eq!(
+        std::fs::read_to_string(common::fixtures_dir().join("../fixtures-pin"))
+            .expect("differential.yml must fetch and verify the pinned fixtures")
+            .trim(),
+        FIXTURE_DIGEST
+    );
+    let base = Arc::new(std::fs::read(common::fixture("aged.img")).unwrap());
+    let t = targets(&base);
+    let dev = Overlay::new(Arc::clone(&base), false);
+    assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
+    let at = Bpos {
+        inode: 2147487679,
+        offset: 2679498547732338290,
+        snapshot: u32::MAX,
+    };
+    let xattr = |dev: &Overlay| {
+        let sb = Superblock::read(dev).unwrap();
+        btree::walk(dev, &sb, btree_id::XATTRS)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == key_type::XATTR && k.pos == at)
+            .expect("the reported xattr exists")
+    };
+    let original = xattr(&dev);
+    assert_eq!(original.size, 0);
+    assert_eq!(original.value.get(..2), Some([0, 6].as_slice()));
+    assert_eq!(original.value.get(4..10), Some(b"attr29".as_slice()));
+    assert_eq!(
+        apply_case(&dev, &t, 1659486),
+        format!("btree 3 key at {at}: size changed, insert committed")
+    );
+    let mut expected = original;
+    expected.size = 1;
+    assert_eq!(
+        xattr(&dev),
+        expected,
+        "the exact size-only mutation is replayed"
+    );
+    let r = fs_bcachefs::check::check(&*dev).unwrap();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.kind == "bkey_size_nonzero" && p.detail.contains(&at.to_string())),
+        "{:?}",
+        r.problems
+    );
+}
+
 /// Both non-crashing #256 cases from nightly run 39018152705.
 #[test]
 fn the_block4k_1659443_backpointer_value_mismatch_is_reported() {
