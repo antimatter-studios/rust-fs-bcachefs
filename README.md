@@ -87,6 +87,26 @@ directories, special files and symlinks; a symlink error names its target
 so it can be read explicitly. Errors use JSON on stderr by default, or
 text with `--text`.
 
+## Filesystems inside whole-disk images
+
+`--offset BYTES` is the unsigned byte offset of the filesystem within the
+target file or device, as reported by a partition probe. It defaults to zero
+and applies to every `fs.bcachefs` verb, including experimental writes and
+their preflight checks. It never means a position within a file's contents.
+The global option can appear before the target, before the verb, or after
+the verb's arguments:
+
+```sh
+fs.bcachefs --offset 1048576 whole-disk.img info
+fs.bcachefs whole-disk.img --offset 1048576 ls /
+fs.bcachefs whole-disk.img read /hello.txt --offset 1048576 -o hello.txt
+fs.bcachefs whole-disk.img write /hello.txt --from hello.txt --offset 1048576
+```
+
+Malformed or overflowing offsets return the shared exit-2 argument error.
+An offset at or beyond the target's end fails before any filesystem operation.
+Unimplemented verbs still refuse before opening a target.
+
 ## Writing files (experimental)
 
 The `cli` feature includes the library's experimental `write` feature:

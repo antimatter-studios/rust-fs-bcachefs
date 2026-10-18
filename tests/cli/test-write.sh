@@ -4,6 +4,11 @@
 # journal. The reference checker's verdict on the same operations is
 # tests/write_oracle.rs, in the guest.
 source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/offset-lib.sh"
+
+# Run the same complete verb sequence on a raw device and an embedded one.
+offset=0
+fs.bcachefs() { command fs.bcachefs --offset "$offset" "$@"; }
 
 if [ ! -f "$FIXTURES/write-study/base.img" ]; then
     echo "FAIL  $NAME: $FIXTURES/write-study/base.img is missing -- build the fixtures with \`chore fixtures\`" >&2
@@ -11,11 +16,14 @@ if [ ! -f "$FIXTURES/write-study/base.img" ]; then
     exit 1
 fi
 
-for mode in in-place journal; do
+for mode in in-place journal in-place-offset journal-offset; do
     img="$SANDBOX/$mode.img"
-    cp "$FIXTURES/write-study/base.img" "$img"
+    offset=0
+    case "$mode" in *-offset) offset=1048576 ;; esac
+    check "$mode: embed the reference-made write fixture" \
+        offset_embed "$FIXTURES/write-study/base.img" "$img" "$offset"
     j=""
-    [ "$mode" = journal ] && j="--journal"
+    case "$mode" in journal*) j="--journal" ;; esac
 
     printf 'hello from the cli\n' | fs.bcachefs "$img" put /d/hello $j >/dev/null 2>"$SANDBOX/err"
     check "$mode: put from stdin ($(cat "$SANDBOX/err"))" test $? -eq 0
@@ -36,6 +44,8 @@ for mode in in-place journal; do
     check "$mode: chown" test $? -eq 0
     fs.bcachefs "$img" setfattr user.k v /d/hello $j >/dev/null
     check "$mode: setfattr" test $? -eq 0
+    fs.bcachefs "$img" rmfattr user.k /d/hello $j >/dev/null
+    check "$mode: rmfattr" test $? -eq 0
     fs.bcachefs "$img" mkdir /d/gone $j >/dev/null && fs.bcachefs "$img" rmdir /d/gone $j >/dev/null
     check "$mode: mkdir then rmdir" test $? -eq 0
     printf 'x' | fs.bcachefs "$img" put /d/doomed $j >/dev/null && fs.bcachefs "$img" rm /d/doomed $j >/dev/null
@@ -55,11 +65,13 @@ for mode in in-place journal; do
     fs.bcachefs "$img" stat /d/hello >"$SANDBOX/stat.json"
     check "$mode: stat /d/hello: mode, owner, links" \
         jq -e '.mode == "0600" and .uid == 1000 and .gid == 1000 and .nlink == 2' "$SANDBOX/stat.json" >/dev/null
-    if command -v fsck.bcachefs >/dev/null 2>&1; then
-        fsck.bcachefs "$img" >/dev/null 2>&1
-        check "$mode: fsck.bcachefs finds nothing" test $? -eq 0
-    fi
+    size="$(wc -c <"$FIXTURES/write-study/base.img" | tr -d ' ')"
+    check "$mode: writes preserve prefix and suffix sentinels" \
+        offset_extract "$img" "$SANDBOX/partition.img" "$offset" "$size"
+    fsck.bcachefs "$SANDBOX/partition.img" >/dev/null 2>&1
+    check "$mode: fsck.bcachefs finds nothing" test $? -eq 0
 done
+offset=0
 
 # Refusals: a name that exists, a directory that is not empty.
 cp "$FIXTURES/write-study/base.img" "$SANDBOX/refuse.img"
