@@ -144,7 +144,8 @@ tasks:
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 224'
+      # #250 adds two host cases to the stack's 221-case floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 226'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -206,7 +207,8 @@ tasks:
       # cases to the full baseline: 304 + 6 + 13 = 323.
       # #247 adds that oracle case and one live-reference comparison.
       # #293 adds one mandatory CLI write test against the live reference.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 335'
+      # #250 adds two host and two guest cases to the stack's 322-case floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 339'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -326,6 +328,7 @@ tasks:
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
       # #247's primary-only regression also runs under coverage.
+      # #250's write-feature cases do not run in this default-feature tier.
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 146'
 
   check:semver:
