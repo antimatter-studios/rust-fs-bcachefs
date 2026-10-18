@@ -351,7 +351,7 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                      'encrypted-wide-macs.img', 'encrypted-wide-macs.json',
                      'encrypted-unclean.img', 'encrypted-unclean.json',
                      'encrypted-unclean.mounted.json',
-                     'encrypted-passphrase.img',
+                     'encrypted-passphrase.img', 'encrypted-passphrase.mounted.json',
                      'casefold.img', 'casefold.json', 'reference-help.txt',
                      'reference-version.txt', 'write-study-reached'):
             assert (fixtures / name).exists(), f'published fixture lost: {name}'
