@@ -44,11 +44,13 @@ lister() {
 # is its low 20 bits; the one bit the lister has named, then every other
 # set bit as one hex value.
 flag_json() {
-    local f=$((0x$1 & 0xfffff)) out=()
-    if ((f & 1 << 10)); then out+=('"has_case_insensitive"'); fi
-    if ((f & ~(1 << 10))); then out+=("\"$(printf '0x%08x' $((f & ~(1 << 10))))\""); fi
-    local IFS=,
-    echo "[${out[*]}]"
+    local f=$((0x$1 & 0xfffff)) out=''
+    if ((f & 1 << 10)); then out='"has_case_insensitive"'; fi
+    if ((f & ~(1 << 10))); then
+        [ -z "$out" ] || out+=,
+        out+="\"$(printf '0x%08x' $((f & ~(1 << 10))))\""
+    fi
+    echo "[$out]"
 }
 
 # ints VALUE...: every VALUE is a decimal integer. Arithmetic on anything
