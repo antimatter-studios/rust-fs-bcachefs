@@ -829,7 +829,7 @@ impl Walk<'_> {
                 // journal's accounting keys, totals in the btree's).
                 match merged.get_mut(&k.pos) {
                     Some(old)
-                        if (k.version_lo, k.version_hi) <= (old.version_lo, old.version_hi) => {}
+                        if (k.version_hi, k.version_lo) <= (old.version_hi, old.version_lo) => {}
                     Some(old) => {
                         let n = old.value.len().min(k.value.len()) / 8;
                         for i in 0..n {

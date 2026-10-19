@@ -177,7 +177,6 @@ fn incompressible_encrypted_extents_verify_with_the_uncompressed_nonce() {
         .unwrap()
         .and_then(|c| c.master_key())
         .expect("encrypted-compressed.img stores its master key unsealed");
-    let versions = lister_versions(&read_text("encrypted-compressed.extents.txt"));
     let (mut incompressible, mut lz4) = (0, 0);
     for k in btree::walk(&dev, &sb, btree::btree_id::EXTENTS).unwrap() {
         if k.key_type != bkey::key_type::EXTENT {
@@ -186,12 +185,10 @@ fn incompressible_encrypted_extents_verify_with_the_uncompressed_nonce() {
         let e = DataExtent::from_key(&k).unwrap();
         let c = e.crc.expect("every extent of the image has a crc entry");
         let pos = k.pos.to_string();
-        let ver = *versions
-            .get(&pos)
-            .unwrap_or_else(|| panic!("{pos}: the lister printed no version"));
+        let ver = k.version_lo;
         let mut data = vec![0u8; c.compressed_size as usize * 512];
         dev.read_at(e.ptr.offset * 512, &mut data).unwrap();
-        let got = crypt::decrypt_extent(&key, &c, 0, ver, &mut data);
+        let got = crypt::decrypt_extent(&key, &c, k.version_hi, ver, &mut data);
         match c.compression_type {
             compression::INCOMPRESSIBLE => {
                 got.unwrap_or_else(|err| panic!("{pos} (version {ver}): {err}"));

@@ -9,7 +9,9 @@
 //! * a `bpos` is stored snapshot (u32), offset (u64), inode (u64): the
 //!   documented member order reversed;
 //! * an unpacked key is u64s, format, type, pad, then 12 bytes of version,
-//!   size (u32), and the bpos;
+//!   size (u32), and the bpos; the version is one little-endian integer,
+//!   version_lo (u64) then version_hi (u32): an extent key the lister printed
+//!   as `ver 1` holds 1 at byte 4 (#358);
 //! * a packed key is read as one little-endian integer of `key_u64s * 64`
 //!   bits; the fields, in the documented order (inode, offset, snapshot,
 //!   size, version_hi, version_lo), are taken from the most significant
@@ -221,8 +223,8 @@ pub fn decode(b: &[u8], fmt: &BkeyFormat) -> Result<Bkey> {
         }
         return Ok(Bkey {
             key_type,
-            version_hi: le32(b, 4),
-            version_lo: le64(b, 8),
+            version_lo: le64(b, 4),
+            version_hi: le32(b, 12),
             size: le32(b, 16),
             pos: Bpos::parse(&b[20..40])?,
             value: b[BKEY_BYTES..].to_vec(),

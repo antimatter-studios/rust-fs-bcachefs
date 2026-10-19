@@ -214,8 +214,9 @@ impl<D: BlockDevice> Writer<D> {
             acct.push(Bkey {
                 key_type: ids::ACCOUNTING_KEY,
                 size: 0,
-                version_hi: i as u32,
-                version_lo: seq,
+                // The journal sequence, then the delta's index below it.
+                version_hi: (seq >> 32) as u32,
+                version_lo: (seq << 32) | i as u64,
                 pos: at,
                 value,
             });
