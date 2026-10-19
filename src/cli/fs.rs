@@ -1,15 +1,18 @@
 //! `fs.bcachefs`: inspect a bcachefs image, and (experimental, src/cli/
 //! fs_write.rs) change it.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
 use super::device::{Device, Target};
+use fs_bcachefs::inode::{Dirent, Inode};
 use fs_bcachefs::superblock::format_uuid;
-use fs_bcachefs::Filesystem;
-use fs_core::cli::{CliError, Json, Outcome, Tool};
+use fs_bcachefs::{fs::Node, Filesystem};
+use fs_core::cli::{CliError, Format, Json, Outcome, Tool};
 
 pub const TOOL: Tool = Tool {
     name: "fs.bcachefs",
@@ -74,21 +77,13 @@ fn read_command() -> Cmd {
                 .arg(Arg::new("force").long("force").action(ArgAction::SetTrue).help("Do it without asking"))
                 .after_help("Example:\n  fs.bcachefs disk.img resize 20G --force\n\nAnswers not implemented (exit 3), before opening the target."),
         )
-        .subcommand(
-            Cmd::new("ls")
-                .about("List a directory: name, type, inode, size")
-                .arg(Arg::new("path").value_name("PATH").default_value("/")),
-        )
+        .subcommand(listing_command("ls"))
         .subcommand(
             Cmd::new("stat")
                 .about("One path's inode: number, type, mode, owner, links, size, times")
                 .arg(Arg::new("path").value_name("PATH").required(true)),
         )
-        .subcommand(
-            Cmd::new("tree")
-                .about("Every path under a directory, recursively: path, type, inode, size")
-                .arg(Arg::new("path").value_name("PATH").default_value("/")),
-        )
+        .subcommand(listing_command("tree"))
         .subcommand(
             Cmd::new("read")
                 .visible_alias("cat")
@@ -106,6 +101,29 @@ fn read_command() -> Cmd {
                     "Examples:\n  fs.bcachefs disk.img read /hello.txt\n  fs.bcachefs disk.img read /hello.txt -o hello.txt",
                 ),
         )
+}
+
+fn listing_command(name: &'static str) -> Cmd {
+    let bound = |id: &'static str, help: &'static str| {
+        let arg = Arg::new(id)
+            .long(id)
+            .value_name("N")
+            .value_parser(value_parser!(u64))
+            .help(help);
+        if name == "ls" {
+            arg.requires("recursive")
+        } else {
+            arg
+        }
+    };
+    Cmd::new(name)
+        .about(if name == "ls" { "List a directory: name, type, inode, size" } else { "Alias of ls --recursive" })
+        .arg(Arg::new("recursive").long("recursive").short('R').action(ArgAction::SetTrue)
+            .help("Walk depth first, names sorted as bytes; never follow symlinks"))
+        .arg(bound("max-depth", "Maximum recursive depth (default: 64); PATH's entries are depth 1"))
+        .arg(bound("limit", "Maximum recursive entries (default: 100000)"))
+        .arg(Arg::new("path").value_name("PATH").value_parser(value_parser!(OsString)).default_value("/"))
+        .after_help("Examples:\n  fs.bcachefs disk.img ls /etc\n  fs.bcachefs disk.img ls -R --max-depth 8 --limit 1000 /etc\n  fs.bcachefs disk.img tree /\n\nRecursive entries add volume-absolute path and relative depth. PATH itself is omitted unless it is not a directory (depth 0). Subvolume and snapshot roots carry subvolume and snapshot IDs. Repeated directory identities carry revisited: true and are not entered. Exact fits succeed; one more entry past either bound, or an unreadable directory, keeps the collected report on stdout and names the bound or path on stderr (exit 1). --limit 0 allows no entries; --max-depth 0 none below PATH.")
 }
 
 fn key_command(name: &'static str) -> Cmd {
@@ -145,22 +163,24 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
             &open(dev)?,
             sub.get_one::<String>("key").map(String::as_str),
         ),
+        Some((verb @ ("ls" | "tree"), sub)) if verb == "tree" || sub.get_flag("recursive") => {
+            ls_recursive(
+                &open(dev)?,
+                sub,
+                Format::of(m, &std::env::args_os().collect::<Vec<_>>()),
+            )
+        }
         Some(("ls", sub)) => {
             let fs = open(dev)?;
-            let path = sub.get_one::<String>("path").expect("defaulted");
+            let path = sub.get_one::<OsString>("path").expect("defaulted");
+            let path = path
+                .to_str()
+                .ok_or_else(|| CliError::usage("PATH is not UTF-8"))?;
             let ino = fs.lookup(path).map_err(failed)?;
             let mut rows = Vec::new();
             for d in fs.readdir(ino).map_err(failed)? {
                 let size = fs.inode(d.inum).map(|i| i.size).unwrap_or(0);
-                rows.push(Json::object([
-                    (
-                        "name",
-                        Json::Str(String::from_utf8_lossy(&d.name).into_owned()),
-                    ),
-                    ("type", Json::Str(d.type_name().into())),
-                    ("ino", Json::UInt(d.inum)),
-                    ("size", Json::UInt(size)),
-                ]));
+                rows.push(ls_entry(&d.name, d.type_name(), d.inum, size));
             }
             Ok(Outcome::report(Json::Arr(rows)))
         }
@@ -184,15 +204,6 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
                 ("mtime_ns", Json::UInt(base.saturating_add(i.mtime))),
                 ("ctime_ns", Json::UInt(base.saturating_add(i.ctime))),
             ])))
-        }
-        Some(("tree", sub)) => {
-            let fs = open(dev)?;
-            let path = sub.get_one::<String>("path").expect("defaulted");
-            let root = fs.lookup(path).map_err(failed)?;
-            let mut rows = Vec::new();
-            let prefix = path.trim_end_matches('/').to_string();
-            walk(&fs, root, &prefix, &mut rows, 0)?;
-            Ok(Outcome::report(Json::Arr(rows)))
         }
         Some(("read", sub)) => {
             let fs = open(dev)?;
@@ -339,35 +350,172 @@ fn kind(mode: u32) -> &'static str {
     }
 }
 
-/// Deeper than any real tree; a directory cycle in a corrupt image stops here.
-const MAX_TREE_DEPTH: usize = 256;
+fn ls_entry(name: &[u8], kind: &str, ino: u64, size: u64) -> Json {
+    Json::object([
+        (
+            "name",
+            Json::Str(String::from_utf8_lossy(name).into_owned()),
+        ),
+        ("type", Json::Str(kind.into())),
+        ("ino", Json::UInt(ino)),
+        ("size", Json::UInt(size)),
+    ])
+}
 
-fn walk(
+fn recursive_entry(
+    path: &[u8],
+    depth: u64,
+    n: Node,
+    i: &Inode,
+    subvol: Option<u32>,
+    revisited: bool,
+) -> Json {
+    let d = Dirent {
+        dir: 0,
+        name: Vec::new(),
+        inum: n.ino,
+        d_type: (i.mode >> 12) as u8,
+    };
+    let name = path.rsplit(|b| *b == b'/').next().unwrap_or(path);
+    let Json::Obj(mut fields) = ls_entry(name, d.type_name(), n.ino, i.size) else {
+        unreachable!()
+    };
+    fields.push((
+        "path".into(),
+        Json::Str(String::from_utf8_lossy(path).into_owned()),
+    ));
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex".into(),
+            Json::Str(path.iter().map(|b| format!("{b:02x}")).collect()),
+        ));
+    }
+    fields.push(("depth".into(), Json::UInt(depth)));
+    if let Some(id) = subvol {
+        fields.push(("subvolume".into(), Json::UInt(id.into())));
+        fields.push(("snapshot".into(), Json::UInt(n.snapshot.into())));
+    }
+    if revisited {
+        fields.push(("revisited".into(), Json::Bool(true)));
+    }
+    Json::Obj(fields)
+}
+
+/// Heap stack: one directory's remaining entries per level. Identity includes
+/// the snapshot, since its inode numbers are shared with the live subvolume.
+fn ls_recursive(
     fs: &Filesystem<Device>,
-    dir: u64,
-    prefix: &str,
-    rows: &mut Vec<Json>,
-    depth: usize,
-) -> Result<(), CliError> {
-    if depth > MAX_TREE_DEPTH {
-        return Err(CliError::failed("directories nest deeper than 256 levels"));
+    sub: &ArgMatches,
+    format: Format,
+) -> Result<Outcome, CliError> {
+    let path = sub
+        .get_one::<OsString>("path")
+        .expect("defaulted")
+        .as_bytes();
+    let at = |path: &[u8], e: fs_bcachefs::Error| {
+        CliError::failed(format!("{}: {e}", String::from_utf8_lossy(path)))
+    };
+    let root = fs.resolve_bytes(path).map_err(|e| at(path, e))?;
+    let inode = fs.inode_at(root).map_err(|e| at(path, e))?;
+    let max_depth = sub.get_one::<u64>("max-depth").copied().unwrap_or(64);
+    let limit = sub.get_one::<u64>("limit").copied().unwrap_or(100_000);
+    let mut start = Vec::new();
+    for part in path.split(|b| *b == b'/').filter(|p| !p.is_empty()) {
+        start.push(b'/');
+        start.extend_from_slice(part);
     }
-    let mut entries: Vec<_> = fs.readdir(dir).map_err(failed)?.to_vec();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    for d in entries {
-        let path = format!("{prefix}/{}", String::from_utf8_lossy(&d.name));
-        let i = fs.inode(d.inum).map_err(failed)?;
-        rows.push(Json::object([
-            ("path", Json::Str(path.clone())),
-            ("type", Json::Str(kind(i.mode).into())),
-            ("ino", Json::UInt(d.inum)),
-            ("size", Json::UInt(i.size)),
-        ]));
-        if i.is_dir() {
-            walk(fs, d.inum, &path, rows, depth + 1)?;
+    if start.is_empty() {
+        start.push(b'/');
+    }
+    let children = |n, path: &[u8]| {
+        let mut entries = fs.readdir_at(n).map_err(|e| at(path, e))?;
+        entries.retain(|d| d.name != b"." && d.name != b"..");
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok::<_, CliError>(entries.into_iter())
+    };
+    let reached = |bound, value, path: &[u8]| {
+        CliError::failed(format!(
+            "{bound} {value} reached at {}",
+            String::from_utf8_lossy(path)
+        ))
+    };
+    let mut rows = Vec::new();
+    let walked = (|| {
+        if !inode.is_dir() {
+            if limit == 0 {
+                return Err(reached("--limit", limit, &start));
+            }
+            rows.push(recursive_entry(&start, 0, root, &inode, None, false));
+            return Ok(());
         }
+        let first = children(root, &start)?;
+        let mut visited = HashSet::from([(root.ino, root.snapshot)]);
+        let mut stack = vec![(root, start, 0u64, first)];
+        while let Some((parent, prefix, parent_depth, entries)) = stack.last_mut() {
+            let Some(d) = entries.next() else {
+                stack.pop();
+                continue;
+            };
+            let mut path = prefix.clone();
+            if !path.ends_with(b"/") {
+                path.push(b'/');
+            }
+            path.extend_from_slice(&d.name);
+            let depth = *parent_depth + 1;
+            if rows.len() as u64 >= limit {
+                return Err(reached("--limit", limit, &path));
+            }
+            if depth > max_depth {
+                return Err(reached("--max-depth", max_depth, &path));
+            }
+            // Type 16 is the reference lister's subvolume dirent (S3, S4).
+            let subvol = (d.d_type == 16).then_some(d.inum as u32);
+            let node = match subvol {
+                Some(id) => fs.subvolume(id).map_err(|e| at(&path, e))?,
+                None => Node {
+                    ino: d.inum,
+                    snapshot: parent.snapshot,
+                },
+            };
+            let i = fs.inode_at(node).map_err(|e| at(&path, e))?;
+            let revisited = i.is_dir() && !visited.insert((node.ino, node.snapshot));
+            rows.push(recursive_entry(&path, depth, node, &i, subvol, revisited));
+            if i.is_dir() && !revisited {
+                let next = children(node, &path)?;
+                stack.push((node, path, depth, next));
+            }
+        }
+        Ok(())
+    })();
+    let text = rows
+        .iter()
+        .map(|r| {
+            let field = |key| r.get(key).map(Json::to_text).unwrap_or_default();
+            format!(
+                "{} {} {} {}{}",
+                field("type"),
+                field("ino"),
+                field("size"),
+                field("path"),
+                if r.get("revisited") == Some(&Json::Bool(true)) {
+                    " [revisited]"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let report = Outcome::report(Json::Arr(rows)).with_text(text);
+    if let Err(error) = walked {
+        let partial = fs_core::cli::output::render(TOOL.name, format, Ok(report));
+        let mut out = std::io::stdout().lock();
+        out.write_all(partial.stdout.as_bytes())
+            .and_then(|()| out.flush())
+            .map_err(|e| CliError::failed(format!("write: {e}")))?;
+        return Err(error);
     }
-    Ok(())
+    Ok(report)
 }
 
 fn failed(e: fs_bcachefs::Error) -> CliError {
