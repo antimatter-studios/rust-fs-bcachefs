@@ -123,7 +123,8 @@ tasks:
       # #253/#254 add two, and #218's recorded-verdict regressions add two.
       # #262 adds one journal-length unit case.
       # #335 adds one 128-bit extent MAC unit case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 74'
+      # #358 adds one unpacked-key version unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 75'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -166,7 +167,8 @@ tasks:
       # #334 adds two encrypted wide_macs fixture oracle cases.
       # #337 adds two encrypted unclean fixture oracle cases.
       # #335 adds the wide_macs image's every-file read.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 241'
+      # #358 adds the encrypted-compressed key-version comparison.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 242'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

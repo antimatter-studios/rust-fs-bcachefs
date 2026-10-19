@@ -314,6 +314,33 @@ mod tests {
     }
 
     #[test]
+    fn an_unpacked_key_version_decodes_as_the_lister_printed_it() {
+        // The first 40 bytes of an extent key in a leaf of
+        // encrypted-compressed.img (CI run 39160355497), copied from a
+        // hexdump; the reference lister printed the key as
+        // `2147483649:437:U32_MAX len 437 ver 1`
+        // (encrypted-compressed.written.extents.txt), and as
+        // `ver 65577` for a key whose bytes 4..12 hold 0x10029 (#358).
+        let mut k = vec![0x08, 0x01, 0x06, 0x00];
+        k.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // version
+        k.extend_from_slice(&[0xb5, 0x01, 0x00, 0x00]); // size
+        k.extend_from_slice(&[0xff; 4]); // snapshot
+        k.extend_from_slice(&[0xb5, 0x01, 0, 0, 0, 0, 0, 0]); // offset
+        k.extend_from_slice(&[0x01, 0, 0, 0x80, 0, 0, 0, 0]); // inode
+        k.extend_from_slice(&[0u8; 24]);
+        let key = decode(&k, &byte_aligned()).unwrap();
+        assert_eq!(key.pos.to_string(), "2147483649:437:U32_MAX");
+        assert_eq!(key.size, 437);
+        assert_eq!((key.version_hi, key.version_lo), (0, 1));
+
+        // A version that needs more than 32 bits: bytes 4..12 are one
+        // little-endian u64, bytes 12..16 the high 32 bits above it.
+        k[4..16].copy_from_slice(&[0x29, 0, 0x01, 0, 0x02, 0, 0, 0, 0x03, 0, 0, 0]);
+        let key = decode(&k, &byte_aligned()).unwrap();
+        assert_eq!((key.version_hi, key.version_lo), (3, 0x2_0001_0029));
+    }
+
+    #[test]
     fn narrow_fields_take_their_offsets() {
         // inode: 8 bits + 100; offset: 16 bits; snapshot: 0 bits + MAX.
         let fmt = BkeyFormat {

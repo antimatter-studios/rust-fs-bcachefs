@@ -130,6 +130,39 @@ fn lister_versions(text: &str) -> HashMap<String, u64> {
     out
 }
 
+/// Every extent key's version, as `btree::walk` reads it, is the version
+/// the reference lister printed for the key at its position (#358). The
+/// version is part of an encrypted extent's nonce, so a reader that
+/// misreads it can verify none of them with its own keys.
+#[test]
+fn every_extent_key_version_agrees_with_the_lister() {
+    let dev = FileDevice::open(fixture("encrypted-compressed.img")).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let versions = lister_versions(&read_text("encrypted-compressed.extents.txt"));
+    let mut seen = 0;
+    for k in btree::walk(&dev, &sb, btree::btree_id::EXTENTS).unwrap() {
+        if k.key_type != bkey::key_type::EXTENT {
+            continue;
+        }
+        let pos = k.pos.to_string();
+        let listed = *versions
+            .get(&pos)
+            .unwrap_or_else(|| panic!("{pos}: the lister printed no version"));
+        assert_eq!(
+            (k.version_hi, k.version_lo),
+            (0, listed),
+            "{pos}: version_hi:version_lo, the lister printed ver {listed}"
+        );
+        seen += 1;
+    }
+    assert_eq!(
+        seen,
+        versions.len(),
+        "extent keys: this crate read {seen}, the lister printed {}",
+        versions.len()
+    );
+}
+
 /// An incompressible extent (#356, part of #330) is encrypted with the
 /// nonce an uncompressed one is: its MAC, which the reference
 /// implementation wrote, verifies under it, and a wrong nonce would match
