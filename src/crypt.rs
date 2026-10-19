@@ -158,6 +158,13 @@ pub const CSUM_CHACHA20_POLY1305_80: u8 = 3;
 /// How many bytes of an extent's MAC its crc entry keeps: 80 bits.
 const EXTENT_MAC_BYTES: usize = 10;
 
+/// How many bytes of an extent's MAC its crc entry keeps under S1's
+/// `wide_macs` (9.1.4.3, checksum type [`CSUM_CHACHA20_POLY1305_128`]): all
+/// 128, the first 8 in the crc entry's low checksum word and the next 8 in
+/// its high one, little-endian -- the 80-bit MAC's layout carried on, which
+/// `tests/oracle_encrypted_wide_macs.rs` holds to the reference's image.
+const WIDE_EXTENT_MAC_BYTES: usize = 16;
+
 /// Word 3 of a data extent's nonce: S1's `BCH_NONCE_EXTENT` domain.
 /// OBSERVED: of the sixteen top-nibble values, the only one whose
 /// keystream turns the stored bytes of `encrypted.img`'s extents into the
@@ -320,9 +327,9 @@ pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce
 /// Verify the MAC of an encrypted extent's stored bytes `data`, then
 /// decrypt them in place; `crc` is its crc entry and `version_hi:version_lo`
 /// its key's version. Nothing is decrypted unless the MAC verifies: a
-/// mismatch is refused as a bad checksum naming the MAC. A checksum type
-/// other than the 80-bit MAC (S1's `wide_macs` keeps 128) has not been
-/// observed in a data extent, and is refused.
+/// mismatch is refused as a bad checksum naming the MAC. The MAC is the
+/// default 80 bits or, under `wide_macs`, all 128; any other checksum type
+/// has not been observed in an encrypted data extent, and is refused.
 pub fn decrypt_extent(
     key: &MasterKey,
     crc: &Crc,
@@ -330,19 +337,23 @@ pub fn decrypt_extent(
     version_lo: u64,
     data: &mut [u8],
 ) -> Result<()> {
-    if crc.csum_type != CSUM_CHACHA20_POLY1305_80 {
-        return Err(Error::Unsupported(format!(
-            "an encrypted extent with checksum type {}: only the 80-bit MAC (type \
-             {CSUM_CHACHA20_POLY1305_80}) has been observed",
-            crc.csum_type
-        )));
-    }
+    let (len, hi_fits) = match crc.csum_type {
+        CSUM_CHACHA20_POLY1305_80 => (EXTENT_MAC_BYTES, crc.csum_hi <= u64::from(u16::MAX)),
+        CSUM_CHACHA20_POLY1305_128 => (WIDE_EXTENT_MAC_BYTES, true),
+        t => {
+            return Err(Error::Unsupported(format!(
+                "an encrypted extent with checksum type {t}: only the 80-bit and 128-bit MACs \
+                 (types {CSUM_CHACHA20_POLY1305_80} and {CSUM_CHACHA20_POLY1305_128}) have \
+                 been observed"
+            )))
+        }
+    };
     let nonce = extent_nonce(crc, version_hi, version_lo)?;
     let mac = key.mac(nonce, data)?;
-    let mut stored = [0u8; EXTENT_MAC_BYTES];
+    let mut stored = [0u8; WIDE_EXTENT_MAC_BYTES];
     stored[..8].copy_from_slice(&crc.csum_lo.to_le_bytes());
-    stored[8..].copy_from_slice(&(crc.csum_hi as u16).to_le_bytes());
-    if crc.csum_hi > u64::from(u16::MAX) || mac[..EXTENT_MAC_BYTES] != stored {
+    stored[8..].copy_from_slice(&crc.csum_hi.to_le_bytes());
+    if !hi_fits || mac[..len] != stored[..len] {
         return Err(Error::BadChecksum {
             what: "extent data MAC",
             stored: crc.csum_lo,
@@ -598,6 +609,63 @@ mod tests {
         );
     }
 
+    /// `hello.txt`'s extent as `wide_macs` would store it: checksum type 4,
+    /// the whole 128-bit MAC with its first 8 bytes in the low checksum
+    /// word and the next 8 in the high one. The MAC's first 80 bits are the
+    /// ones `encrypted.img` stores, so the tag is the reference's own.
+    fn hello_wide_crc() -> Crc {
+        let key = encrypted_img_key();
+        let nonce = extent_nonce(&hello_crc(), 0, HELLO_VERSION).unwrap();
+        let mac = key.mac(nonce, HELLO_SECTOR).unwrap();
+        let narrow = hello_crc();
+        assert_eq!(mac[..8], narrow.csum_lo.to_le_bytes());
+        assert_eq!(mac[8..10], (narrow.csum_hi as u16).to_le_bytes());
+        Crc {
+            csum_type: CSUM_CHACHA20_POLY1305_128,
+            csum_lo: u64::from_le_bytes(mac[..8].try_into().unwrap()),
+            csum_hi: u64::from_le_bytes(mac[8..].try_into().unwrap()),
+            ..narrow
+        }
+    }
+
+    /// A 128-bit MAC verifies in full: the extent decrypts with it, and one
+    /// bit changed in either half -- including the 48 bits the 80-bit MAC
+    /// does not keep -- is refused before anything is decrypted.
+    #[test]
+    fn a_128_bit_mac_is_verified_in_full() {
+        let key = encrypted_img_key();
+        let mut data = *HELLO_SECTOR;
+        decrypt_extent(&key, &hello_wide_crc(), 0, HELLO_VERSION, &mut data).unwrap();
+        assert_eq!(&data[..12], b"hello world\n");
+        assert!(data[12..].iter().all(|&b| b == 0));
+
+        let flips: [(u32, bool); 6] = [
+            (0, false),
+            (63, false),
+            (0, true),
+            (15, true),
+            (16, true),
+            (63, true),
+        ];
+        for (bit, high) in flips {
+            let mut crc = hello_wide_crc();
+            if high {
+                crc.csum_hi ^= 1 << bit;
+            } else {
+                crc.csum_lo ^= 1 << bit;
+            }
+            let mut data = *HELLO_SECTOR;
+            match decrypt_extent(&key, &crc, 0, HELLO_VERSION, &mut data) {
+                Err(Error::BadChecksum { what, .. }) => assert_eq!(what, "extent data MAC"),
+                other => panic!(
+                    "bit {bit} of the {} word: {other:?}",
+                    if high { "high" } else { "low" }
+                ),
+            }
+            assert_eq!(data, *HELLO_SECTOR, "decrypted although refused");
+        }
+    }
+
     #[test]
     fn an_extent_nonce_is_its_version_under_the_extent_domain() {
         let crc = hello_crc();
@@ -613,7 +681,8 @@ mod tests {
 
     /// What has not been observed is refused, not given a guessed nonce:
     /// compression, a nonce offset, a version of 2^32 or more, and a MAC of
-    /// another width.
+    /// another width than 80 or 128 bits (type 4, `wide_macs`, now reads:
+    /// `a_128_bit_mac_is_verified_in_full`).
     #[test]
     fn an_extent_not_yet_observed_is_refused() {
         let unsupported = |crc: Crc, version_hi: u32, version_lo: u64| {
@@ -662,7 +731,7 @@ mod tests {
             let m = unsupported(hello_crc(), hi, lo);
             assert!(m.contains("version"), "{m}");
         }
-        for t in [0, 4, 5] {
+        for t in [0, 5] {
             let m = unsupported(
                 Crc {
                     csum_type: t,

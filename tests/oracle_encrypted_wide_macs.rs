@@ -10,12 +10,14 @@
 
 mod common;
 
-use common::{fixture, fixtures_dir, read_text};
+use common::{fixture, fixtures_dir, manifest, read_text};
 use fs_bcachefs::bkey;
 use fs_bcachefs::btree;
 use fs_bcachefs::extent::DataExtent;
 use fs_bcachefs::superblock::Superblock;
+use fs_bcachefs::Filesystem;
 use fs_core::FileDevice;
+use sha2::{Digest, Sha256};
 
 /// The 128-bit Poly1305 MAC S1 9.1.4.3 names for `wide_macs`, by the
 /// lister's name and by its checksum type.
@@ -91,4 +93,52 @@ fn the_reference_checked_and_read_the_wide_macs_image() {
         fixtures_dir().join("encrypted-wide-macs.json").exists(),
         "the reference implementation did not read encrypted-wide-macs.img:\n{record}"
     );
+}
+
+/// Every file the reference mount recorded reads back from the image byte
+/// for byte (its SHA-256), each verified against its full 128-bit MAC
+/// first (#335): the tag's 16 bytes are the crc entry's low then high
+/// checksum word, little-endian.
+#[test]
+fn every_file_of_the_wide_macs_image_reads_back_as_the_reference_manifest() {
+    let record = read_text("encrypted-wide-macs.txt");
+    let img = fixture("encrypted-wide-macs.img");
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap_or_else(|e| panic!("{}: {e}\n{record}", img.display()));
+    let mut files = 0;
+    for e in manifest("encrypted-wide-macs") {
+        let ino = fs
+            .lookup(&e.path)
+            .unwrap_or_else(|err| panic!("{}: {err}", e.path));
+        let i = fs.inode(ino).unwrap();
+        match e.kind.as_str() {
+            "dir" => assert!(i.is_dir(), "{}: not a directory", e.path),
+            "symlink" => {
+                let target = fs
+                    .read(ino)
+                    .unwrap_or_else(|err| panic!("{}: {err}", e.path));
+                assert_eq!(
+                    target,
+                    e.target.as_deref().unwrap().as_bytes(),
+                    "{}: symlink target",
+                    e.path
+                );
+            }
+            "file" => {
+                let data = fs
+                    .read(ino)
+                    .unwrap_or_else(|err| panic!("{}: {err}", e.path));
+                assert_eq!(Some(data.len() as u64), e.size, "{}: size", e.path);
+                assert_eq!(
+                    Some(format!("{:x}", Sha256::digest(&data))),
+                    e.sha256,
+                    "{}: contents",
+                    e.path
+                );
+                files += 1;
+            }
+            k => panic!("{}: kind {k}", e.path),
+        }
+    }
+    assert!(files > 0, "the manifest names no files:\n{record}");
 }

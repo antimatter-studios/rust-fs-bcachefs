@@ -583,7 +583,7 @@ all eight fixture sets.
   one), and outside one an encrypted extent, for want of a key. It refuses
   what has not been observed rather than give it a guessed nonce: a
   compressed extent, a nonce offset, a version of 2^32 or more, a checksum
-  type other than 3, and an extent of which only part is live (one partly
+  type other than 3 or 4, and an extent of which only part is live (one partly
   overwritten, #275).
 - Checked: `tests/oracle_encrypted.rs` reads every file of `encrypted.img`
   against the SHA-256 in `encrypted.json`, which the fixture build writes
@@ -596,6 +596,19 @@ all eight fixture sets.
   (`tests/data/encrypted-hello-extent-39021762764.bin`) and refuse it with
   a bit changed in its data, in either part of the stored MAC, in the
   version, or with another key.
+- **The 128-bit MAC** (`wide_macs`, #335). S1 9.1.4.3 says the option
+  keeps all 128 bits of the data MAC. `encrypted-wide-macs.img`, formatted
+  `--wide_macs`, carries checksum type 4 (`chacha20_poly1305_128`) in every
+  crc entry, by this crate's decoder and by the reference lister (#334).
+  The reader takes the stored tag as the 80-bit layout carried on: the
+  MAC's first 8 bytes, little-endian, in the crc entry's low checksum word
+  and its next 8 in the high one. That placement is a hypothesis held to
+  the reference's image, not yet a separate observation: it is kept only
+  if `tests/oracle_encrypted_wide_macs.rs` reads every file of that image
+  against the SHA-256 the reference mount recorded, which a wrong placement
+  fails with probability 1 - 2^-128 per extent. `src/crypt.rs`'s unit test
+  refuses a bit changed in either word, including the 48 bits the 80-bit
+  MAC drops.
 
 ### What each write changes (the write study, `fixtures/write-study`, S8)
 
