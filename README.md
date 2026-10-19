@@ -13,8 +13,9 @@ about.
 
 ## Status
 
-Reading is supported for single-device, unencrypted filesystems, clean or
-not, with every checksum and compression the reference writes; `fsck.bcachefs`
+Reading is supported for single-device filesystems, clean or not, with
+every checksum and compression the reference writes, and encrypted ones
+whose master key is stored unsealed (their uncompressed data); `fsck.bcachefs`
 checks without repairing; writing is experimental. **[docs/features.md](docs/features.md)
 is the full list**: every feature, its state (supported, experimental,
 partial, refused, upcoming, or unobservable clean-room), the release it
