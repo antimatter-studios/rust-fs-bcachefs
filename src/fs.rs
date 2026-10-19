@@ -80,9 +80,10 @@ impl<D: BlockRead> Filesystem<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
         if let Some(crypt) = sb.crypt()? {
-            // Its btree nodes and data are encrypted, and are not read yet
-            // (#159). Whether a passphrase is needed is said, since that is
-            // what the person holding the image can act on.
+            // Its data is encrypted, and is not read yet (#272); its btree
+            // nodes are, by crate::btree, with an unsealed key (#271).
+            // Whether a passphrase is needed is said, since that is what
+            // the person holding the image can act on.
             return Err(Error::Unsupported(
                 if crypt.is_sealed() {
                     "the filesystem is encrypted, its master key sealed by a passphrase: \

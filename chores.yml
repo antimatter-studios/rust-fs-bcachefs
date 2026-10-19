@@ -104,13 +104,20 @@ tasks:
   # one xattr-size unit case, one oracle case and one native reference
   # case; vm runs all three, coverage runs the unit case only. The exact
   # aged seed also runs in differential.yml's digest-pinned job.
+  # FLOORS RAISED for #271 on that stack: nine encrypted-node unit cases
+  # (five in src/crypt.rs, four in src/btree.rs) and two oracle cases
+  # (tests/oracle_encrypted.rs); vm and coverage run all eleven.
   test:unit:
     desc: 'No tool, no fixture, no VM: the library and every test that reaches neither (debug, overflow checks on)'
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture'
+      # LIBTEST RUNS --quiet (#360): CI run 39192362692 on #303 (5e1fa41)
+      # passed but printed 183 lines against 150, 72 of them one line per
+      # test case. --quiet keeps the `test result:` lines the floor counts
+      # and the --nocapture output, and prints dots in place of case names.
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --lib --test fuzz_decoders --test scratch_dir -- --nocapture --quiet'
       # Runs 38997027177 and 39037096192 each executed 52 unit cases.
       # #253/#254 add two, and #218's recorded-verdict regressions add two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 59'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 68'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -145,7 +152,8 @@ tasks:
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
       # #250 adds two host cases to the stack's 221-case floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 226'
+      # #271 adds two encrypted-node oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 228'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -209,7 +217,8 @@ tasks:
       # #293 adds one mandatory CLI write test against the live reference.
       # #250 adds two host and two guest cases to the stack's 322-case floor.
       # #295 adds one mandatory offset CLI write test against the live reference.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 340'
+      # #271 adds nine encrypted-node unit cases and two oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 351'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -333,7 +342,8 @@ tasks:
       # write-feature oracle and parser cases are outside this command.
       # #247's primary-only regression also runs under coverage.
       # #250's write-feature cases do not run in this default-feature tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 146'
+      # #271's eleven encrypted-node cases run here.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 157'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
