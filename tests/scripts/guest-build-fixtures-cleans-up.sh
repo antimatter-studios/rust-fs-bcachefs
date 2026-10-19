@@ -180,7 +180,8 @@ elif name == 'rm':
     for a in args:
         if a.startswith('-'): continue
         p = Path(a)
-        assert p.is_relative_to(root / 'var/tmp') or p == out / 'casefold.img', p
+        assert (p.is_relative_to(root / 'var/tmp') or
+                p in (out / 'casefold.img', out / 'encrypted.mounted.json')), p
         assert p not in (root / 'var/tmp', root / 'var/tmp/age'), 'shared path deletion'
         if p.is_dir():
             if p.name.startswith('fixture-build.'):
