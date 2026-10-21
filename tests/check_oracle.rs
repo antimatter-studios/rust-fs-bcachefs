@@ -1005,6 +1005,76 @@ fn both_checkers_reject_a_snapshot_tree_key_with_a_nonzero_inode() {
     }
 }
 
+/// Nightly run 38878947701, kernel seed 1659362 (#219): snapshot tree 1
+/// at offset U64_MAX is refused. The checker refuses every offset past
+/// U32_MAX, so the first of them is judged by the reference as well.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_tree_key_past_offset_u32_max() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const SNAPSHOT_TREES: u8 = 15;
+    const KEY_SNAPSHOT_TREE: u8 = 31;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for offset in [u64::from(u32::MAX) + 1, u64::MAX] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("snapshot-tree-offset-{offset}.img"));
+        std::fs::copy(fixture("kernel.img"), &img).unwrap();
+        let (control_bad, text) = reference_finds_a_problem(&img);
+        assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, SNAPSHOT_TREES)
+            .unwrap()
+            .into_iter()
+            .find(|k| {
+                k.key_type == KEY_SNAPSHOT_TREE
+                    && k.pos.inode == 0
+                    && k.pos.offset == 1
+                    && k.pos.snapshot == 0
+            })
+            .expect("snapshot tree 1 exists");
+        k.pos.offset = offset;
+        let expected = k.clone();
+        let pos = k.pos;
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(SNAPSHOT_TREES, vec![k]).unwrap();
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let stored = btree::walk(&dev, &sb, SNAPSHOT_TREES)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == KEY_SNAPSHOT_TREE && k.pos == pos)
+            .expect("the mutated snapshot-tree key is stored");
+        assert_eq!(stored, expected, "only the offset must change");
+        let (damaged, text) = reference_finds_a_problem(&img);
+        assert!(
+            damaged,
+            "the reference must reject offset {offset}:\n{text}"
+        );
+        assert!(
+            text.contains("snapshot_tree_pos_bad"),
+            "wrong native finding:\n{text}"
+        );
+        let ours = check(&dev).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "snapshot_tree_pos_bad" && p.detail.contains(&pos.to_string())),
+            "the snapshot-tree offset must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// Nightly-seed run 39018152705, default/block4k seed 1659490 (#255):
 /// inode_v3 with a nonzero inode position is refused. Resolve the regular
 /// file by path because freshly generated fixtures may renumber inodes.

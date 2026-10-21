@@ -1598,6 +1598,28 @@ U64_MAX, preserves the offset-zero refusal, and confines the rule to this
 btree/key-type pair. These new regressions run in CI, not locally. No
 snapshot-field rule or change to snapshot-tree link checks is inferred.
 
+### Snapshot-tree offsets past U32_MAX (S3, #219)
+
+[Nightly run 38878947701](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38878947701)
+(reference checker 1.39.7) moved snapshot tree 1 of `kernel.img` (seed
+1659362) to `0:U64_MAX:0`, keeping its value ("subvol 1 root snapshot
+4294967295"). The reference exits 9 and reports `snapshot_tree_pos_bad`
+("bad pos, deleting"); this crate reported clean. This is black-box output
+only; no reference source was read.
+
+A snapshot names its tree in a 32-bit field, and the checker already reads
+a tree's id from its offset as 32 bits, so a tree whose offset is past
+U32_MAX names no tree a snapshot can hold. The checker refuses a
+snapshot_tree at such an offset. Only U64_MAX was observed: the bound is
+the one step past what was seen, so `check_oracle.rs` also asks the
+reference to refuse offset U32_MAX + 1 as well as U64_MAX, after both
+checkers accept the unchanged control and the stored key differs only in
+its offset. A reference that accepted U32_MAX + 1 would fail that test
+rather than leave the bound assumed. `oracle_check_key_positions.rs`
+repeats the observed U64_MAX mutation on `kernel.img`; the unit regression
+keeps offsets 1 and U32_MAX accepted and confines the rule to this
+btree/key-type pair.
+
 ### The key types a btree holds (S3, #163)
 
 `tests/check_oracle_key_types.rs` plants a key of every type into a copy
