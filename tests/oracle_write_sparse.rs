@@ -173,3 +173,68 @@ fn a_write_past_the_end_leaves_the_gap_a_hole() {
     }
     clean(&img);
 }
+
+/// A file's holes stay holes when it is written inside or cut short (#156).
+/// The writer rewrites a file whole, and it used to read the holes as zeros
+/// and write those zeros back: one write anywhere in a sparse file
+/// allocated every hole it had. Only the blocks that held something, and
+/// the blocks a write covers, are allocated now.
+#[test]
+fn a_sparse_file_keeps_its_holes_through_a_write_inside_it_and_a_truncate_down() {
+    let img = scratch("keeps-holes");
+    let block = {
+        let dev = FileDevice::open(&img).unwrap();
+        (u64::from(Superblock::read(&dev).unwrap().block_size) * 512).max(512)
+    };
+    let blocks = |bytes: u64| bytes.div_ceil(block) * block / 512;
+    let data: Vec<u8> = (0..70_001u32).map(|i| (i % 251) as u8 ^ 0x69).collect();
+    let tail: Vec<u8> = (0..5_000u32).map(|i| (i % 241) as u8 ^ 0x96).collect();
+    let root = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let ino = w.create_file(root, b"holey", &data, 0o644).unwrap();
+    w.write_at(ino, MIB + 100, &tail).unwrap();
+    drop(w);
+    let mut want = data.clone();
+    want.resize((MIB + 100) as usize, 0);
+    want.extend_from_slice(&tail);
+
+    let inside = MIB / 2 + 7;
+    let check = |what: &str, want: &[u8], most: u64| {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(
+            fs.inode(ino).unwrap().size,
+            want.len() as u64,
+            "the size after {what}"
+        );
+        assert!(
+            fs.read(ino).unwrap() == want,
+            "the file does not read as its data, holes and writes after {what}"
+        );
+        drop(fs);
+        let got = extent_sectors(&img, ino);
+        assert!(
+            got <= most,
+            "the file's extents cover {got} sectors after {what}; its data and writes need {most}"
+        );
+        clean(&img);
+    };
+    let open = || Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+
+    open().write_at(ino, 10, b"0123456789").unwrap();
+    want[10..20].copy_from_slice(b"0123456789");
+    let most = blocks(data.len() as u64) + blocks(100 + tail.len() as u64);
+    check("a write inside the data", &want, most);
+
+    open().write_at(ino, inside, b"in the hole").unwrap();
+    want[inside as usize..inside as usize + 11].copy_from_slice(b"in the hole");
+    let most = most + blocks(7 + 11);
+    check("a write inside the hole", &want, most);
+
+    open().truncate(ino, MIB + 300).unwrap();
+    want.truncate((MIB + 300) as usize);
+    let most = blocks(data.len() as u64) + blocks(7 + 11) + blocks(300);
+    check("a truncate down past the hole", &want, most);
+}

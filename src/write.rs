@@ -1466,15 +1466,16 @@ impl<D: BlockDevice> Writer<D> {
     /// the write ends past its size; a gap past the old end reads as zeros.
     /// The file is rewritten whole, laid out as [`Writer::write_file`] lays
     /// it out, so what the reference would store for those bytes is what
-    /// is stored. A gap of a block or more is left a hole (#156): the old
-    /// data up to its last block, then nothing, then the blocks the write
-    /// covers.
+    /// is stored. Its holes stay holes (#156): only the blocks that held
+    /// something and the blocks the write covers are written, so a gap of a
+    /// block or more past the old end is a hole too.
     pub fn write_at(&mut self, ino: u64, offset: u64, data: &[u8]) -> Result<()> {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))?;
         let mut c = self.contents(ino)?;
         let block = (u64::from(self.sb.block_size) * 512).max(512);
+        let mut ranges = self.stored_ranges(ino, block)?;
         let kept = (c.len() as u64).next_multiple_of(block);
         let start = offset - offset % block;
         if !data.is_empty() && start > kept {
@@ -1496,14 +1497,20 @@ impl<D: BlockDevice> Writer<D> {
                 })?;
             tail.resize((offset - start) as usize, 0);
             tail.extend_from_slice(data);
-            return self.write_with_hole(ino, &c, start, &tail);
+            let mut pieces = pieces_of(&c, &ranges);
+            pieces.push((start, &tail[..]));
+            return self.write_pieces(ino, end, &pieces);
         }
         if end > c.len() as u64 {
             self.grow(ino, &mut c, end)?;
         }
         let (from, to) = (offset as usize, end as usize);
         c[from..to].copy_from_slice(data);
-        self.write_file(ino, &c)
+        if !data.is_empty() {
+            ranges.push((start, end.next_multiple_of(block)));
+        }
+        let pieces = pieces_of(&c, &merge_ranges(ranges));
+        self.write_pieces(ino, c.len() as u64, &pieces)
     }
 
     /// Append `data` to a file (#102).
@@ -1512,16 +1519,19 @@ impl<D: BlockDevice> Writer<D> {
         self.write_at(ino, size, data)
     }
 
-    /// Set a file's size (#102): cut short, or grown with zeros. Growing
-    /// leaves the new range a hole (#156): only the file's last block is
-    /// rewritten, zero-filled past the old end, and the size set, so the
-    /// range has no extent and reads as zeros. A size larger than the
-    /// device is still refused, as [`Writer::write_at`]'s is.
+    /// Set a file's size (#102): cut short, or grown with zeros. The
+    /// file's holes stay holes (#156), and growing leaves the new range one:
+    /// only the blocks that held something are rewritten, the last
+    /// zero-filled past the old end, and the size set, so the range has no
+    /// extent and reads as zeros. A size larger than the device is still
+    /// refused, as [`Writer::write_at`]'s is.
     pub fn truncate(&mut self, ino: u64, size: u64) -> Result<()> {
         let mut c = self.contents(ino)?;
+        let block = (u64::from(self.sb.block_size) * 512).max(512);
+        let ranges = self.stored_ranges(ino, block)?;
         if size <= c.len() as u64 {
             c.truncate(size as usize);
-            return self.write_file(ino, &c);
+            return self.write_pieces(ino, size, &pieces_of(&c, &ranges));
         }
         let device = self.dev.size_bytes();
         if size > device {
@@ -1530,18 +1540,37 @@ impl<D: BlockDevice> Writer<D> {
                  ({device} bytes)"
             )));
         }
-        let block = (u64::from(self.sb.block_size) * 512).max(512);
         let kept = (c.len() as u64).next_multiple_of(block).min(size);
         self.grow(ino, &mut c, kept)?;
-        self.write_file_sized(ino, &c, size)
+        self.write_pieces(ino, size, &pieces_of(&c, &ranges))
+    }
+
+    /// The byte ranges of file `ino` its extents btree holds something in,
+    /// widened to whole blocks of `block` bytes and merged, in order:
+    /// everything else is a hole (#156). A reservation or an unwritten
+    /// extent holds space, so it is kept as written zeros, as before.
+    fn stored_ranges(&self, ino: u64, block: u64) -> Result<Vec<(u64, u64)>> {
+        let mut out = Vec::new();
+        for k in self.extents_of(ino)? {
+            if k.size == 0 || matches!(k.key_type, key_type::WHITEOUT | key_type::EXTENT_WHITEOUT) {
+                continue;
+            }
+            let from = k.start_offset().saturating_mul(512);
+            let to = k.pos.offset.saturating_mul(512);
+            out.push((
+                from - from % block,
+                to.div_ceil(block).saturating_mul(block),
+            ));
+        }
+        Ok(merge_ranges(out))
     }
 
     /// Grow the contents `c` of file `ino` to `size` bytes with zeros, for
-    /// a write or a truncate that ends past them. The file is written back
-    /// whole, its holes as allocated zeros, so a size larger than the device
-    /// can never be written: it is refused before anything is allocated,
-    /// where holding it in memory once aborted the process (#156). The rest
-    /// is reserved fallibly ([`crate::util::zeroed`]).
+    /// a write or a truncate that ends past them. The file is held in
+    /// memory whole, its holes as zeros, so a size larger than the device
+    /// is refused before anything is allocated, where holding it once
+    /// aborted the process (#156). The rest is reserved fallibly
+    /// ([`crate::util::zeroed`]).
     fn grow(&self, ino: u64, c: &mut Vec<u8>, size: u64) -> Result<()> {
         let device = self.dev.size_bytes();
         if size > device {
@@ -1567,23 +1596,28 @@ impl<D: BlockDevice> Writer<D> {
         self.write_file_sized(ino, data, data.len() as u64)
     }
 
-    /// Replace a file's contents with `head` at its start and `tail` at byte
-    /// `start`, a whole block past `head`'s last block, with nothing between
-    /// them: a hole, which reads as zeros (#156). The size is where `tail`
-    /// ends. `head` is a whole number of blocks and goes in extents, as a
-    /// file's full blocks do; `tail` is laid out as the end of a file of
-    /// that size is (see [`data_layout`]), its full blocks in extents and a
-    /// short last block inline.
-    fn write_with_hole(&mut self, ino: u64, head: &[u8], start: u64, tail: &[u8]) -> Result<()> {
+    /// Replace a file's contents with `pieces`, each the bytes at a byte
+    /// offset that is a whole block, in order and apart, with nothing
+    /// between them: a hole, which reads as zeros (#156). The file is
+    /// `size` bytes, and only a piece that ends there may end inside a
+    /// block. The pieces are laid out as the file would be were it all
+    /// data (see [`data_layout`]): full blocks in extents, and a short last
+    /// block inline when the reference would keep it inline.
+    fn write_pieces(&mut self, ino: u64, size: u64, pieces: &[(u64, &[u8])]) -> Result<()> {
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
             return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
         }
-        let size = start + tail.len() as u64;
         let whole = usize::try_from(size)
             .map_err(|_| Error::Unsupported("size larger than memory".into()))?;
-        let in_extents = (self.layout(whole).0 as u64).saturating_sub(start) as usize;
-        if !head.is_empty() || in_extents > 0 {
+        let in_extents = self.layout(whole).0 as u64;
+        // Each piece's bytes before `in_extents` go in extents, the rest of
+        // it, the file's short last block, inline.
+        let split =
+            |at: u64, bytes: &[u8]| (in_extents.clamp(at, at + bytes.len() as u64) - at) as usize;
+        // Buckets freed by earlier commits come back first; the ones this
+        // rewrite frees wait for the next (#132).
+        if pieces.iter().any(|&(at, bytes)| split(at, bytes) > 0) {
             self.discard_freed()?;
         }
         let now = self.now();
@@ -1591,26 +1625,21 @@ impl<D: BlockDevice> Writer<D> {
         let old_extents = self.extents_of(ino)?;
         self.free_extents(ino, &old_extents, &mut t)?;
         let opts = data_options(&self.sb, &i.raw)?;
+        let block_sectors = u64::from(self.sb.block_size).max(1);
         let mut sectors = 0;
-        if !head.is_empty() {
-            sectors += self.allocate_data(ino, opts, 0, head, &mut t)?;
-        }
-        if in_extents > 0 {
-            sectors += self.allocate_data(ino, opts, start / 512, &tail[..in_extents], &mut t)?;
-        }
-        if in_extents < tail.len() {
-            let block_sectors = u64::from(self.sb.block_size).max(1);
-            t.put(
-                ids::EXTENTS,
-                None,
-                Self::inline_key(
-                    ino,
-                    (start + in_extents as u64) / 512,
-                    &tail[in_extents..],
-                    block_sectors,
-                ),
-            );
-            sectors += block_sectors;
+        for &(at, bytes) in pieces {
+            let n = split(at, bytes);
+            if n > 0 {
+                sectors += self.allocate_data(ino, opts, at / 512, &bytes[..n], &mut t)?;
+            }
+            if n < bytes.len() {
+                t.put(
+                    ids::EXTENTS,
+                    None,
+                    Self::inline_key(ino, (at + n as u64) / 512, &bytes[n..], block_sectors),
+                );
+                sectors += block_sectors;
+            }
         }
         let old = i.key.clone();
         i.raw.size = size;
@@ -1688,6 +1717,32 @@ impl<D: BlockDevice> Writer<D> {
         }
         Ok(out)
     }
+}
+
+/// `ranges`, sorted and with each run of overlapping or touching ones made
+/// one.
+fn merge_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+    for (from, to) in ranges {
+        match out.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => out.push((from, to)),
+        }
+    }
+    out
+}
+
+/// The bytes of `contents` each of `ranges` covers, cut at its end, and
+/// where they start: the pieces [`Writer::write_pieces`] writes. A range
+/// past the end is dropped.
+fn pieces_of<'a>(contents: &'a [u8], ranges: &[(u64, u64)]) -> Vec<(u64, &'a [u8])> {
+    let len = contents.len() as u64;
+    ranges
+        .iter()
+        .filter(|&&(from, _)| from < len)
+        .map(|&(from, to)| (from, &contents[from as usize..to.min(len) as usize]))
+        .collect()
 }
 
 const S_IFREG: u32 = 0o100000;

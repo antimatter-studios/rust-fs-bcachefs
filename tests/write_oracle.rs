@@ -1581,6 +1581,41 @@ fn files_written_past_their_end_here_are_read_by_the_reference() {
     );
 }
 
+/// A sparse file's holes stay holes when it is written inside or cut short
+/// (#156): a file of 70,001 bytes written just past 1 MiB, then written
+/// inside its data and inside its hole and truncated down past the hole,
+/// passes the reference checker and reads back through the reference mount
+/// as its data, zeros, and the writes.
+#[test]
+fn a_sparse_file_written_inside_and_truncated_here_is_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "write-keeps-holes");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let data = pattern(70_001, 13);
+    let tail = pattern(5_000, 14);
+    let inside = (1 << 19) + 7;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let ino = w.create_file(dir, b"holey", &data, 0o644).unwrap();
+    w.write_at(ino, (1 << 20) + 100, &tail).unwrap();
+    w.write_at(ino, 10, b"0123456789").unwrap();
+    w.write_at(ino, inside, b"in the hole").unwrap();
+    w.truncate(ino, (1 << 20) + 300).unwrap();
+    drop(w);
+    assert_fsck_clean(&img);
+    let mut want = data.clone();
+    want.resize((1 << 20) + 100, 0);
+    want.extend_from_slice(&tail);
+    want[10..20].copy_from_slice(b"0123456789");
+    want[inside as usize..inside as usize + 11].copy_from_slice(b"in the hole");
+    want.truncate((1 << 20) + 300);
+    assert!(
+        reference_mount_reads(&img, &[("d/holey", &want)]),
+        "the reference mount does not read the sparse file written inside and truncated"
+    );
+}
+
 /// Truncating up leaves the new range a hole (#156): an empty file and a
 /// file of 70,001 bytes, each truncated to 1 MiB here, pass the reference
 /// checker and read back through the reference mount as their data and
