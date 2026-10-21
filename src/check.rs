@@ -27,8 +27,10 @@
 //!
 //! Of the allocation btrees, each bucket's generation in bucket_gens is
 //! checked against its alloc key, each data extent has its backpointer with
-//! matching value (a piece of a compressed region aside), each bucket
-//! holding data is a user bucket in its alloc key,
+//! matching value (a piece of a compressed region aside), each backpointer
+//! is in a bucket with an alloc key, each bucket holding data is a user
+//! bucket in its alloc key, the freespace btree holds exactly the buckets
+//! with no alloc key or a free one,
 //! the fragmentation lru holds an entry for each partly filled bucket and
 //! nothing else, the need_discard btree a key for each bucket waiting for
 //! discard and nothing else, and the device's accounting by data type is
@@ -37,9 +39,10 @@
 //! the reference leaves them, and the reference rebuilds them in recovery.
 //!
 //! It is a subset of what the reference checker checks (the rest of
-//! allocation, accounting, backpointers and lru are not), and the tests
-//! hold it to that: wherever it reports a problem, so does the reference
-//! (tests in the guest), and on every clean fixture it reports none.
+//! allocation, accounting, backpointers, freespace and lru are not), and
+//! the tests hold it to that: wherever it reports a problem, so does the
+//! reference (tests in the guest), and on every clean fixture it reports
+//! none.
 
 use std::collections::BTreeMap;
 
@@ -95,6 +98,12 @@ const LRU_FRAGMENTATION: u64 = 1;
 /// of the reference's fixtures has its key there).
 const NEED_DISCARD: u8 = 12;
 const DATA_NEED_DISCARD: u8 = 9;
+/// The freespace btree: a run of free buckets is a `set` key at
+/// `dev:end`, `size` buckets long (docs/clean-room.md, "Allocating
+/// space"). Whether a run's position carries a bucket's generation once it
+/// reaches 16 is unobserved, so free space is not judged past that.
+const FREESPACE: u8 = 11;
+const FREESPACE_GEN_UNOBSERVED: u8 = 16;
 /// The accounting btree, its key type, and the kind of key that accounts
 /// for a device's buckets of one data type: the position's first byte is
 /// the kind, then the device and the data type, byte by byte; the value
@@ -921,6 +930,66 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
 
+    // Every alloc key of this device, by bucket: its data type, or `None`
+    // for a key this checker does not read.
+    let alloc_keys: BTreeMap<u64, Option<u8>> = trees
+        .get(&btree_id::ALLOC)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.pos.inode == u64::from(sb.dev_idx))
+        .filter(|k| !matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT))
+        .map(|k| {
+            let t = match k.key_type {
+                key_type::ALLOC_V4 => k.value.get(ALLOC_DATA_TYPE).copied(),
+                _ => None,
+            };
+            (k.pos.offset, t)
+        })
+        .collect();
+
+    // Every backpointer sits in a bucket with an alloc key (#163: the
+    // reference's "backpointer for nonexistent alloc key"): a bucket holding
+    // data or a node has one.
+    if let (Some(bps), Some(b), true) = (
+        &backpointers,
+        bucket_size,
+        trees.contains_key(&btree_id::ALLOC),
+    ) {
+        for (&at, bp) in bps {
+            let bucket = (at >> 16) / b;
+            if !alloc_keys.contains_key(&bucket) {
+                r.add(
+                    "backpointer_for_nonexistent_alloc_key",
+                    format!("backpointer {}: bucket {bucket} has no alloc key", bp.pos),
+                );
+            }
+        }
+    }
+
+    // Free space (#163): the freespace btree's runs hold exactly the
+    // buckets from the first usable one to the last whose alloc key is
+    // missing or of data type free (docs/clean-room.md, "Allocating
+    // space"; the reference's "bucket incorrectly set in freespace btree",
+    // "bucket incorrectly unset in freespace btree", "hole in alloc btree
+    // missing in freespace btree" and "entry in freespace btree for
+    // nonexistant dev:bucket"). On one device only, as the lru, and not at
+    // all once a free bucket reaches the generation no run has been seen at.
+    let high_gen = trees
+        .get(&btree_id::ALLOC)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+        .filter(|k| k.value.get(ALLOC_DATA_TYPE) == Some(&0))
+        .any(|k| crate::extent::alloc_v4_gen(&k.value).unwrap_or(0) >= FREESPACE_GEN_UNOBSERVED);
+    if let (true, 1, Some(runs), Some(m)) = (
+        judge_alloc && trees.contains_key(&btree_id::ALLOC) && !high_gen,
+        sb.nr_devices,
+        trees.get(&FREESPACE),
+        &member,
+    ) {
+        free_space(runs, &alloc_keys, u64::from(sb.dev_idx), m, &mut r);
+    }
+
     // Extents: their inode, their bounds, their neighbours, their data.
     let have_inodes = trees.contains_key(&btree_id::INODES);
     // (inode, snapshot, end sector) of the last extent-like key seen: an
@@ -1097,6 +1166,94 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
     Ok(r)
+}
+
+/// The freespace btree's runs against the alloc keys of device `dev`
+/// (#163). A bucket in two runs is not judged. Every loop is over keys,
+/// never over buckets, so a run's size or a member's bucket count, however
+/// large, costs nothing.
+fn free_space(
+    runs: &[Bkey],
+    alloc: &BTreeMap<u64, Option<u8>>,
+    dev: u64,
+    m: &crate::superblock::Member,
+    r: &mut Report,
+) {
+    let first = u64::from(m.first_bucket);
+    let mut held: Vec<(u64, u64)> = Vec::new();
+    for k in runs.iter().filter(|k| k.key_type == KEY_SET) {
+        let end = k.pos.offset;
+        let start = end.checked_sub(u64::from(k.size));
+        let (Some(start), true) = (start, k.pos.inode == dev && end <= m.nbuckets) else {
+            r.add(
+                "freespace_entry_for_nonexistent_bucket",
+                format!(
+                    "freespace run {} of {} buckets: device {dev} has buckets {first}..{}",
+                    k.pos, k.size, m.nbuckets
+                ),
+            );
+            continue;
+        };
+        let used: Vec<(u64, u8)> = alloc
+            .range(start..end)
+            .filter_map(|(&b, t)| t.filter(|&t| t != 0).map(|t| (b, t)))
+            .collect();
+        if start < first || !used.is_empty() {
+            let (bucket, why) = match used.first() {
+                Some((b, t)) if start >= first => {
+                    (*b, format!("its alloc key gives it data type {t}"))
+                }
+                _ => (start, format!("the first usable bucket is {first}")),
+            };
+            r.add(
+                "bucket_incorrectly_set_in_freespace_btree",
+                format!(
+                    "freespace run {} holds buckets {start}..{end}, {} of them not free: bucket \
+                     {bucket}, {why}",
+                    k.pos,
+                    used.len() + usize::from(start < first)
+                ),
+            );
+        }
+        held.push((start.max(first), end));
+    }
+    held.sort_unstable();
+    // The stretches no run holds, from the first usable bucket on.
+    let mut gaps = Vec::new();
+    let mut at = first;
+    for (start, end) in held {
+        if start > at {
+            gaps.push((at, start));
+        }
+        at = at.max(end);
+    }
+    if at < m.nbuckets {
+        gaps.push((at, m.nbuckets));
+    }
+    let hole = |a: u64, b: u64, r: &mut Report| {
+        r.add(
+            "hole_in_alloc_btree_missing_in_freespace_btree",
+            format!("buckets {a}..{b}: no alloc key, and no freespace run holds them"),
+        );
+    };
+    for (from, to) in gaps {
+        let mut at = from;
+        for (&b, t) in alloc.range(from..to) {
+            if b > at {
+                hole(at, b, r);
+            }
+            if *t == Some(0) {
+                r.add(
+                    "bucket_incorrectly_unset_in_freespace_btree",
+                    format!("bucket {b}: free in its alloc key, and no freespace run holds it"),
+                );
+            }
+            at = b + 1;
+        }
+        if at < to {
+            hole(at, to, r);
+        }
+    }
 }
 
 /// The links between the snapshot btrees (#220): each snapshot tree names
@@ -1432,7 +1589,6 @@ fn walk_checked(
 /// 38579070302 or nightly-seed run 39018152705 saw the reference refuse;
 /// a pair nobody observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
-    const FREESPACE: u8 = 11;
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
     const KEY_SNAPSHOT_TREE: u8 = 31;
