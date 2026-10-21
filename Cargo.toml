@@ -93,3 +93,8 @@ panic = "unwind"
 name = "pinned_differential_default74"
 path = "tests/oracle_differential_default74.rs"
 required-features = ["pinned-fixtures"]
+
+[[test]]
+name = "pinned_differential_snapshot_tree_subvolume"
+path = "tests/oracle_differential_snapshot_tree_subvolume.rs"
+required-features = ["pinned-fixtures"]

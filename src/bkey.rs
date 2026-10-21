@@ -9,7 +9,9 @@
 //! * a `bpos` is stored snapshot (u32), offset (u64), inode (u64): the
 //!   documented member order reversed;
 //! * an unpacked key is u64s, format, type, pad, then 12 bytes of version,
-//!   size (u32), and the bpos;
+//!   size (u32), and the bpos; the version is one little-endian integer,
+//!   version_lo (u64) then version_hi (u32): an extent key the lister printed
+//!   as `ver 1` holds 1 at byte 4 (#358);
 //! * a packed key is read as one little-endian integer of `key_u64s * 64`
 //!   bits; the fields, in the documented order (inode, offset, snapshot,
 //!   size, version_hi, version_lo), are taken from the most significant
@@ -221,8 +223,8 @@ pub fn decode(b: &[u8], fmt: &BkeyFormat) -> Result<Bkey> {
         }
         return Ok(Bkey {
             key_type,
-            version_hi: le32(b, 4),
-            version_lo: le64(b, 8),
+            version_lo: le64(b, 4),
+            version_hi: le32(b, 12),
             size: le32(b, 16),
             pos: Bpos::parse(&b[20..40])?,
             value: b[BKEY_BYTES..].to_vec(),
@@ -311,6 +313,33 @@ mod tests {
         assert_eq!(key.pos.to_string(), "2147483651:1:U32_MAX");
         assert_eq!(key.size, 1);
         assert_eq!(key.start_offset(), 0);
+    }
+
+    #[test]
+    fn an_unpacked_key_version_decodes_as_the_lister_printed_it() {
+        // The first 40 bytes of an extent key in a leaf of
+        // encrypted-compressed.img (CI run 39160355497), copied from a
+        // hexdump; the reference lister printed the key as
+        // `2147483649:437:U32_MAX len 437 ver 1`
+        // (encrypted-compressed.written.extents.txt), and as
+        // `ver 65577` for a key whose bytes 4..12 hold 0x10029 (#358).
+        let mut k = vec![0x08, 0x01, 0x06, 0x00];
+        k.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // version
+        k.extend_from_slice(&[0xb5, 0x01, 0x00, 0x00]); // size
+        k.extend_from_slice(&[0xff; 4]); // snapshot
+        k.extend_from_slice(&[0xb5, 0x01, 0, 0, 0, 0, 0, 0]); // offset
+        k.extend_from_slice(&[0x01, 0, 0, 0x80, 0, 0, 0, 0]); // inode
+        k.extend_from_slice(&[0u8; 24]);
+        let key = decode(&k, &byte_aligned()).unwrap();
+        assert_eq!(key.pos.to_string(), "2147483649:437:U32_MAX");
+        assert_eq!(key.size, 437);
+        assert_eq!((key.version_hi, key.version_lo), (0, 1));
+
+        // A version that needs more than 32 bits: bytes 4..12 are one
+        // little-endian u64, bytes 12..16 the high 32 bits above it.
+        k[4..16].copy_from_slice(&[0x29, 0, 0x01, 0, 0x02, 0, 0, 0, 0x03, 0, 0, 0]);
+        let key = decode(&k, &byte_aligned()).unwrap();
+        assert_eq!((key.version_hi, key.version_lo), (3, 0x2_0001_0029));
     }
 
     #[test]

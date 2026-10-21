@@ -1126,12 +1126,31 @@ fn snapshot_links(
             )
         })
         .collect();
+    // The tree each snapshot names.
+    let snapshot_tree_of: BTreeMap<u32, u32> = trees
+        .get(&SNAPSHOTS)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_SNAPSHOT && k.value.len() >= SNAP_TREE + 4)
+        .map(|k| (k.pos.offset as u32, le32(&k.value, SNAP_TREE)))
+        .collect();
     for (id, (subvol, _)) in &snapshot_trees {
-        if !subvolumes.contains_key(subvol) {
+        let Some(&(_, snap)) = subvolumes.get(subvol) else {
             r.add(
                 "snapshot_tree_to_missing_subvol",
                 format!(
                     "snapshot tree {id} names subvolume {subvol}, which the subvolumes btree does not have"
+                ),
+            );
+            continue;
+        };
+        // The master subvolume exists, but its snapshot belongs to another
+        // tree (#265). A snapshot the btree lacks is reported elsewhere.
+        if let Some(&other) = snapshot_tree_of.get(&snap).filter(|&&t| t != *id) {
+            r.add(
+                "snapshot_tree_to_wrong_subvol",
+                format!(
+                    "snapshot tree {id} names subvolume {subvol}, whose snapshot {snap} is in tree {other}"
                 ),
             );
         }
@@ -1894,5 +1913,45 @@ mod tests {
                 "snapshot_to_bad_snapshot_tree"
             ]
         );
+    }
+
+    /// Trees 1 and 2, rooted at 100 and 200, of subvolumes 1 and 2 (#265).
+    /// Subvolume 2 is the master of tree 2 only while its snapshot is in it.
+    #[test]
+    fn a_master_subvolume_in_another_tree_is_named() {
+        let mut btrees = BTreeMap::new();
+        btrees.insert(
+            SNAPSHOT_TREES,
+            vec![
+                key(KEY_SNAPSHOT_TREE, 1, tree(1, 100)),
+                key(KEY_SNAPSHOT_TREE, 2, tree(2, 200)),
+            ],
+        );
+        btrees.insert(
+            SNAPSHOTS,
+            vec![
+                key(KEY_SNAPSHOT, 100, snapshot(1, [0; 3])),
+                key(KEY_SNAPSHOT, 200, snapshot(2, [0; 3])),
+            ],
+        );
+        let parents = [(100, 0), (200, 0)].into_iter().collect();
+        let report = |subvol2_snap: u32| {
+            let subvolumes = [(1, (0, 100)), (2, (0, subvol2_snap))]
+                .into_iter()
+                .collect();
+            let mut r = Report::default();
+            snapshot_links(&btrees, &parents, &subvolumes, &mut r);
+            r.problems
+        };
+        assert!(report(200).is_empty());
+        let wrong = report(100);
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert_eq!(wrong[0].kind, "snapshot_tree_to_wrong_subvol");
+        assert!(
+            wrong[0].detail.contains("snapshot tree 2"),
+            "{}",
+            wrong[0].detail
+        );
+        assert!(wrong[0].detail.contains("tree 1"), "{}", wrong[0].detail);
     }
 }

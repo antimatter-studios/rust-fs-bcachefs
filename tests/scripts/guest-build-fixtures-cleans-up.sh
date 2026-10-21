@@ -181,7 +181,8 @@ elif name == 'rm':
         if a.startswith('-'): continue
         p = Path(a)
         assert (p.is_relative_to(root / 'var/tmp') or
-                p in (out / 'casefold.img', out / 'encrypted.mounted.json')), p
+                p in (out / 'casefold.img', out / 'encrypted.mounted.json',
+                      out / 'encrypted-compressed.img', out / 'encrypted-compressed.json')), p
         assert p not in (root / 'var/tmp', root / 'var/tmp/age'), 'shared path deletion'
         if p.is_dir():
             if p.name.startswith('fixture-build.'):
@@ -336,7 +337,8 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
         for name in ('default.img', 'default.json', 'large.img', 'large.json',
                      'aged.img', 'aged-unclean.img', 'aged.json', 'aged-unclean.json',
                      'crc128.img', 'crc128.json', 'poison.img', 'probe.img',
-                     'probe.kvdb.txt', 'encrypted.img', 'multi-0.img', 'multi-1.img',
+                     'probe.kvdb.txt', 'encrypted.img', 'encrypted-compressed.img',
+                     'encrypted-compressed.json', 'multi-0.img', 'multi-1.img',
                      'casefold.img', 'casefold.json', 'reference-help.txt',
                      'reference-version.txt', 'write-study-reached'):
             assert (fixtures / name).exists(), f'published fixture lost: {name}'
