@@ -34,8 +34,8 @@ pub(crate) const SB_HEADER_BYTES: usize = 0x2f0;
 const HEADER_BSET: usize = 136;
 const BSET_HEADER: usize = 24;
 
-/// The bytes of an unpacked key: u64s, format 1, type, pad, version_hi u32,
-/// version_lo u64, size u32, bpos (snapshot u32, offset u64, inode u64),
+/// The bytes of an unpacked key: u64s, format 1, type, pad, version_lo u64,
+/// version_hi u32, size u32, bpos (snapshot u32, offset u64, inode u64),
 /// then the value, which must be a whole number of u64s.
 pub fn encode_key(k: &Bkey) -> Result<Vec<u8>> {
     if !k.value.len().is_multiple_of(8) {
@@ -46,8 +46,8 @@ pub fn encode_key(k: &Bkey) -> Result<Vec<u8>> {
         u8::try_from(u64s).map_err(|_| Error::Unsupported(format!("a key of {u64s} u64s")))?;
     let mut b = Vec::with_capacity(u64s * 8);
     b.extend_from_slice(&[u64s_byte, 1, k.key_type, 0]);
-    b.extend_from_slice(&k.version_hi.to_le_bytes());
     b.extend_from_slice(&k.version_lo.to_le_bytes());
+    b.extend_from_slice(&k.version_hi.to_le_bytes());
     b.extend_from_slice(&k.size.to_le_bytes());
     b.extend_from_slice(&k.pos.snapshot.to_le_bytes());
     b.extend_from_slice(&k.pos.offset.to_le_bytes());
@@ -1666,8 +1666,9 @@ impl<D: BlockDevice> Writer<D> {
                 None => Bkey {
                     key_type: ids::ACCOUNTING_KEY,
                     size: 0,
-                    version_hi: 0,
-                    version_lo: self.journal_seq,
+                    // The journal sequence above 32 bits of zero.
+                    version_hi: (self.journal_seq >> 32) as u32,
+                    version_lo: self.journal_seq << 32,
                     pos: at,
                     value: vec![0; d.len() * 8],
                 },
