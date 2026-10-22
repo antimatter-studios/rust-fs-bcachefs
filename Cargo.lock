@@ -226,11 +226,12 @@ dependencies = [
 
 [[package]]
 name = "rust-fs-core"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "sha2",
 ]
 
 [[package]]

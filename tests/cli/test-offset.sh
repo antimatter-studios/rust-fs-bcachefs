@@ -25,6 +25,7 @@ while read -r verb; do
         info|get) args=() ;;
         ls|tree) args=(/) ;;
         stat|read) args=(/hello.txt) ;;
+        export) args=(/hello.txt "$SANDBOX/export-offset") ;;
         write) args=(/hello.txt --from /dev/null) ;;
         mkdir|rm|rmdir) args=(/hello.txt) ;;
         mv|ln) args=(/hello.txt /other) ;;
