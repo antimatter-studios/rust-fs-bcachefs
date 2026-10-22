@@ -408,13 +408,17 @@ pub struct fs_bcachefs_times_t {
 }
 
 /// An inode time as seconds and nanoseconds since the epoch: the stored
-/// value counts units of the superblock's time precision (nanoseconds)
-/// from its time base (`time_base_lo`, nanoseconds since the epoch):
+/// signed two's-complement value counts units of the superblock's time
+/// precision (nanoseconds) from its time base (`time_base_lo`, nanoseconds
+/// since the epoch):
 /// docs/clean-room.md, "Creating a file".
 fn epoch_time(sb: &crate::superblock::Superblock, raw: u64) -> (i64, u32) {
-    let ns = u128::from(sb.time_base_lo) + u128::from(raw) * u128::from(sb.time_precision.max(1));
-    let sec = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
-    (sec, (ns % 1_000_000_000) as u32)
+    let offset =
+        i128::from(i64::from_le_bytes(raw.to_le_bytes())) * i128::from(sb.time_precision.max(1));
+    let ns = i128::from(sb.time_base_lo) + offset;
+    let sec = ns.div_euclid(1_000_000_000);
+    let sec = i64::try_from(sec).unwrap_or(if sec < 0 { i64::MIN } else { i64::MAX });
+    (sec, ns.rem_euclid(1_000_000_000) as u32)
 }
 
 /// Fill `out` with the access, modification and change times of the path
