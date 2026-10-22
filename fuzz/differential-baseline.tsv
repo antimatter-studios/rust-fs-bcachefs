@@ -114,3 +114,21 @@ ref-only	key-offset	check_snapshot_trees...snapshot tree points to subvolume tha
 ref-only	key-type	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type logged_op_truncate # len # v	#266: The checker accepts a logged-op-truncate key in the subvolume-children btree
 ref-only	key-offset	check_snapshot_trees...snapshot tree points to missing/incorrect snapshot:	#267: The checker misses a snapshot-tree root that points to a missing or incorrect snapshot
 ref-only	key-type	invalid bkey in btree_node btree=backpointers level=#: u#s # type inode_v# # len # ver # : (value to	#268: The checker accepts an inode key in the backpointers btree
+
+# Measured on the top of stack #365 (4813ff2) in run 39764355709, a re-run of
+# nightly run 39756419740 (2026-10-22): reference checker 1.39.7, 648 cases,
+# first seed 1659840, fixtures of CI run 38741040375. Stack #365 resolves
+# three of that night's seventeen new classes and #376 three more; each
+# remaining class is tracked by its own child of #228, and the two
+# backpointer_to_missing_ptr classes by #230.
+ours-only	node	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
+ref-only	node	check_inodes...inode has_inode_opts flag wrong, should be #	#379: The checker misses an inode whose has_inode_opts flag disagrees with its options
+ref-only	node	check_allocations...bucket # gen # data type user has wrong cached_sectors: got #, should be #, fixi	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
+ref-only	node	check_allocations...bucket # gen # data type journal has wrong stripe_sectors: got #, should be #, f	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
+ref-only	node	check_allocations...accounting mismatch for btree btree=logged_ops:	#381: The checker misses an accounting mismatch for the logged_ops btree
+ours-only	key-value	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
+ref-only	key-inode	check_subvol_children...incorrect entry in subvolume_children btree #, not fixing	#382: The checker misses a subvolume_children entry at an inode no subvolume has
+ref-only	key-value	check_allocations...accounting mismatch for btree btree=logged_ops:	#381: The checker misses an accounting mismatch for the logged_ops btree
+ref-only	key-inode	check_btree_backpointers...backpointer for missing device:	#383: The checker misses a backpointer for a device the filesystem does not have
+ref-only	key-type	invalid bkey in btree_node btree=backpointers level=#: u#s # type snapshot # len # ver # : parent # 	#378: The checker accepts a snapshot key in the backpointers btree
+ref-only	key-type	check_allocations...bucket # gen # data type user has wrong dirty_sectors: got #, should be #, fixin	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
