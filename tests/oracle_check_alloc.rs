@@ -14,12 +14,18 @@
 //! - a bucket waiting for discard with no need_discard key, and a
 //!   need_discard key no such bucket gives;
 //! - the device's accounting of a data type, out of step with what its
-//!   alloc keys add up to (the reference's "accounting mismatch").
+//!   alloc keys add up to (the reference's "accounting mismatch");
+//! - a freespace run holding a bucket in use, a free bucket with no alloc
+//!   key or a free one that no run holds, a run on a device the filesystem
+//!   does not have, and a backpointer in a bucket with no alloc key
+//!   (tests/common/freespace.rs).
 #![cfg(feature = "write")]
 
 #[path = "common/backpointer.rs"]
 mod backpointer;
 mod common;
+#[path = "common/freespace.rs"]
+mod freespace;
 
 use common::fixture;
 use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
@@ -787,4 +793,55 @@ fn an_xattr_in_dirents_is_one_finding_beside_a_distinct_offender() {
     );
     assert_eq!(sized_findings[0].kind, "bkey_size_nonzero");
     std::fs::remove_file(&img).ok();
+}
+
+/// One free-space case of tests/common/freespace.rs, planted on a copy of
+/// `default` checked clean first, must be named by its kind.
+fn planted_is_reported(case: &str) {
+    let &(_, kind, _) = freespace::CASES
+        .iter()
+        .find(|(c, _, _)| *c == case)
+        .unwrap();
+    let img = scratch(&format!("freespace-{case}"));
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report.clean(),
+        "the fixture is damaged: {:?}",
+        report.problems
+    );
+    let want = freespace::plant(&img, case);
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == kind && p.detail.contains(&want)),
+        "{case}: no {kind} naming {want:?}: {:?}",
+        report.problems
+    );
+}
+
+#[test]
+fn a_freespace_run_holding_a_bucket_in_use_is_reported() {
+    planted_is_reported("set");
+}
+
+#[test]
+fn a_bucket_with_no_alloc_key_that_no_freespace_run_holds_is_reported() {
+    planted_is_reported("hole");
+}
+
+#[test]
+fn a_free_bucket_that_no_freespace_run_holds_is_reported() {
+    planted_is_reported("unset");
+}
+
+#[test]
+fn a_freespace_run_on_a_device_the_filesystem_does_not_have_is_reported() {
+    planted_is_reported("nonexistent-device");
+}
+
+#[test]
+fn a_backpointer_in_a_bucket_with_no_alloc_key_is_reported() {
+    planted_is_reported("backpointer");
 }

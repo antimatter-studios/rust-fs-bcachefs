@@ -7,6 +7,9 @@
 #[path = "common/backpointer.rs"]
 mod backpointer;
 mod common;
+#[cfg(feature = "write")]
+#[path = "common/freespace.rs"]
+mod freespace;
 #[path = "common/journal_length.rs"]
 mod journal_length;
 #[path = "common/superblock_copy.rs"]
@@ -1135,6 +1138,42 @@ fn both_checkers_reject_an_xattr_key_with_a_nonzero_size() {
                 .iter()
                 .any(|p| p.kind == "bkey_size_nonzero" && p.detail.contains(&pos.to_string())),
             "the xattr key size must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
+/// Free-space and backpointer damage (#163, tests/common/freespace.rs):
+/// on `default`, checked clean by both first, each case planted must be
+/// found by the reference with the finding the differential baseline
+/// records for it, and named by this checker with its kind.
+#[cfg(feature = "write")]
+#[test]
+fn where_the_reference_finds_free_space_damage_this_checker_names_it() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for &(case, kind, finding) in freespace::CASES {
+        let dir = ScratchDir::new("check-freespace-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("{case}.img"));
+        std::fs::copy(fixture("default.img"), &img).unwrap();
+        let (bad, text) = reference_finds_a_problem(&img);
+        assert!(!bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let want = freespace::plant(&img, case);
+        let (bad, text) = reference_finds_a_problem(&img);
+        assert!(
+            bad && text.to_lowercase().contains(finding),
+            "{case}: the reference did not report {finding:?}:\n{text}"
+        );
+        let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == kind && p.detail.contains(&want)),
+            "{case}: no {kind} naming {want:?}: {:?}\n{text}",
             ours.problems
         );
     }
