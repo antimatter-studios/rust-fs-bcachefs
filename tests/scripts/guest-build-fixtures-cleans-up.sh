@@ -186,6 +186,9 @@ elif name == 'rm':
             'encrypted-compressed.img', 'encrypted-compressed.json',
             'encrypted-wide-macs.img', 'encrypted-wide-macs.json',
             'encrypted-passphrase.mounted.json',
+            'encrypted-unclean.img', 'encrypted-unclean.json',
+            'encrypted-unclean.mounted.json',
+            'encrypted-passphrase.img',
         }
         assert (p.is_relative_to(root / 'var/tmp') or
                 (p.parent == out and p.name in published)), p
@@ -343,9 +346,12 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
         for name in ('default.img', 'default.json', 'large.img', 'large.json',
                      'aged.img', 'aged-unclean.img', 'aged.json', 'aged-unclean.json',
                      'crc128.img', 'crc128.json', 'poison.img', 'probe.img',
-                     'probe.kvdb.txt', 'encrypted.img', 'encrypted-compressed.img',
-                     'encrypted-compressed.json', 'encrypted-wide-macs.img',
-                     'encrypted-wide-macs.json', 'multi-0.img', 'multi-1.img',
+                     'probe.kvdb.txt', 'encrypted.img', 'multi-0.img', 'multi-1.img',
+                     'encrypted-compressed.img', 'encrypted-compressed.json',
+                     'encrypted-wide-macs.img', 'encrypted-wide-macs.json',
+                     'encrypted-unclean.img', 'encrypted-unclean.json',
+                     'encrypted-unclean.mounted.json',
+                     'encrypted-passphrase.img',
                      'casefold.img', 'casefold.json', 'reference-help.txt',
                      'reference-version.txt', 'write-study-reached'):
             assert (fixtures / name).exists(), f'published fixture lost: {name}'
