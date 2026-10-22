@@ -284,10 +284,15 @@ pub fn btree_node_nonce(offset: usize, seq: u64, journal_seq: u64) -> Result<Non
 /// 1, and the uncompressed size, which runs from 1 to 64 sectors there,
 /// does not enter it. OBSERVED on all 34 incompressible extents of
 /// `encrypted-compressed.img` (#356): the incompressible type does not
-/// enter it either. What was not seen is refused rather than given a
+/// enter it either. OBSERVED on the incompressible extent of
+/// `encrypted-compressed.img` whose crc entry the reference narrowed to the
+/// 43 live sectors of a partly overwritten one (#331, nonce offset 21): the
+/// offset, in sectors, advances word 0, the block counter, by eight 64-byte
+/// blocks a sector, so the keystream runs from where those sectors sat in
+/// the original extent. What was not seen is refused rather than given a
 /// guessed nonce: a compressed extent (S1 puts the compression type in the
-/// nonce, #330), a per-CRC nonce offset, and a version of 2^32 or more
-/// (whether its high bits are word 2 or share word 3).
+/// nonce, #330), and a version of 2^32 or more (whether its high bits are
+/// word 2 or share word 3).
 pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce> {
     if crc.compression_type != compression::NONE
         && crc.compression_type != compression::INCOMPRESSIBLE
@@ -298,13 +303,12 @@ pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce
             crc.compression_type
         )));
     }
-    if crc.nonce != 0 {
-        return Err(Error::Unsupported(format!(
-            "an encrypted extent with nonce offset {}: how it enters the nonce has not been \
-             observed",
+    let block = crc.nonce.checked_mul(512 / 64).ok_or_else(|| {
+        Error::Corrupt(format!(
+            "an encrypted extent's nonce offset of {} sectors is past the block counter",
             crc.nonce
-        )));
-    }
+        ))
+    })?;
     let version = u32::try_from(version_lo)
         .ok()
         .filter(|_| version_hi == 0)
@@ -314,7 +318,7 @@ pub fn extent_nonce(crc: &Crc, version_hi: u32, version_lo: u64) -> Result<Nonce
                  of 2^32 or more enters its nonce has not been observed"
             ))
         })?;
-    Ok([0, version, 0, NONCE_EXTENT])
+    Ok([block, version, 0, NONCE_EXTENT])
 }
 
 /// Verify the MAC of an encrypted extent's stored bytes `data`, then
@@ -611,9 +615,28 @@ mod tests {
         );
     }
 
+    /// A narrowed extent's nonce offset (#331) starts its keystream that
+    /// many sectors in: offset 21 is block 168, the placement under which
+    /// the reference's MAC of the 43-sector extent verified.
+    #[test]
+    fn a_nonce_offset_advances_the_block_counter_a_sector_at_a_time() {
+        let crc = Crc {
+            nonce: 21,
+            ..hello_crc()
+        };
+        assert_eq!(
+            extent_nonce(&crc, 0, 10).unwrap(),
+            [168, 10, 0, 0x1000_0000]
+        );
+        let past = Crc {
+            nonce: u32::MAX / 4,
+            ..hello_crc()
+        };
+        assert!(matches!(extent_nonce(&past, 0, 10), Err(Error::Corrupt(_))));
+    }
+
     /// What has not been observed is refused, not given a guessed nonce:
-    /// compression, a nonce offset, a version of 2^32 or more, and a MAC of
-    /// another width.
+    /// compression, a version of 2^32 or more, and a MAC of another width.
     #[test]
     fn an_extent_not_yet_observed_is_refused() {
         let unsupported = |crc: Crc, version_hi: u32, version_lo: u64| {
@@ -649,15 +672,6 @@ mod tests {
             extent_nonce(&incompressible, 0, HELLO_VERSION).unwrap(),
             extent_nonce(&hello_crc(), 0, HELLO_VERSION).unwrap()
         );
-        let m = unsupported(
-            Crc {
-                nonce: 1,
-                ..hello_crc()
-            },
-            0,
-            HELLO_VERSION,
-        );
-        assert!(m.contains("nonce offset 1"), "{m}");
         for (hi, lo) in [(1, HELLO_VERSION), (0, 1 << 32)] {
             let m = unsupported(hello_crc(), hi, lo);
             assert!(m.contains("version"), "{m}");
