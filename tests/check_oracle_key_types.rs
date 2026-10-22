@@ -591,6 +591,62 @@ fn lru_in_xattrs_is_rejected_by_both_checkers() {
     );
 }
 
+/// The differential's kernel seed 1659466 changes the key at 1:4:0 to
+/// inode_v3 and commits it in logged_ops. The reference refuses that type
+/// there; the short value is retained so the exact mutation stays pinned.
+#[test]
+fn inode_v3_in_logged_ops_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("kernel.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let pos = Bpos {
+        inode: 1,
+        offset: 4,
+        snapshot: 0,
+    };
+    let mut key = btree::walk(&dev, &sb, LOGGED_OPS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos == pos)
+        .expect("kernel.img has the differential's logged_ops key");
+    assert_ne!(key.key_type, fs_bcachefs::bkey::key_type::INODE_V3);
+    assert_eq!(key.value.len(), 16, "the recorded mutation keeps its value");
+    key.key_type = fs_bcachefs::bkey::key_type::INODE_V3;
+
+    let dir = common::ScratchDir::new("check-logged-ops-inode-v3");
+    let img = dir.join("kernel-1659466.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, LOGGED_OPS, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (rejected, reason) = verdict(&lines, "1:4:0", &[]);
+    assert!(
+        rejected,
+        "the reference did not reject inode_v3 for its type: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree logged_ops (inode_v3)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|problem| problem.kind == "invalid_bkey"
+                && problem.detail.contains("btree logged_ops: key 1:4:0")),
+        "the checker did not report the planted key: {:?}",
+        report.problems
+    );
+}
+
 /// What the reference printed for keys planted into reconcile_work_phys in
 /// run 38722144899 (`vm.log` in its tier-logs-suite-in-vm artifact), on an
 /// image it judged without crashing.

@@ -1549,6 +1549,13 @@ guest regression repeats that exact mutation on the pinned `aged.img` and
 requires both checkers to report the type refusal. It is the first measured
 key type refusal for xattrs; no other pair is inferred.
 
+The kernel-fixture mutation at seed 1659466 changes the key at `1:4:0` in
+`logged_ops` to `inode_v3` and commits it. The reference checker reports
+`invalid key type for btree logged_ops (inode_v3)` for its 16-byte value;
+this checker now reports `invalid_bkey` for that exact pair. The guest
+regression repeats the mutation against both checkers. This establishes only
+that `inode_v3` is refused in `logged_ops`; no other pair is inferred.
+
 ### A key's position and its value's lengths (S3, #219)
 
 The same report shows four more refusals, each after one change:
