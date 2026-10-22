@@ -62,6 +62,11 @@ const MADE_BY_THE_REFERENCE: &[&str] = &[
 const JUDGED: &[u8] = &[LOGGED_OPS, ACCOUNTING, RECONCILE_WORK_PHYS];
 const FREESPACE: u8 = 11;
 const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+const XATTRS: u8 = 3;
+/// `lru` is key type 26 in S1 11.5's list (`plant::KEY_TYPES`); 10 is
+/// `dirent`, which the reference names as such when it is planted.
+const KEY_LRU: u8 = 26;
+const KEY_XATTR: u8 = 11;
 
 /// Planted keys are judged one to an image. With eight to an image the
 /// reference named only some of the keys it refuses (run 39020187551): of a
@@ -188,6 +193,13 @@ fn verdict(lines: &[&str], p: &str, others: &[String]) -> (bool, Option<String>)
         if !names(l, p) {
             continue;
         }
+        // A pass's progress line ("check_allocations...") is not ended
+        // before a key it reads is refused, so the refusal can follow it
+        // on the same line (queue run 39847363486).
+        let l = match l.find("invalid bkey") {
+            Some(at) if l[..at].ends_with("...") => &l[at..],
+            _ => *l,
+        };
         if !l.starts_with("invalid bkey") {
             if l.to_lowercase().contains("invalid") {
                 said.get_or_insert(l.replace(p, "<pos>"));
@@ -482,6 +494,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
         panic!("{}", msg.join("\n"));
     }
     logged_op_truncate_in_freespace_is_rejected_by_both_checkers();
+    lru_in_xattrs_is_rejected_by_both_checkers();
 }
 
 fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
@@ -522,6 +535,56 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
                 && problem.detail.contains("btree freespace: key 0:2040:0")
+        }),
+        "the checker did not report the planted key: {:?}",
+        report.problems
+    );
+}
+
+fn lru_in_xattrs_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("aged.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    // The differential planted at 2147487679:1366636819568056465:U32_MAX in
+    // the fixtures of run 38741040375. An xattr's offset hashes its name
+    // with a seed each inode draws when it is made, so the aged.img every
+    // CI run builds holds its xattrs elsewhere; any of them carries the
+    // mutation.
+    let mut key = btree::walk(&dev, &sb, XATTRS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == KEY_XATTR)
+        .expect("the aged fixture has an xattr key");
+    key.key_type = KEY_LRU;
+    let p = key.pos.to_string();
+
+    let dir = common::ScratchDir::new("check-xattrs-lru-key");
+    let img = dir.join("aged-1659510.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, XATTRS, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (rejected, reason) = verdict(&lines, &p, &[]);
+    assert!(
+        rejected,
+        "the reference did not reject the key for its type: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree xattrs (lru)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report.problems.iter().any(|problem| {
+            problem.kind == "invalid_bkey"
+                && problem.detail.contains(&format!("btree xattrs: key {p}"))
         }),
         "the checker did not report the planted key: {:?}",
         report.problems
@@ -578,6 +641,25 @@ fn a_key_refused_for_its_type_is_counted() {
     assert!(
         said.as_deref()
             .is_some_and(|s| s.contains("invalid key type")),
+        "{said:?}"
+    );
+}
+
+/// What the reference printed in queue run 39847363486: the refusal of a
+/// key planted in xattrs followed its check_allocations progress text on
+/// the same line.
+#[test]
+fn a_refusal_after_a_pass_progress_text_is_counted() {
+    let lines = [
+        "check_allocations...invalid bkey in btree_node btree=xattrs level=0: u64s 8 type lru 2147487676:3635906401912537942:U32_MAX len 0 ver 0",
+        "  invalid key type for btree xattrs (lru), deleting",
+        " done (0 seconds)",
+    ];
+    let (rejected, said) = verdict(&lines, "2147487676:3635906401912537942:U32_MAX", &[]);
+    assert!(rejected, "{said:?}");
+    assert!(
+        said.as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree xattrs (lru)")),
         "{said:?}"
     );
 }
