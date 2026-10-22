@@ -109,7 +109,6 @@ ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # typ
 # snapshot-tree inode positions, #255 fixes inode key inode positions,
 # #256 checks data backpointer values, and #258 checks xattr key sizes;
 # ten classes remain.
-ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type logged_op_truncate # len # ver #	#257: The checker accepts a logged-op-truncate key in the freespace btree
 ref-only	key-type	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type lru #:u#_max len # v	#259: The checker accepts an LRU key in the xattrs btree
 ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # type inode_v# # len # ver # : (value too 	#263: The checker accepts an inode key in the logged-ops btree
 ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type lru # len # ver #	#264: The checker accepts an LRU key in the freespace btree
