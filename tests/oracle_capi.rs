@@ -361,37 +361,41 @@ fn epoch_of(text: &str) -> i64 {
 /// or in the wrong unit, lands decades away.
 #[test]
 fn times_fall_on_the_day_the_reference_made_the_image() {
-    let set = "aged";
-    let last_write = common::super_report(set)["Time of last write"].clone();
-    let last = epoch_of(&last_write);
-    let fs = mount(set);
-    let mut checked = 0;
-    for e in common::manifest(set) {
-        let mut t = fs_bcachefs_times_t::default();
-        let p = c(&e.path);
-        assert_eq!(
-            unsafe { fs_bcachefs_stat_times(fs, p.as_ptr(), &mut t) },
-            0,
-            "{}: {}",
-            e.path,
-            last_error()
-        );
-        for (what, sec, nsec) in [
-            ("atime", t.atime_sec, t.atime_nsec),
-            ("mtime", t.mtime_sec, t.mtime_nsec),
-            ("ctime", t.ctime_sec, t.ctime_nsec),
-        ] {
-            assert!(nsec < 1_000_000_000, "{}: {what} nsec {nsec}", e.path);
-            assert!(
-                (last - 86_400..=last + 86_400).contains(&sec),
-                "{}: {what} {sec} is not within a day of {last_write} ({last})",
-                e.path
+    for set in ["aged", "default"] {
+        let last_write = common::super_report(set)["Time of last write"].clone();
+        let last = epoch_of(&last_write);
+        let fs = mount(set);
+        let mut checked = 0;
+        for e in common::manifest(set) {
+            let mut t = fs_bcachefs_times_t::default();
+            let p = c(&e.path);
+            assert_eq!(
+                unsafe { fs_bcachefs_stat_times(fs, p.as_ptr(), &mut t) },
+                0,
+                "{set} {}: {}",
+                e.path,
+                last_error()
             );
+            for (what, sec, nsec) in [
+                ("atime", t.atime_sec, t.atime_nsec),
+                ("mtime", t.mtime_sec, t.mtime_nsec),
+                ("ctime", t.ctime_sec, t.ctime_nsec),
+            ] {
+                assert!(nsec < 1_000_000_000, "{set} {}: {what} nsec {nsec}", e.path);
+                assert!(
+                    (last - 86_400..=last + 86_400).contains(&sec),
+                    "{set} {}: {what} {sec} is not within a day of {last_write} ({last})",
+                    e.path
+                );
+            }
+            checked += 1;
         }
-        checked += 1;
+        assert!(
+            checked > if set == "aged" { 100 } else { 0 },
+            "only {checked} paths in {set}"
+        );
+        unsafe { fs_bcachefs_umount(fs) };
     }
-    assert!(checked > 100, "only {checked} paths");
-    unsafe { fs_bcachefs_umount(fs) };
 }
 
 /// The header is valid C, with fs_core.h beside it, by the platform's own
