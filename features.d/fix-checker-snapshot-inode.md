@@ -6,7 +6,7 @@
 | Backpointer values that disagree with their extents | Supported for written data extents with observed backpointer locations | Unreleased (#290) | #256 | `oracle_check_alloc.rs`, `check_oracle.rs`, `check.rs` unit test, pinned `oracle_differential_default74.rs` cases |
 | Logged-op-truncate keys in the freespace btree | Supported | Unreleased | #257 | `check_oracle_key_types.rs`, `differential.yml` report 39018152705 |
 | Xattr keys with nonzero sizes | Supported for xattr keys in the xattrs btree | Unreleased (#291) | #258 | `oracle_check_key_positions.rs`, `check_oracle.rs`, `check.rs` unit test, pinned `oracle_differential_default74.rs` case |
-| LRU keys in the xattrs btree | Not supported for one measured disagreement class | | #259 | `differential.yml` report 39018152705 |
+| LRU keys in the xattrs btree | Supported | Unreleased | #259 | `check_oracle_key_types.rs`, `differential.yml` report 39018152705 |
 | Superblock-copy findings after superblock mutations the reference checker accepts | Unresolved disagreement | | #261 | `differential.yml` report 39018152705 |
 | Journal entry versions the reference checker rejects | Not supported for one measured disagreement class | | #262 | `differential.yml` report 39018152705 |
 | Inode keys in the logged-ops btree | Not supported for one measured disagreement class | | #263 | `differential.yml` report 39018152705 |

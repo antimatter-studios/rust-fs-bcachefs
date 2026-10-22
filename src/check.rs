@@ -128,13 +128,14 @@ const KEY_TYPES_ANYWHERE: [u8; 4] = [
     KEY_COOKIE,
 ];
 /// The key types a btree may hold beyond those. The reference has refused
-/// logged_op_truncate in freespace (#257); logged_ops holds logged operations
-/// and the inode allocation cursor, accounting holds accounting keys, and
-/// all three hold set keys.
+/// logged_op_truncate in freespace (#257) and lru in xattrs (#259); logged_ops
+/// holds logged operations and the inode allocation cursor, accounting holds
+/// accounting keys, and those three btrees hold set keys.
 /// Run 39037096192 also reports no type refusal for unnamed type 40 in
 /// these three btrees; no other unnamed type has been judged.
 /// Every other btree is #305.
 const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
+    (btree_id::XATTRS, &[key_type::XATTR]),
     (FREESPACE, &[KEY_SET]),
     (LOGGED_OPS, &[KEY_SET, 32, 33, 35, 37, 39, 40]),
     (ACCOUNTING, &[KEY_SET, KEY_ACCOUNTING, 40]),
@@ -1735,6 +1736,12 @@ mod tests {
                 );
             }
         }
+        let xattrs = KEY_TYPES_ALLOWED
+            .iter()
+            .find(|(tree, _)| *tree == btree_id::XATTRS)
+            .unwrap()
+            .1;
+        assert_eq!(xattrs, &[key_type::XATTR]);
     }
 
     #[test]
