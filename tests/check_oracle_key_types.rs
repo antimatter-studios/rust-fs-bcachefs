@@ -540,21 +540,18 @@ fn lru_in_xattrs_is_rejected_by_both_checkers() {
     let source = fixture("aged.img");
     let dev = FileDevice::open(&source).unwrap();
     let sb = Superblock::read(&dev).unwrap();
-    let pos = Bpos {
-        inode: 2_147_487_679,
-        offset: 1_366_636_819_568_056_465,
-        snapshot: u32::MAX,
-    };
+    // The differential planted at 2147487679:1366636819568056465:U32_MAX in
+    // the fixtures of run 38741040375. An xattr's offset hashes its name
+    // with a seed each inode draws when it is made, so the aged.img every
+    // CI run builds holds its xattrs elsewhere; any of them carries the
+    // mutation.
     let mut key = btree::walk(&dev, &sb, XATTRS)
         .unwrap()
         .into_iter()
-        .find(|k| k.pos == pos)
-        .expect("the pinned aged fixture has the differential's xattr key");
-    assert_eq!(
-        key.key_type, KEY_XATTR,
-        "the planted key must begin as an xattr"
-    );
+        .find(|k| k.key_type == KEY_XATTR)
+        .expect("the aged fixture has an xattr key");
     key.key_type = KEY_LRU;
+    let p = key.pos.to_string();
 
     let dir = common::ScratchDir::new("check-xattrs-lru-key");
     let img = dir.join("aged-1659510.img");
@@ -564,8 +561,7 @@ fn lru_in_xattrs_is_rejected_by_both_checkers() {
         Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
     };
     let lines: Vec<&str> = text.lines().collect();
-    let p = "2147487679:1366636819568056465:U32_MAX";
-    let (rejected, reason) = verdict(&lines, p, &[]);
+    let (rejected, reason) = verdict(&lines, &p, &[]);
     assert!(
         rejected,
         "the reference did not reject the key for its type: {reason:?}\n{text}"
@@ -579,9 +575,7 @@ fn lru_in_xattrs_is_rejected_by_both_checkers() {
     assert!(
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
-                && problem
-                    .detail
-                    .contains("btree xattrs: key 2147487679:1366636819568056465:U32_MAX")
+                && problem.detail.contains(&format!("btree xattrs: key {p}"))
         }),
         "the checker did not report the planted key: {:?}",
         report.problems
