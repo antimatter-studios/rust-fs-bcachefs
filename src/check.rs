@@ -127,14 +127,15 @@ const KEY_TYPES_ANYWHERE: [u8; 4] = [
     key_type::ERROR,
     KEY_COOKIE,
 ];
-/// The key types a btree may hold beyond those, for the btrees whose
-/// foreign keys the reference checker reports as `invalid bkey` (#163):
-/// logged_ops holds logged operations and the inode allocation cursor,
-/// accounting holds accounting keys, and all three hold set keys.
+/// The key types a btree may hold beyond those. The reference has refused
+/// logged_op_truncate in freespace (#257); logged_ops holds logged operations
+/// and the inode allocation cursor, accounting holds accounting keys, and
+/// all three hold set keys.
 /// Run 39037096192 also reports no type refusal for unnamed type 40 in
 /// these three btrees; no other unnamed type has been judged.
 /// Every other btree is #305.
 const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
+    (FREESPACE, &[KEY_SET]),
     (LOGGED_OPS, &[KEY_SET, 32, 33, 35, 37, 39, 40]),
     (ACCOUNTING, &[KEY_SET, KEY_ACCOUNTING, 40]),
     (RECONCILE_WORK_PHYS, &[KEY_SET, 40]),

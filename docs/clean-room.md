@@ -1532,6 +1532,15 @@ snapshot, so neither rule belongs to a key type or a btree alone: the
 checker judges exactly the observed pairs of btree and key type, and every
 other pair is an open question until an oracle is seen to answer it.
 
+Run 39018152705's aged-fixture mutation at seed 1659445 changed only the key
+type at `0:2040:0` in the freespace btree, from `set` to
+`logged_op_truncate`. The reference checker reported `invalid key type for
+btree freespace (logged_op_truncate)` and deleted it; this checker had
+reported the image clean (#257). The guest regression repeats that exact
+mutation on the pinned `aged.img` and requires both checkers to report the
+type refusal. It is the first measured key type for freespace beyond its
+ordinary `set` keys; other types there remain open.
+
 ### A key's position and its value's lengths (S3, #219)
 
 The same report shows four more refusals, each after one change:
