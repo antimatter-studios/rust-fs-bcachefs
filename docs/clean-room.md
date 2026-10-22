@@ -1549,6 +1549,13 @@ guest regression repeats that exact mutation on the pinned `aged.img` and
 requires both checkers to report the type refusal. It is the first measured
 key type refusal for xattrs; no other pair is inferred.
 
+The kernel-fixture mutation at seed 1659510 changes the key at `0:266:0` in
+the freespace btree from `set` to `lru`. The reference checker reports
+`invalid key type for btree freespace (lru)`; this checker reports
+`invalid_bkey` for the same key. The guest regression plants that exact
+mutation in the pinned `kernel.img` and requires both verdicts. This
+establishes only that `lru` is refused in freespace; no other type is inferred.
+
 The kernel-fixture mutation at seed 1659466 changes the key at `1:4:0` in
 `logged_ops` to `inode_v3` and commits it. The reference checker reports
 `invalid key type for btree logged_ops (inode_v3)` for its 16-byte value;
