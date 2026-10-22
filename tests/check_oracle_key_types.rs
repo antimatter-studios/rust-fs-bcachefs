@@ -63,7 +63,9 @@ const JUDGED: &[u8] = &[LOGGED_OPS, ACCOUNTING, RECONCILE_WORK_PHYS];
 const FREESPACE: u8 = 11;
 const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
 const XATTRS: u8 = 3;
-const KEY_LRU: u8 = 10;
+/// `lru` is key type 26 in S1 11.5's list (`plant::KEY_TYPES`); 10 is
+/// `dirent`, which the reference names as such when it is planted.
+const KEY_LRU: u8 = 26;
 const KEY_XATTR: u8 = 11;
 
 /// Planted keys are judged one to an image. With eight to an image the
@@ -191,6 +193,13 @@ fn verdict(lines: &[&str], p: &str, others: &[String]) -> (bool, Option<String>)
         if !names(l, p) {
             continue;
         }
+        // A pass's progress line ("check_allocations...") is not ended
+        // before a key it reads is refused, so the refusal can follow it
+        // on the same line (queue run 39847363486).
+        let l = match l.find("invalid bkey") {
+            Some(at) if l[..at].ends_with("...") => &l[at..],
+            _ => *l,
+        };
         if !l.starts_with("invalid bkey") {
             if l.to_lowercase().contains("invalid") {
                 said.get_or_insert(l.replace(p, "<pos>"));
@@ -632,6 +641,25 @@ fn a_key_refused_for_its_type_is_counted() {
     assert!(
         said.as_deref()
             .is_some_and(|s| s.contains("invalid key type")),
+        "{said:?}"
+    );
+}
+
+/// What the reference printed in queue run 39847363486: the refusal of a
+/// key planted in xattrs followed its check_allocations progress text on
+/// the same line.
+#[test]
+fn a_refusal_after_a_pass_progress_text_is_counted() {
+    let lines = [
+        "check_allocations...invalid bkey in btree_node btree=xattrs level=0: u64s 8 type lru 2147487676:3635906401912537942:U32_MAX len 0 ver 0",
+        "  invalid key type for btree xattrs (lru), deleting",
+        " done (0 seconds)",
+    ];
+    let (rejected, said) = verdict(&lines, "2147487676:3635906401912537942:U32_MAX", &[]);
+    assert!(rejected, "{said:?}");
+    assert!(
+        said.as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree xattrs (lru)")),
         "{said:?}"
     );
 }
