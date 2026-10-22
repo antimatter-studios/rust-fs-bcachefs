@@ -1075,6 +1075,79 @@ fn both_checkers_reject_a_snapshot_tree_key_past_offset_u32_max() {
     }
 }
 
+/// Nightly run 39018152705, kernel-rootsnap seed 1659464 (#267): the
+/// snapshot-tree key moves to offset 2 while its root still names the
+/// missing snapshot U32_MAX. The reference rejects that tree; this checker
+/// currently accepts it.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_tree_with_a_missing_root_snapshot() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const SNAPSHOT_TREES: u8 = 15;
+    const KEY_SNAPSHOT_TREE: u8 = 31;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("snapshot-tree-root-snapshot");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("missing-root-snapshot.img");
+    std::fs::copy(fixture("kernel-rootsnap.img"), &img).unwrap();
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut key = btree::walk(&dev, &sb, SNAPSHOT_TREES)
+        .unwrap()
+        .into_iter()
+        .find(|k| {
+            k.key_type == KEY_SNAPSHOT_TREE
+                && k.pos.inode == 0
+                && k.pos.offset == 1
+                && k.pos.snapshot == 0
+        })
+        .expect("snapshot tree 1 exists");
+    assert_eq!(
+        u32::from_le_bytes(key.value[4..8].try_into().unwrap()),
+        u32::MAX,
+        "the fixture tree's root snapshot is the missing snapshot"
+    );
+    key.pos.offset = 2;
+    let pos = key.pos;
+    {
+        let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        writer.insert(SNAPSHOT_TREES, vec![key]).unwrap();
+    }
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let stored = btree::walk(&dev, &sb, SNAPSHOT_TREES)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == KEY_SNAPSHOT_TREE && k.pos == pos)
+        .expect("the moved snapshot-tree key is stored");
+    assert_eq!(
+        u32::from_le_bytes(stored.value[4..8].try_into().unwrap()),
+        u32::MAX,
+        "only the tree position changes"
+    );
+
+    let (damaged, text) = reference_finds_a_problem(&img);
+    assert!(
+        damaged && text.contains("snapshot tree points to missing/incorrect snapshot"),
+        "the reference must name the missing root snapshot:\n{text}"
+    );
+    let ours = check(&dev).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "snapshot_tree_to_bad_root_snapshot"),
+        "the missing root snapshot must be named: {:?}\n{text}",
+        ours.problems
+    );
+}
+
 /// Nightly-seed run 39018152705, default/block4k seed 1659490 (#255):
 /// inode_v3 with a nonzero inode position is refused. Resolve the regular
 /// file by path because freshly generated fixtures may renumber inodes.
