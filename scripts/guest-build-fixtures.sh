@@ -840,22 +840,36 @@ sed 's/^/encrypted-unclean: /' "$out/encrypted-unclean.txt"
 # The same tree under a known passphrase (#270), so its master key is
 # sealed: the reader tells the two kinds apart, and the passphrase unlock
 # (#273) is learned from this image. The passphrase file holds exactly the
-# bytes the formatter was given, with no trailing newline. Every outcome
-# goes to encrypted-passphrase.format.txt, with the unlock command's own
-# help (how it takes a passphrase) and its report of each encrypted
-# image's state; nothing here fails the build, and tests/oracle_refused.rs
-# fails, printing that record, if the formatter failed. The superblock
-# printer will not read this image without its passphrase (S3): its report
-# is that refusal, which the test takes as the reference's view that the
-# key is sealed.
-step "encrypted-passphrase (--encrypted --passphrase_file)"
+# passphrase's bytes, with no trailing newline. Formatted with
+# --passphrase_file, the formatter exits 0 having written only its initial
+# superblocks and none of the tree (CI run 39021762764; with
+# --no_passphrase the same call reports the files it wrote), so the image
+# is formatted as encrypted.img is, from the tree with the key unsealed,
+# and the passphrase then seals the key: set-passphrase is given it on
+# standard input, once and once more to confirm (#327). Every outcome
+# goes to encrypted-passphrase.format.txt, with the passphrase commands'
+# own help (how they take a passphrase) and the unlock command's report of
+# each encrypted image's state; nothing here fails the build but the guard
+# below, and tests/oracle_refused.rs fails, printing that record, if the
+# formatter failed. The superblock printer will not read this image
+# without its passphrase (S3): its report is that refusal, which the test
+# takes as the reference's view that the key is sealed.
+step "encrypted-passphrase (--encrypted --no_passphrase, then set-passphrase)"
 printf '%s' 'correct horse battery staple' > "$out/encrypted-passphrase.passphrase"
+rm -f "$out/encrypted-passphrase.img"
 truncate -s 64M "$out/encrypted-passphrase.img"
 {
-    echo "-- format --encrypted --passphrase_file"
-    bcachefs-ref format -q --encrypted --passphrase_file="$out/encrypted-passphrase.passphrase" \
+    echo "-- format --encrypted --no_passphrase"
+    bcachefs-ref format -q --encrypted --no_passphrase \
         --source="${src#"$ROOT"}" "$out/encrypted-passphrase.img" < /dev/null ||
         echo "format: exit $?"
+    echo "-- set-passphrase --help"
+    bcachefs-ref set-passphrase --help < /dev/null || echo "set-passphrase --help: exit $?"
+    echo "-- set-passphrase"
+    pass="$(cat "$out/encrypted-passphrase.passphrase")"
+    printf '%s\n%s\n' "$pass" "$pass" |
+        bcachefs-ref set-passphrase "$out/encrypted-passphrase.img" ||
+        echo "set-passphrase: exit $?"
     echo "-- unlock --help"
     bcachefs-ref unlock --help < /dev/null || echo "unlock --help: exit $?"
     for e in encrypted encrypted-passphrase; do
@@ -867,6 +881,58 @@ sed 's/^/encrypted-passphrase: /' "$out/encrypted-passphrase.format.txt"
 bcachefs-ref show-super "$out/encrypted-passphrase.img" < /dev/null \
     > "$out/encrypted-passphrase.super.txt" 2>&1 ||
     echo "show-super: exit $?" >> "$out/encrypted-passphrase.super.txt"
+# The guard (#327): a formatter that writes only its initial superblocks
+# (4 non-zero 4K blocks, docs/clean-room.md) still exits 0, and a sealed
+# image with no tree in it cannot teach the passphrase unlock (#273)
+# anything about reading files. The image holds the same tree as
+# encrypted.img, so it must hold at least half as many non-zero blocks;
+# fewer fails the build, naming both counts.
+nonzero_blocks() {
+    python3 - "$1" <<'PY'
+import sys
+zero = bytes(4096)
+n = 0
+with open(sys.argv[1], "rb") as f:
+    while block := f.read(4096):
+        n += block != zero[: len(block)]
+print(n)
+PY
+}
+sealed_blocks="$(nonzero_blocks "$out/encrypted-passphrase.img")"
+unsealed_blocks="$(nonzero_blocks "$out/encrypted.img")"
+if [ $((sealed_blocks * 2)) -lt "$unsealed_blocks" ]; then
+    echo "fixtures: encrypted-passphrase.img holds $sealed_blocks non-zero 4K blocks" \
+        "to encrypted.img's $unsealed_blocks: the formatter wrote its superblocks only" >&2
+    exit 1
+fi
+# Its files, as the reference reads them given the recorded passphrase:
+# the unlock command adds the key from the passphrase file to the user
+# keyring and then the session keyring, so the mount finds it, and
+# the reference mount over a scratch copy, so the published image is never
+# written, takes the tree. Nothing here fails the build:
+# tests/oracle_encrypted_passphrase.rs fails, printing the record, when the
+# reference did not read the source tree from the image.
+step "encrypted-passphrase: the reference reads its files"
+img="$age_dir/encrypted-passphrase.img"
+rm -f "$out/encrypted-passphrase.mounted.json"
+{
+    rm -f "$ROOT$img"
+    cp --sparse=always "$out/encrypted-passphrase.img" "$ROOT$img"
+    for k in user session; do
+        echo "-- unlock -k $k -f encrypted-passphrase.passphrase"
+        bcachefs-ref unlock -k "$k" -f "$out/encrypted-passphrase.passphrase" "$img" < /dev/null ||
+            echo "unlock -k $k: exit $?"
+    done
+    if fuse_mount "$img" ro,noatime "$work/fuse-encrypted-passphrase.log"; then
+        manifest "$ROOT$mnt" "$out/encrypted-passphrase.mounted.json" live
+        fuse_kill
+    else
+        echo "mount: failed"
+    fi
+    rm -f "$ROOT$img"
+} > "$out/encrypted-passphrase.mounted.txt" 2>&1 ||
+    echo "the steps stopped: exit $?" >> "$out/encrypted-passphrase.mounted.txt"
+sed 's/^/encrypted-passphrase: /' "$out/encrypted-passphrase.mounted.txt"
 step "multi (two devices)"
 truncate -s 64M "$out/multi-0.img" "$out/multi-1.img"
 bcachefs-ref format -q "$out/multi-0.img" "$out/multi-1.img" > "$out/multi.format.txt" 2>&1

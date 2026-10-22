@@ -399,6 +399,18 @@ all eight fixture sets.
   S1 puts scrypt's parameters in this field, so bytes 8..16 are the
   candidates for them; their encoding is #273's to establish by
   computation, not read off these bytes.
+- Since #327 the fixture build makes `encrypted-passphrase` in two steps
+  instead (S3): formatted `--encrypted --no_passphrase` from the tree, as
+  `encrypted` is, and then sealed by `set-passphrase`, given the recorded
+  passphrase on standard input. The formatter run with `--passphrase_file`
+  wrote no tree (it reports no files written, where with `--no_passphrase`
+  it reports 313), and a guard in the build now fails when the image holds
+  fewer than half of `encrypted`'s non-zero 4K blocks. The crypt field
+  bytes above were read from the superblocks-only image; that
+  `set-passphrase` writes the same layout is #273's to confirm on the new
+  image. `tests/oracle_encrypted_passphrase.rs` requires the image to be
+  marked clean and the reference mount, unlocked from the passphrase file,
+  to read the source tree from it.
 - The superblock printer will not print this image without its
   passphrase: it reports `Error reading passphrase` and exits 1 (S3), where
   it prints `encrypted` in full. That refusal is the reference's own view
