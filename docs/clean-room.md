@@ -553,8 +553,34 @@ all eight fixture sets.
   from 1 to 64 sectors with the nonce unchanged, so it does not enter an
   uncompressed extent's nonce; how it and the compression type enter a
   compressed extent's is #275's. Nor are a version of 2^32 or more (whether
-  its high bits are word 2 or share word 3 with the domain), a non-zero
-  nonce offset, or a data MAC of another width observed.
+  its high bits are word 2 or share word 3 with the domain), or a data MAC
+  of another width observed. A non-zero nonce offset is, below (#331).
+- **Incompressible extents (#356, part of #330)** take the uncompressed
+  extent's nonce. S4: candidate computations over `encrypted-compressed.img`
+  (formatted `--compression=lz4`; its random file's extents carry
+  compression type 5, incompressible), with each key's version as the
+  reference lister prints it. All 34 incompressible extents reproduce their
+  stored 80-bit MAC with `[0, version, 0, 0x1000_0000]`, so neither the
+  incompressible type nor their uncompressed sizes (13 to 64 sectors) enter
+  it. Its 10 LZ4 extents reproduce theirs with no nonce tried: the version
+  word, and each other word, XORed with every value below 2^22 (and those
+  values bit-reversed), and any two words XORed with the compression type
+  (0 to 15) and one of the uncompressed or compressed size, less one or
+  times 512, each shifted 0 to 31 bits. An LZ4 extent stays refused until
+  its nonce is found.
+- **A nonce offset (#331)** advances the block counter. S4: the
+  `encrypted-compressed.img` of merge-queue run 39806426452 (2026-10-22)
+  held the partly overwritten extent of #329 narrowed by the reference: key
+  `2147483650:179:U32_MAX`, version 10, its crc entry 43 sectors
+  compressed and uncompressed, offset 0, nonce field 21, compression type
+  5, its pointer 21 sectors past the original extent's. (Other builds of
+  the fixture keep the whole 64-sector entry at offset 21 and nonce 0, so
+  the narrowing happens in some runs only.) Of seven placements of 21 --
+  as word 0, times 8 and times 512 in word 0, as word 2, added to the
+  version in word 1, and XORed into word 3, besides none -- only
+  `[21 * 8, version, 0, 0x1000_0000]` reproduces its stored 80-bit MAC:
+  the offset counts sectors, each eight 64-byte ChaCha20 blocks, so the
+  narrowed bytes keep the keystream they had in the original extent.
 - **The MAC** is Poly1305 over the extent's stored bytes (the ciphertext,
   all of its compressed size), keyed with the first 32 keystream bytes of
   its nonce with `0x8000_0000` XORed into word 3, as for a btree node. Its
