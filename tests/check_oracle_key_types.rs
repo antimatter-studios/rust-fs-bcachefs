@@ -62,6 +62,9 @@ const MADE_BY_THE_REFERENCE: &[&str] = &[
 const JUDGED: &[u8] = &[LOGGED_OPS, ACCOUNTING, RECONCILE_WORK_PHYS];
 const FREESPACE: u8 = 11;
 const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+const XATTRS: u8 = 3;
+const KEY_LRU: u8 = 10;
+const KEY_XATTR: u8 = 11;
 
 /// Planted keys are judged one to an image. With eight to an image the
 /// reference named only some of the keys it refuses (run 39020187551): of a
@@ -482,6 +485,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
         panic!("{}", msg.join("\n"));
     }
     logged_op_truncate_in_freespace_is_rejected_by_both_checkers();
+    lru_in_xattrs_is_rejected_by_both_checkers();
 }
 
 fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
@@ -522,6 +526,62 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
                 && problem.detail.contains("btree freespace: key 0:2040:0")
+        }),
+        "the checker did not report the planted key: {:?}",
+        report.problems
+    );
+}
+
+fn lru_in_xattrs_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("aged.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let pos = Bpos {
+        inode: 2_147_487_679,
+        offset: 1_366_636_819_568_056_465,
+        snapshot: u32::MAX,
+    };
+    let mut key = btree::walk(&dev, &sb, XATTRS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos == pos)
+        .expect("the pinned aged fixture has the differential's xattr key");
+    assert_eq!(
+        key.key_type, KEY_XATTR,
+        "the planted key must begin as an xattr"
+    );
+    key.key_type = KEY_LRU;
+
+    let dir = common::ScratchDir::new("check-xattrs-lru-key");
+    let img = dir.join("aged-1659510.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, XATTRS, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let p = "2147487679:1366636819568056465:U32_MAX";
+    let (rejected, reason) = verdict(&lines, p, &[]);
+    assert!(
+        rejected,
+        "the reference did not reject the key for its type: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree xattrs (lru)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report.problems.iter().any(|problem| {
+            problem.kind == "invalid_bkey"
+                && problem
+                    .detail
+                    .contains("btree xattrs: key 2147487679:1366636819568056465:U32_MAX")
         }),
         "the checker did not report the planted key: {:?}",
         report.problems

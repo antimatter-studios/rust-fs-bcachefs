@@ -1528,6 +1528,14 @@ mutation on the pinned `aged.img` and requires both checkers to report the
 type refusal. It is the first measured key type for freespace beyond its
 ordinary `set` keys; other types there remain open.
 
+The same differential report's aged-fixture mutation at seed 1659510 changed
+the key type at `2147487679:1366636819568056465:U32_MAX` in the xattrs btree,
+from `xattr` to `lru`. The reference checker reported `invalid key type for
+btree xattrs (lru)`; this checker had reported the image clean (#259). The
+guest regression repeats that exact mutation on the pinned `aged.img` and
+requires both checkers to report the type refusal. It is the first measured
+key type refusal for xattrs; no other pair is inferred.
+
 ### A key's position and its value's lengths (S3, #219)
 
 The same report shows four more refusals, each after one change:
