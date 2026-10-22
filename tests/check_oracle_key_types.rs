@@ -485,6 +485,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
         panic!("{}", msg.join("\n"));
     }
     logged_op_truncate_in_freespace_is_rejected_by_both_checkers();
+    lru_in_freespace_is_rejected_by_both_checkers();
     lru_in_xattrs_is_rejected_by_both_checkers();
 }
 
@@ -526,6 +527,56 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
                 && problem.detail.contains("btree freespace: key 0:2040:0")
+        }),
+        "the checker did not report the planted key: {:?}",
+        report.problems
+    );
+}
+
+fn lru_in_freespace_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("kernel.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let pos = Bpos {
+        inode: 0,
+        offset: 266,
+        snapshot: 0,
+    };
+    let mut key = btree::walk(&dev, &sb, FREESPACE)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos == pos)
+        .expect("kernel.img has the differential's freespace key");
+    assert_eq!(key.key_type, 25, "the planted key must begin as a set");
+    key.key_type = KEY_LRU;
+
+    let dir = common::ScratchDir::new("check-freespace-lru-key");
+    let img = dir.join("kernel-1659510.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, FREESPACE, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (rejected, reason) = verdict(&lines, "0:266:0", &[]);
+    assert!(
+        rejected,
+        "the reference did not reject the key for its type: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree freespace (lru)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report.problems.iter().any(|problem| {
+            problem.kind == "invalid_bkey"
+                && problem.detail.contains("btree freespace: key 0:266:0")
         }),
         "the checker did not report the planted key: {:?}",
         report.problems
