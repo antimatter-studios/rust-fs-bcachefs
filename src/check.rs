@@ -1600,12 +1600,13 @@ fn walk_checked(
 /// What the reference refuses in a key's own fields (#219): a size on a
 /// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
-/// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot or
-/// snapshot_tree at a position it cannot have, an accounting key holding
-/// more than its kind and btree, and an xattr whose lengths run past its
-/// value. Each pair of btree and key type below is one differential run
-/// 38579070302 or nightly-seed run 39018152705 saw the reference refuse;
-/// a pair nobody observed is not judged (docs/clean-room.md).
+/// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot,
+/// snapshot_tree or inode allocation cursor at a position it cannot have,
+/// an accounting key holding more than its kind and btree, and an xattr
+/// whose lengths run past its value. Each pair of btree and key type below
+/// is one differential run 38579070302, nightly-seed run 39018152705 or
+/// nightly run 39756419740 saw the reference refuse; a pair nobody
+/// observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
@@ -1632,6 +1633,7 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (LRU, KEY_SET),
         (NEED_DISCARD, KEY_SET),
         (FREESPACE, KEY_SET),
+        (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -1668,6 +1670,16 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (SNAPSHOTS, KEY_SNAPSHOT) if k.pos.inode != 0 => r.add(
             "snapshot_pos_bad",
             format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
+        ),
+        // The inode allocation cursor is at 1:1:0 (S8). Nightly run
+        // 39756419740 rejects it moved to inode U64_MAX and to inode 0 as
+        // "k.p.inode bad" (#376).
+        (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR) if k.pos.inode != 1 => r.add(
+            "inode_alloc_cursor_inode_bad",
+            format!(
+                "btree {name}: inode_alloc_cursor at {}, not at inode 1",
+                k.pos
+            ),
         ),
         // Run 39018152705 also rejects tree 1 moved to inode 1 as
         // "bad pos"; the tree id remains in the offset (#254). Nightly run
