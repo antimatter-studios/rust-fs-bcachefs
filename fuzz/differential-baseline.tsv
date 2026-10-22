@@ -26,6 +26,8 @@
 # at seed 0, 80 cases a fixture, no longer found them.
 # #219's six position, accounting and xattr-length classes were removed by
 # #229 the same way.
+# #219's snapshot_tree at offset U64_MAX, from nightly run 38878947701, is
+# reported since the checker refuses a tree id past U32_MAX.
 # #220's three snapshot-link classes were removed by #224 once a run at
 # seed 0, 80 cases a fixture, no longer found them.
 ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
@@ -86,7 +88,6 @@ ref-only	key-size	invalid bkey in btree_node btree=need_discard level=#: u#s # t
 ref-only	key-size	invalid bkey in btree_node btree=freespace level=#: u#s # type set # len # ver #	#163: allocation metadata and allowed key types
 ref-only	key-size	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#219: metadata key invariants
 ref-only	key-inode	check_allocations...pointer to nonexistent device #	#163: allocation metadata and allowed key types
-ref-only	key-offset	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree #:u#_max:# len # v	#219: metadata key invariants
 ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type alloc # len # ver # :	#163: allocation metadata and allowed key types
 ref-only	key-inode	alloc_read...pointer to nonexistent device #	#163: allocation metadata and allowed key types
 ref-only	key-snapshot	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#163: allocation metadata and allowed key types

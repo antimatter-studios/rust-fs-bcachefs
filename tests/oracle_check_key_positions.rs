@@ -6,8 +6,8 @@
 //!
 //! - a subvolume at offset 0, or at inode U64_MAX: "invalid pos, deleting"
 //!   (`subvol_pos_bad`);
-//! - a snapshot_tree at offset 0: "bad pos, deleting"
-//!   (`snapshot_tree_pos_bad`);
+//! - a snapshot_tree at offset 0, or (nightly run 38878947701) at offset
+//!   U64_MAX: "bad pos, deleting" (`snapshot_tree_pos_bad`);
 //! - an accounting key of the `btree` kind at a snapshot, or with bytes
 //!   set below its btree id: "junk at end of accounting key, deleting"
 //!   (`accounting_key_junk_at_end`);
@@ -182,6 +182,20 @@ fn a_snapshot_tree_at_offset_0_is_refused() {
         any,
         to_0,
         kind,
+    );
+}
+
+/// Nightly run 38878947701, kernel seed 1659362: the reference rejects
+/// snapshot tree 1 at 0:U64_MAX:0 as snapshot_tree_pos_bad (#219).
+#[test]
+fn a_snapshot_tree_at_offset_u64_max_is_refused() {
+    refused(
+        "kernel",
+        SNAPSHOT_TREES,
+        SNAPSHOT_TREE,
+        |k| k.pos.inode == 0 && k.pos.offset == 1 && k.pos.snapshot == 0,
+        |k| k.pos.offset = u64::MAX,
+        "snapshot_tree_pos_bad",
     );
 }
 

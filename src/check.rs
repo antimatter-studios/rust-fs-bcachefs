@@ -1652,11 +1652,17 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
         ),
         // Run 39018152705 also rejects tree 1 moved to inode 1 as
-        // "bad pos"; the tree id remains in the offset (#254).
-        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
-            "snapshot_tree_pos_bad",
-            format!("btree {name}: snapshot_tree at {}, not at 0:tree", k.pos),
-        ),
+        // "bad pos"; the tree id remains in the offset (#254). Nightly run
+        // 38878947701 rejects one moved to offset U64_MAX the same way: a
+        // tree id is 32 bits, so an offset above U32_MAX names no tree (#219).
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE)
+            if k.pos.offset == 0 || k.pos.offset > u64::from(u32::MAX) || k.pos.inode != 0 =>
+        {
+            r.add(
+                "snapshot_tree_pos_bad",
+                format!("btree {name}: snapshot_tree at {}, not at 0:tree", k.pos),
+            )
+        }
         // A `btree` accounting key is its kind and the btree's id in the
         // top two bytes of its inode; a bit below them, or a snapshot, is
         // "junk at end of accounting key".
@@ -1963,6 +1969,29 @@ mod tests {
                 check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
                 assert!(unrelated.clean(), "{unrelated:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_snapshot_tree_key_with_an_offset_past_u32_max_is_named() {
+        // Nightly run 38878947701, kernel seed 1659362 (#219): the reference
+        // rejects a snapshot tree at 0:U64_MAX:0 as snapshot_tree_pos_bad.
+        let past = u64::from(u32::MAX) + 1;
+        for offset in [1, u64::from(u32::MAX), past, u64::MAX] {
+            let k = key(KEY_SNAPSHOT_TREE, offset, tree(1, u32::MAX));
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut report);
+            if offset <= u64::from(u32::MAX) {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "snapshot_tree_pos_bad");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(SNAPSHOTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
         }
     }
 
