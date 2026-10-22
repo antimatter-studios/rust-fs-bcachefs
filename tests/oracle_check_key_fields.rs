@@ -53,6 +53,7 @@ const ACCT_INUM: u64 = 8;
 enum Change {
     Size(u32),
     Snapshot(u32),
+    Inode(u64),
     KeyType(u8),
 }
 
@@ -91,6 +92,13 @@ fn refused(set: &str, id: u8, kt: u8, pick: impl Fn(&Bkey) -> bool, change: Chan
             );
             k.pos.snapshot = snapshot;
         }
+        Change::Inode(inode) => {
+            assert_ne!(
+                k.pos.inode, inode,
+                "{test}: the reference-made key is there"
+            );
+            k.pos.inode = inode;
+        }
         Change::KeyType(key_type) => k.key_type = key_type,
     }
     let pos = k.pos;
@@ -126,6 +134,38 @@ fn a_sized_inode_alloc_cursor_in_logged_ops_is_refused() {
         INODE_ALLOC_CURSOR,
         any,
         Change::Size(1),
+        kind,
+    );
+}
+
+/// Nightly differential run 39756419740 (#376) moved the cursor to a
+/// snapshot (seed 1659898), to inode U64_MAX (seed 1659851) and to inode 0
+/// (seed 1659879); the reference deleted it as "nonzero snapshot" and as
+/// "k.p.inode bad".
+#[test]
+fn an_inode_alloc_cursor_at_a_snapshot_is_refused() {
+    let kind = "bkey_snapshot_nonzero";
+    let snap = Change::Snapshot(u32::MAX - 1);
+    refused("default", LOGGED_OPS, INODE_ALLOC_CURSOR, any, snap, kind);
+}
+
+#[test]
+fn an_inode_alloc_cursor_at_inode_u64_max_is_refused() {
+    let kind = "inode_alloc_cursor_inode_bad";
+    let inode = Change::Inode(u64::MAX);
+    refused("aged", LOGGED_OPS, INODE_ALLOC_CURSOR, any, inode, kind);
+}
+
+#[test]
+fn an_inode_alloc_cursor_at_inode_0_is_refused() {
+    let kind = "inode_alloc_cursor_inode_bad";
+    let inode = Change::Inode(0);
+    refused(
+        "kernel-rootsnap",
+        LOGGED_OPS,
+        INODE_ALLOC_CURSOR,
+        any,
+        inode,
         kind,
     );
 }

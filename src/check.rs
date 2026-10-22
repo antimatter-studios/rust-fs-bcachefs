@@ -1959,6 +1959,50 @@ mod tests {
         }
     }
 
+    /// The logged_ops inode allocation cursor, at 1:1:0 (S8).
+    const KEY_INODE_ALLOC_CURSOR: u8 = 35;
+
+    fn cursor(inode: u64, snapshot: u32) -> Bkey {
+        let mut k = key(KEY_INODE_ALLOC_CURSOR, 1, vec![0; 16]);
+        k.pos.inode = inode;
+        k.pos.snapshot = snapshot;
+        k
+    }
+
+    #[test]
+    fn an_inode_alloc_cursor_at_a_snapshot_is_named() {
+        // Nightly differential run 39756419740 (seed 1659898): the reference
+        // refuses the cursor at 1:1:4294967294 as "nonzero snapshot" (#376).
+        let mut clean = Report::default();
+        check_key_fields(LOGGED_OPS, &cursor(1, 0), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let k = cursor(1, u32::MAX - 1);
+        let mut report = Report::default();
+        check_key_fields(LOGGED_OPS, &k, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+    }
+
+    #[test]
+    fn an_inode_alloc_cursor_off_inode_1_is_named() {
+        // The same run refuses the cursor moved to inode U64_MAX (seed
+        // 1659851) and to inode 0 (seed 1659879) as "k.p.inode bad" (#376).
+        for inode in [0, u64::MAX] {
+            let k = cursor(inode, 0);
+            let mut report = Report::default();
+            check_key_fields(LOGGED_OPS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "inode_alloc_cursor_inode_bad");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+            let mut unrelated = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
     #[test]
     fn a_snapshot_tree_key_with_a_nonzero_inode_is_named() {
         // Reference run 39018152705 rejects tree 1 at 1:1:0 as
