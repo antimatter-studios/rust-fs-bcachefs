@@ -550,18 +550,17 @@ fn lru_in_freespace_is_rejected_by_both_checkers() {
     let source = fixture("kernel.img");
     let dev = FileDevice::open(&source).unwrap();
     let sb = Superblock::read(&dev).unwrap();
-    let pos = Bpos {
-        inode: 0,
-        offset: 266,
-        snapshot: 0,
-    };
+    // The differential planted at 0:266:0 in the fixtures of run
+    // 38741040375. The kernel picks which buckets stay free, so the
+    // kernel.img every CI run builds holds its freespace keys elsewhere;
+    // any of them carries the mutation.
     let mut key = btree::walk(&dev, &sb, FREESPACE)
         .unwrap()
         .into_iter()
-        .find(|k| k.pos == pos)
-        .expect("kernel.img has the differential's freespace key");
-    assert_eq!(key.key_type, 25, "the planted key must begin as a set");
+        .find(|k| k.key_type == 25)
+        .expect("kernel.img has a freespace set key");
     key.key_type = KEY_LRU;
+    let p = key.pos.to_string();
 
     let dir = common::ScratchDir::new("check-freespace-lru-key");
     let img = dir.join("kernel-1659510.img");
@@ -571,7 +570,7 @@ fn lru_in_freespace_is_rejected_by_both_checkers() {
         Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
     };
     let lines: Vec<&str> = text.lines().collect();
-    let (rejected, reason) = verdict(&lines, "0:266:0", &[]);
+    let (rejected, reason) = verdict(&lines, &p, &[]);
     assert!(
         rejected,
         "the reference did not reject the key for its type: {reason:?}\n{text}"
@@ -585,7 +584,9 @@ fn lru_in_freespace_is_rejected_by_both_checkers() {
     assert!(
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
-                && problem.detail.contains("btree freespace: key 0:266:0")
+                && problem
+                    .detail
+                    .contains(&format!("btree freespace: key {p}"))
         }),
         "the checker did not report the planted key: {:?}",
         report.problems
