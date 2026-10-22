@@ -180,9 +180,15 @@ elif name == 'rm':
     for a in args:
         if a.startswith('-'): continue
         p = Path(a)
+        published = {
+            'casefold.img',
+            'encrypted.mounted.json',
+            'encrypted-compressed.img', 'encrypted-compressed.json',
+            'encrypted-wide-macs.img', 'encrypted-wide-macs.json',
+            'encrypted-passphrase.mounted.json',
+        }
         assert (p.is_relative_to(root / 'var/tmp') or
-                p in (out / 'casefold.img', out / 'encrypted.mounted.json',
-                      out / 'encrypted-compressed.img', out / 'encrypted-compressed.json')), p
+                (p.parent == out and p.name in published)), p
         assert p not in (root / 'var/tmp', root / 'var/tmp/age'), 'shared path deletion'
         if p.is_dir():
             if p.name.startswith('fixture-build.'):
@@ -338,7 +344,8 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                      'aged.img', 'aged-unclean.img', 'aged.json', 'aged-unclean.json',
                      'crc128.img', 'crc128.json', 'poison.img', 'probe.img',
                      'probe.kvdb.txt', 'encrypted.img', 'encrypted-compressed.img',
-                     'encrypted-compressed.json', 'multi-0.img', 'multi-1.img',
+                     'encrypted-compressed.json', 'encrypted-wide-macs.img',
+                     'encrypted-wide-macs.json', 'multi-0.img', 'multi-1.img',
                      'casefold.img', 'casefold.json', 'reference-help.txt',
                      'reference-version.txt', 'write-study-reached'):
             assert (fixtures / name).exists(), f'published fixture lost: {name}'
