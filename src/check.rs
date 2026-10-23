@@ -111,6 +111,10 @@ const FREESPACE_GEN_UNOBSERVED: u8 = 16;
 const ACCOUNTING: u8 = 20;
 const KEY_ACCOUNTING: u8 = 34;
 const ACCT_DEV_DATA_TYPE: u64 = 3;
+/// The kind of accounting key that is a btree's own, which the lister
+/// prints as `btree`: the btree's id in the byte below the kind, and its
+/// value is node sectors, nodes and interior nodes (#381).
+const ACCT_BTREE: u64 = 6;
 /// The logged_ops and reconcile_work_phys btrees.
 const LOGGED_OPS: u8 = 17;
 const RECONCILE_WORK_PHYS: u8 = 24;
@@ -253,6 +257,40 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 trees.insert(id, keys);
             }
             None => continue,
+        }
+    }
+    // A btree's own accounting key holds its nodes' sectors, its nodes and
+    // its interior nodes (#381). Judged for logged_ops, the btree run
+    // 39764355709 caught, and like the other allocation figures only on a
+    // filesystem shut down cleanly.
+    if sb.is_clean() && trees.contains_key(&LOGGED_OPS) {
+        match btree::node_counts(dev, &sb, LOGGED_OPS, replay.as_ref()) {
+            Ok(Some(nodes)) => {
+                let at = (ACCT_BTREE << 56) | (u64::from(LOGGED_OPS) << 48);
+                let have = trees
+                    .get(&ACCOUNTING)
+                    .into_iter()
+                    .flatten()
+                    .find(|k| {
+                        k.key_type == KEY_ACCOUNTING
+                            && k.pos.inode == at
+                            && k.pos.offset == 0
+                            && k.pos.snapshot == 0
+                    })
+                    .map(|k| {
+                        let mut v = [0u64; 3];
+                        for (i, x) in v.iter_mut().enumerate() {
+                            if let Some(w) = k.value.get(i * 8..i * 8 + 8) {
+                                *x = le64(w, 0);
+                            }
+                        }
+                        v
+                    });
+                let node_sectors = u64::from(sb.btree_node_size());
+                check_btree_accounting(LOGGED_OPS, node_sectors, nodes, have, &mut r);
+            }
+            Ok(None) => {}
+            Err(e) => r.add("btree_node", format!("btree logged_ops: {e}")),
         }
     }
     for (id, allowed) in KEY_TYPES_ALLOWED {
@@ -1558,6 +1596,39 @@ fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     })
 }
 
+/// Btree `id`'s own accounting key, `have` (`None` when there is none),
+/// against what its `nodes` add up to: nodes times `node_sectors` sectors,
+/// the nodes, and the interior nodes. S3: the reference's "accounting
+/// mismatch for btree btree=logged_ops: got 281474976710720 1 0 should be
+/// 64 1 0" (#381), and "btree btree=inodes ... should be 256 4 1" after a
+/// root split (docs/clean-room.md).
+fn check_btree_accounting(
+    id: u8,
+    node_sectors: u64,
+    (nodes, interior): (u64, u64),
+    have: Option<[u64; 3]>,
+    r: &mut Report,
+) {
+    let want = [nodes * node_sectors, nodes, interior];
+    let got = have.unwrap_or_default();
+    if got != want {
+        r.add(
+            "accounting_mismatch",
+            format!(
+                "btree {}: its nodes add up to {} sectors, {} nodes, {} interior; the \
+                 accounting says {}, {}, {}",
+                journal::btree_name(id),
+                want[0],
+                want[1],
+                want[2],
+                got[0],
+                got[1],
+                got[2]
+            ),
+        );
+    }
+}
+
 /// Walk btree `id`, recording each node that cannot be read instead of
 /// stopping, and the order of the keys found. `None` when not even its root
 /// can be read.
@@ -1643,9 +1714,6 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
     const KEY_LOGGED_OP_FINSERT: u8 = 33;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
-    /// An accounting key's kind, the top byte of its inode; the lister
-    /// prints 6 as `btree`, with the btree's id in the byte below.
-    const ACCT_BTREE: u64 = 6;
     const SIZE_ZERO: &[(u8, u8)] = &[
         (btree_id::INODES, key_type::INODE_V3),
         (btree_id::DIRENTS, key_type::DIRENT),
