@@ -2205,6 +2205,81 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_key_with_a_nonzero_size_is_named() {
+        // Nightly run 38878947701 (#219): the root snapshot at
+        // 0:4294967295:0 given size 1 (aged seed 1659430) and size
+        // 4294967295 (kernel seed 1659425) is refused as "size != 0".
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(KEY_SNAPSHOT, u64::from(u32::MAX), snapshot(1, [0; 3]));
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOTS, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+                assert!(report.problems[0].detail.contains(&format!("size {size}")));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::EXTENTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_subvolume_children_key_with_a_nonzero_size_is_named() {
+        // The same run, kernel-rootsnap seeds 1659417 and 1659425: the set
+        // key at 1:2:0 given size 1 and 4294967295 is refused as
+        // "size != 0".
+        const SUBVOLUME_CHILDREN: u8 = 19;
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(KEY_SET, 2, vec![]);
+            k.pos.inode = 1;
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(SUBVOLUME_CHILDREN, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            // A freespace run's size is its length in buckets.
+            let mut unrelated = Report::default();
+            check_key_fields(FREESPACE, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_tree_key_at_a_snapshot_is_named() {
+        // The same run, kernel seed 1659439: tree 2 moved to
+        // 0:2:4294967294 is refused as "nonzero snapshot".
+        for snap in [0, u32::MAX - 1, u32::MAX] {
+            let mut k = key(KEY_SNAPSHOT_TREE, 2, tree(2, u32::MAX - 1));
+            k.pos.snapshot = snap;
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut report);
+            if snap == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::INODES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
     fn an_inode_key_with_a_nonzero_inode_position_is_named() {
         // Run 39018152705, seed 1659490 (#255): the reference rejects
         // inode_v3 at U64_MAX:2147483849:U32_MAX, leaving its value intact.
