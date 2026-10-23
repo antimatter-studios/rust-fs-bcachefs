@@ -1675,18 +1675,25 @@ fn walk_checked(
 /// differential run 38878947701 moved an alloc key (seed 1659438) and a
 /// bucket_gens key (seed 1659387) from device 0 to device 1 on one-device
 /// fixtures, and the reference stopped on each, in check_allocations and in
-/// alloc_read. A deleted key or a whiteout holds no bucket and is not
-/// judged; no other btree is, as no run has moved one of its keys to
-/// another device (docs/clean-room.md). `check` judges one device only.
+/// alloc_read. A backpointer, at `device:sector << 16`, on another device
+/// is the reference's "backpointer for missing device" (#383). A deleted
+/// key or a whiteout holds no bucket and is not judged; no other btree is,
+/// as no run has moved one of its keys to another device
+/// (docs/clean-room.md). `check` judges one device only.
 fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
-    if !matches!(id, btree_id::ALLOC | BUCKET_GENS)
-        || k.pos.inode == dev
-        || matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT)
-    {
+    if k.pos.inode == dev || matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT) {
         return;
     }
+    let kind = match id {
+        btree_id::ALLOC | BUCKET_GENS => "pointer_to_nonexistent_device",
+        // Nightly differential run 39756419740, re-run as 39764355709
+        // (kernel-rootsnap seed 1659851): a backpointer moved to device
+        // U64_MAX was "backpointer for missing device" (#383).
+        BACKPOINTERS => "backpointer_for_missing_device",
+        _ => return,
+    };
     r.add(
-        "pointer_to_nonexistent_device",
+        kind,
         format!(
             "btree {}: key {} is on device {}, and the filesystem has only device {dev}",
             journal::btree_name(id),
