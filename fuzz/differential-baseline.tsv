@@ -108,9 +108,8 @@ ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # typ
 # own child of #228. #253 fixes snapshot inode positions, #254 fixes
 # snapshot-tree inode positions, #255 fixes inode key inode positions,
 # #256 checks data backpointer values, and #258 checks xattr key sizes;
-# ten classes remain.
+# nine classes remain.
 ref-only	key-type	check_allocations...invalid bkey in btree_node btree=xattrs level=#: u#s # type lru #:u#_max len # v	#259: The checker accepts an LRU key in the xattrs btree
-ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type lru # len # ver #	#264: The checker accepts an LRU key in the freespace btree
 ref-only	key-offset	check_snapshot_trees...snapshot tree points to subvolume that does not point to snapshot in this tre	#265: The checker misses a snapshot-tree subvolume that does not point into its tree
 ref-only	key-type	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type logged_op_truncate # len # v	#266: The checker accepts a logged-op-truncate key in the subvolume-children btree
 ref-only	key-offset	check_snapshot_trees...snapshot tree points to missing/incorrect snapshot:	#267: The checker misses a snapshot-tree root that points to a missing or incorrect snapshot
