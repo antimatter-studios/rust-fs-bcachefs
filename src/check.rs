@@ -1781,6 +1781,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 k.pos, k.key_type
             ),
         ),
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659466) saw the
+        // reference delete a backpointer changed into an inode_v3 as
+        // "invalid key type for btree backpointers (inode_v3)" (#268). No
+        // other type there is judged (#305).
+        (BACKPOINTERS, key_type::INODE_V3) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is an inode", k.pos),
+        ),
         _ => {}
     }
 }
@@ -2328,6 +2336,30 @@ mod tests {
             check_key_fields(LOGGED_OPS, &k, &mut unrelated);
             assert!(unrelated.clean(), "type {kt}: {unrelated:?}");
         }
+    }
+
+    #[test]
+    fn an_inode_in_backpointers_is_named() {
+        // Nightly-seed run 39018152705, kernel-rootsnap seed 1659466: the
+        // backpointer at 0:381681664:0 changed to inode_v3, keeping its
+        // 32-byte value, was deleted by the reference as "invalid key type
+        // for btree backpointers (inode_v3)" (#268).
+        let mut k = key(KEY_BACKPOINTER, 381681664, vec![0; 32]);
+        let mut clean = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        k.key_type = key_type::INODE_V3;
+        let mut report = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "bkey_invalid_type_for_btree");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+        // The inodes btree is where an inode belongs.
+        let mut unrelated = Report::default();
+        check_key_fields(btree_id::INODES, &k, &mut unrelated);
+        assert!(unrelated.clean(), "{unrelated:?}");
     }
 
     #[test]
