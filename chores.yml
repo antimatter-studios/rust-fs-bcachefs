@@ -210,6 +210,9 @@ tasks:
     # MEASURED AGAIN on CI run 38932598267 (the #224 + #236 stack on main
     # d40e479, 2026-10-16): 812 lines / 40110 bytes, twelve lines and 110
     # bytes over 800 / 40000. About 30% over that is 1060 / 52000.
+    # MEASURED AGAIN in merge-queue run 40029836173 (#388 on main 53eb120,
+    # 2026-10-23): 1031 lines / 52100 bytes, 100 bytes over 52000, every
+    # test passed. About 30% over that is 1340 / 68000.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -221,7 +224,7 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1060 52000 -- \
+        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1340 68000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # Run 38997027177 executed the full 304 cases; #253/#254 add six.
