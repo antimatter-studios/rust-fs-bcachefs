@@ -1,10 +1,11 @@
 //! `fs.bcachefs`: inspect a bcachefs image, and (experimental, src/cli/
 //! fs_write.rs) change it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
@@ -94,16 +95,27 @@ fn read_command() -> Cmd {
         .subcommand(listing_command("tree"))
         .subcommand(
             Cmd::new("export")
-                .about("Copy a regular file out through the shared bounded transfer")
-                .args(transfer::export_args())
+                .about("Copy a regular file, or with --recursive a directory tree")
+                .args(transfer::export_args_with_times())
                 .after_help(
                     "Examples:\n  fs.bcachefs disk.img export /hello.txt hello.txt\n  \
                      fs.bcachefs disk.img export --replace /big/random.bin random.bin\n  \
-                     fs.bcachefs disk.img export /hello.txt -\n\n\
+                     fs.bcachefs disk.img export /hello.txt -\n  \
+                     fs.bcachefs disk.img export --recursive /etc etc\n  \
+                     fs.bcachefs disk.img export --recursive --preserve=links,times /etc etc\n\n\
                      Files are copied in fixed chunks. A local destination is published only \
                      when complete; an existing name is refused unless --replace is given. \
                      The report includes the byte count and SHA-256; DEST - writes only raw \
-                     bytes to stdout. Directories, symlinks and special files are refused.",
+                     bytes to stdout. Without --recursive directories, symlinks and special \
+                     files are refused.\n\n\
+                     Recursive export uses the shared tree transfer and reports every item; \
+                     subvolumes and snapshots are entered as ls --recursive enters them. \
+                     Existing directories are merged into; existing files require --replace. \
+                     --max-depth bounds the walk. Special files are skipped. Symlinks require \
+                     --preserve=links, which recreates their targets without following them \
+                     and copies each regular inode once. --preserve=times sets the stored \
+                     access and modification times. Symlink times are not set. --verify reads \
+                     each staged file back before publication.",
                 ),
         )
         .subcommand(
@@ -214,7 +226,25 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
         ),
         Some(("export", sub)) => {
             let request = transfer::ExportRequest::from_matches(sub)?;
-            export(&open(dev)?, &request)
+            let tree = transfer::TreeOptions::from_matches(sub)?;
+            let fs = open(dev)?;
+            if tree.recursive {
+                let image = m.get_one::<OsString>("target").expect("required");
+                transfer::export_tree_with_times(
+                    &request,
+                    &mut TreeExport {
+                        fs: &fs,
+                        image: Path::new(image),
+                        ids: HashMap::new(),
+                        last: None,
+                    },
+                    tree,
+                    transfer::LinkOptions::from_matches(sub)?,
+                    transfer::TimeOptions::from_matches(sub)?,
+                )
+            } else {
+                export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
+            }
         }
         Some(("read", sub)) => {
             let fs = open(dev)?;
@@ -405,23 +435,178 @@ impl transfer::FileSource for ExportSource<'_> {
     }
 }
 
-fn export(fs: &Filesystem<Device>, request: &transfer::ExportRequest) -> Result<Outcome, CliError> {
+fn export(
+    fs: &Filesystem<Device>,
+    request: &transfer::ExportRequest,
+    options: transfer::ExportOptions,
+) -> Result<Outcome, CliError> {
     let node = fs.resolve_bytes(request.path.as_bytes()).map_err(failed)?;
     let inode = fs.inode_at(node).map_err(failed)?;
     if !inode.is_file() {
         return Err(CliError::failed(format!(
-            "{}: not a regular file; directories, symlinks and special files cannot be exported",
+            "{}: not a regular file; directories, symlinks and special files cannot be exported \
+             without --recursive",
             request.path.to_string_lossy()
         )));
     }
-    transfer::export(
+    transfer::export_with_options(
         request,
         &mut ExportSource {
             fs,
             node,
             size: inode.size,
         },
+        options,
     )
+}
+
+/// A stored inode time as a `SystemTime`, through [`epoch_time`]: before
+/// the epoch as well as after it.
+fn system_time(sb: &Superblock, stored: u64) -> Option<std::time::SystemTime> {
+    let (s, ns) = epoch_time(sb, stored);
+    let seconds = std::time::Duration::from_secs(s.unsigned_abs());
+    let base = if s >= 0 {
+        std::time::UNIX_EPOCH.checked_add(seconds)?
+    } else {
+        std::time::UNIX_EPOCH.checked_sub(seconds)?
+    };
+    base.checked_add(std::time::Duration::from_nanos(ns))
+}
+
+/// bcachefs supplies lookups, listings, symlink targets, times and
+/// positioned reads. Core owns traversal, the depth bound, safe names,
+/// destination merging, publication and the per-item report (#342).
+struct TreeExport<'a> {
+    fs: &'a Filesystem<Device>,
+    image: &'a Path,
+    /// The identity core is given for each (inode, snapshot): a snapshot
+    /// shares its inode numbers with the live subvolume, so the number
+    /// alone would make a snapshot's file a hard link of the subvolume's.
+    ids: HashMap<(u64, u32), u64>,
+    /// The file `read_file_at` read last, by path, with its size. Core
+    /// reads a file in chunks, and resolving its path again for each one
+    /// would walk every directory above it every time.
+    last: Option<(PathBuf, Node, u64)>,
+}
+
+impl TreeExport<'_> {
+    fn resolve(&self, path: &Path) -> Result<Node, CliError> {
+        self.fs
+            .resolve_bytes(path.as_os_str().as_bytes())
+            .map_err(|e| at(path, e))
+    }
+
+    fn metadata_for(&mut self, n: Node, path: &Path) -> Result<transfer::TreeMetadata, CliError> {
+        let fs = self.fs;
+        let i = fs.inode_at(n).map_err(|e| at(path, e))?;
+        let raw = fs.inode_raw_at(n).map_err(|e| at(path, e))?;
+        let next = self.ids.len() as u64;
+        let inode = *self.ids.entry((n.ino, n.snapshot)).or_insert(next);
+        let time = |name| raw.time(name).and_then(|t| system_time(fs.superblock(), t));
+        Ok(transfer::TreeMetadata {
+            kind: if i.is_file() {
+                transfer::TreeKind::File
+            } else if i.is_dir() {
+                transfer::TreeKind::Directory
+            } else {
+                transfer::TreeKind::Other
+            },
+            size: if i.is_file() { i.size } else { 0 },
+            inode,
+            accessed: time("atime"),
+            modified: time("mtime"),
+        })
+    }
+}
+
+/// A path in an error message: lossy, for people; the bytes are what is
+/// resolved.
+fn at(path: &Path, e: fs_bcachefs::Error) -> CliError {
+    match failed(e) {
+        e if e.code == fs_core::cli::output::EXIT_FAILED => {
+            CliError::failed(format!("{}: {}", path.display(), e.message))
+        }
+        e => e,
+    }
+}
+
+impl transfer::TreeSource for TreeExport<'_> {
+    fn image_path(&self) -> Option<&Path> {
+        Some(self.image)
+    }
+
+    fn symbolic_link(&mut self, path: &Path) -> Result<Option<transfer::SymbolicLink>, CliError> {
+        let n = self.resolve(path)?;
+        if !self.fs.inode_at(n).map_err(|e| at(path, e))?.is_symlink() {
+            return Ok(None);
+        }
+        let target = self.fs.read_at(n).map_err(|e| at(path, e))?;
+        Ok(Some(transfer::SymbolicLink {
+            target: PathBuf::from(OsString::from_vec(target)),
+            // bcachefs stores no directory bit for a symlink. Never resolve
+            // the target to guess one, even when it happens to exist.
+            target_is_directory: false,
+        }))
+    }
+
+    fn metadata(&mut self, path: &Path) -> Result<transfer::TreeMetadata, CliError> {
+        let n = self.resolve(path)?;
+        self.metadata_for(n, path)
+    }
+
+    fn read_dir(&mut self, path: &Path) -> Result<Vec<transfer::TreeEntry>, CliError> {
+        let dir = self.resolve(path)?;
+        let mut entries = self.fs.readdir_at(dir).map_err(|e| at(path, e))?;
+        entries.retain(|d| d.name != b"." && d.name != b"..");
+        entries
+            .into_iter()
+            .map(|d| {
+                let child = path.join(std::ffi::OsStr::from_bytes(&d.name));
+                // Type 16 is the reference lister's subvolume dirent, entered
+                // as `ls --recursive` enters it (S3, S4).
+                let node = match (d.d_type == 16).then_some(d.inum as u32) {
+                    Some(id) => self.fs.subvolume(id).map_err(|e| at(&child, e))?,
+                    None => Node {
+                        ino: d.inum,
+                        snapshot: dir.snapshot,
+                    },
+                };
+                Ok(transfer::TreeEntry {
+                    metadata: self.metadata_for(node, &child)?,
+                    name: OsString::from_vec(d.name),
+                })
+            })
+            .collect()
+    }
+
+    fn read_file_at(
+        &mut self,
+        path: &Path,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, CliError> {
+        if !matches!(&self.last, Some((last, _, _)) if last == path) {
+            let n = self.resolve(path)?;
+            let i = self.fs.inode_at(n).map_err(|e| at(path, e))?;
+            if !i.is_file() {
+                return Err(CliError::failed(format!(
+                    "{}: not a regular file",
+                    path.display()
+                )));
+            }
+            self.last = Some((path.to_path_buf(), n, i.size));
+        }
+        let (_, n, size) = self.last.clone().expect("resolved above");
+        if offset >= size {
+            return Ok(0);
+        }
+        let data = self
+            .fs
+            .read_range_at(n, offset, buf.len())
+            .map_err(|e| at(path, e))?;
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
+    }
 }
 
 fn read(

@@ -123,6 +123,22 @@ fs.bcachefs disk.img read /hello.txt
 fs.bcachefs disk.img read /big/random.bin -o random.bin
 ```
 
+```sh
+fs.bcachefs disk.img export /hello.txt hello.txt
+fs.bcachefs disk.img export --recursive --preserve=links,times /etc etc
+```
+
+`export PATH DEST` copies one regular file and publishes DEST only when it
+is complete, reporting its byte count and SHA-256; an existing DEST needs
+`--replace`, `DEST -` writes the raw bytes to stdout, and `--verify` reads
+the staged copy back first. With `--recursive` a directory tree is copied
+through the shared tree transfer, every item reported, subvolumes entered as
+`ls --recursive` enters them; a partial tree exits 1. `--max-depth` bounds
+the walk, existing directories are merged into, and special files are
+skipped. Symlinks need `--preserve=links`, which recreates their targets
+without following them and keeps hard links; `--preserve=times` sets the
+stored access and modification times.
+
 `read` streams regular-file bytes to stdout. With `-o FILE`, it writes
 `FILE.partial` and renames that file to `FILE` after a successful read;
 an existing partial is refused. `cat` is an identical alias. Both refuse
