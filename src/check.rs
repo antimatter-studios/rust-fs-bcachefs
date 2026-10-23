@@ -2371,6 +2371,39 @@ mod tests {
     }
 
     #[test]
+    fn a_btree_accounting_key_out_of_step_with_its_nodes_is_named() {
+        // Nightly differential run 39756419740, re-run as 39764355709: the
+        // reference reported "accounting mismatch for btree btree=logged_ops:
+        // got 281474976710720 1 0 should be 64 1 0" for lz4 seed 1659910 and
+        // kernel seed 1659915 (#381), a btree of one 64-sector leaf node.
+        let mut clean = Report::default();
+        check_btree_accounting(LOGGED_OPS, 64, (1, 0), Some([64, 1, 0]), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let mut report = Report::default();
+        let got = Some([281474976710720, 1, 0]);
+        check_btree_accounting(LOGGED_OPS, 64, (1, 0), got, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "accounting_mismatch");
+        assert!(
+            report.problems[0].detail.contains("logged_ops"),
+            "{report:?}"
+        );
+
+        // Four nodes, one of them interior, are 256 sectors: the reference's
+        // "btree btree=inodes ... should be 256 4 1" after a root split.
+        let mut split = Report::default();
+        check_btree_accounting(btree_id::INODES, 64, (4, 1), Some([256, 4, 1]), &mut split);
+        assert!(split.clean(), "{split:?}");
+
+        // A btree with nodes and no accounting key is out of step too.
+        let mut missing = Report::default();
+        check_btree_accounting(LOGGED_OPS, 64, (1, 0), None, &mut missing);
+        assert_eq!(missing.problems.len(), 1, "{missing:?}");
+        assert_eq!(missing.problems[0].kind, "accounting_mismatch");
+    }
+
+    #[test]
     fn a_snapshot_in_backpointers_is_named() {
         // Nightly differential run 39756419740, re-run on the top of stack
         // #365 as run 39764355709, kernel-rootsnap seed 1659883: the
