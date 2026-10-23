@@ -2363,6 +2363,37 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_in_backpointers_is_named() {
+        // Nightly differential run 39756419740, re-run on the top of stack
+        // #365 as run 39764355709, kernel-rootsnap seed 1659883: the
+        // backpointer at 0:390070272:0 changed to snapshot, keeping its
+        // 32-byte value, was refused by the reference as "invalid bkey in
+        // btree_node btree=backpointers level=0: u64s 9 type snapshot" (#378).
+        let mut k = key(KEY_BACKPOINTER, 390070272, vec![0; 32]);
+        let mut clean = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        k.key_type = KEY_SNAPSHOT;
+        let mut report = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "bkey_invalid_type_for_btree");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+        // The snapshots btree is where a snapshot belongs.
+        let mut unrelated = Report::default();
+        check_key_fields(SNAPSHOTS, &k, &mut unrelated);
+        assert!(
+            !unrelated
+                .problems
+                .iter()
+                .any(|p| p.kind == "bkey_invalid_type_for_btree"),
+            "{unrelated:?}"
+        );
+    }
+
+    #[test]
     fn an_inode_key_with_a_nonzero_inode_position_is_named() {
         // Run 39018152705, seed 1659490 (#255): the reference rejects
         // inode_v3 at U64_MAX:2147483849:U32_MAX, leaving its value intact.
