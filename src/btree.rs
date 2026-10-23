@@ -472,6 +472,42 @@ pub fn walk_replayed(
     Ok(out)
 }
 
+/// How many nodes btree `id` has, and how many of them are interior (above
+/// level 0), with a journal replay applied to the interior nodes as
+/// [`walk_replayed`] applies it. `None` when the btree has no root. A leaf
+/// is counted from its parent's pointer and not read.
+pub fn node_counts(
+    dev: &dyn BlockRead,
+    sb: &Superblock,
+    id: u8,
+    replay: Option<&crate::journal::Replay>,
+) -> Result<Option<(u64, u64)>> {
+    let Some((root_level, root_key)) = root_of(sb, id, replay)? else {
+        return Ok(None);
+    };
+    if u32::from(root_level) >= MAX_DEPTH {
+        return Err(Error::Corrupt(format!(
+            "btree {id} root at level {root_level}"
+        )));
+    }
+    let walk = Walk {
+        dev,
+        sb,
+        id,
+        replay,
+        max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
+        blacklist: sb.journal_seq_blacklist()?,
+    };
+    let mut counts = (0, 0);
+    walk.count(
+        &NodePtr::from_key(&root_key)?,
+        root_key.pos,
+        root_level,
+        &mut counts,
+    )?;
+    Ok(Some(counts))
+}
+
 /// The position just after `p` in key order.
 pub fn successor(p: Bpos) -> Bpos {
     if p.snapshot < u32::MAX {
@@ -804,6 +840,28 @@ impl Walk<'_> {
                 )));
             }
             self.descend(&NodePtr::from_key(&k)?, k.pos, level - 1, out)?;
+        }
+        Ok(())
+    }
+
+    /// Add the node `ptr` points to, at `level`, and every node below it to
+    /// `counts`: nodes, then interior nodes.
+    fn count(&self, ptr: &NodePtr, max: Bpos, level: u8, counts: &mut (u64, u64)) -> Result<()> {
+        counts.0 += 1;
+        if level == 0 {
+            return Ok(());
+        }
+        counts.1 += 1;
+        let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq, &self.blacklist)?;
+        check_header(&node, self.id, level, ptr, max)?;
+        for k in self.apply(node.keys, level, node.min_key, node.max_key) {
+            if k.key_type != key_type::BTREE_PTR_V2 {
+                return Err(Error::Corrupt(format!(
+                    "key type {} in an interior node",
+                    k.key_type
+                )));
+            }
+            self.count(&NodePtr::from_key(&k)?, k.pos, level - 1, counts)?;
         }
         Ok(())
     }

@@ -41,6 +41,9 @@ const LRU: u8 = 10;
 const NEED_DISCARD: u8 = 12;
 const ACCOUNTING: u8 = 20;
 const ACCOUNTING_KEY: u8 = 34;
+/// The logged_ops btree, whose own accounting key sits at
+/// `6 << 56 | id << 48` (docs/clean-room.md).
+const LOGGED_OPS: u8 = 17;
 const BACKPOINTERS: u8 = 13;
 const BUCKET_GENS: u8 = 14;
 const SET: u8 = 25;
@@ -844,4 +847,51 @@ fn a_freespace_run_on_a_device_the_filesystem_does_not_have_is_reported() {
 #[test]
 fn a_backpointer_in_a_bucket_with_no_alloc_key_is_reported() {
     planted_is_reported("backpointer");
+}
+
+/// Nightly differential run 39756419740, re-run as 39764355709, changed the
+/// value of kernel.img's logged_ops accounting key (seed 1659915); the
+/// reference reported "accounting mismatch for btree btree=logged_ops: got
+/// 281474976710720 1 0 should be 64 1 0" (#381). Here its first counter,
+/// the btree's node sectors, gains the same 2^48.
+#[test]
+fn a_btree_accounting_out_of_step_with_its_nodes_is_reported() {
+    let img = common::ScratchDir::new("check-alloc").into_image("btree-accounting.img");
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        !report
+            .problems
+            .iter()
+            .any(|p| p.kind == "accounting_mismatch"),
+        "the fixture's accounting is already out of step: {:?}",
+        report.problems
+    );
+    let at = Bpos {
+        inode: 6 << 56 | u64::from(LOGGED_OPS) << 48,
+        offset: 0,
+        snapshot: 0,
+    };
+    let mut bad = keys(&img, ACCOUNTING)
+        .into_iter()
+        .find(|k| k.key_type == ACCOUNTING_KEY && k.pos == at)
+        .expect("kernel.img accounts for its logged_ops btree");
+    let sectors = u64::from_le_bytes(bad.value[0..8].try_into().unwrap());
+    bad.value[0..8].copy_from_slice(&(sectors + (1 << 48)).to_le_bytes());
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(ACCOUNTING, vec![bad]).unwrap();
+    drop(w);
+
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == "accounting_mismatch" && p.detail.contains("btree logged_ops")),
+        "the logged_ops accounting, {} sectors where its nodes hold {sectors}, was not \
+         reported as accounting_mismatch: {:?}",
+        sectors + (1 << 48),
+        report.problems
+    );
 }

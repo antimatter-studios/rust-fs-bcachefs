@@ -956,6 +956,16 @@ checker judged each attempt and named what was missing until nothing was.
 - The per-btree accounting key's third counter counts interior nodes (the
   checker's "btree btree=inodes ... should be 256 4 1" after a root split;
   the aged fixture's two-level btrees carry 1).
+- A btree's own accounting key, kind 6 at `6 << 56 | id << 48` (the
+  lister's `btree btree=NAME`), holds the btree's node sectors, its nodes
+  and its interior nodes. "256 4 1" is four 64-sector nodes, one interior.
+  Nightly differential run 39756419740, re-run as 39764355709, showed the
+  same for logged_ops: on `lz4.img` (seed 1659910, a re-stamped node) and
+  `kernel.img` (seed 1659915, the key's value changed) the reference
+  reported "accounting mismatch for btree btree=logged_ops: got
+  281474976710720 1 0 should be 64 1 0", one 64-sector leaf. The checker
+  judges logged_ops' key against its nodes, on a clean filesystem only
+  (#381). Other btrees' keys are not judged.
 - Judged: 400 one-operation creates, 134 unlinks and ten 50 KB files on the
   write-study base (32 KiB nodes) pass the reference checker and read back
   through its mount.
