@@ -140,8 +140,6 @@ pub fn write_sparse(image: &[u8], dst: &Path) {
 #[cfg(feature = "write")]
 pub fn empty_root(img: &Path, except: u8) -> u8 {
     use fs_bcachefs::btree::btree_id::XATTRS;
-    use fs_bcachefs::inode::ROOT_INO;
-    use fs_bcachefs::write::Writer;
 
     if let Some(id) = find_empty_root(img, except) {
         compact(img, id);
@@ -151,14 +149,41 @@ pub fn empty_root(img: &Path, except: u8) -> u8 {
         except, XATTRS,
         "no empty btree with a root to give the xattrs btree"
     );
-    let mut w = Writer::open(FileDevice::open_rw(img).unwrap()).unwrap();
-    w.set_xattr(ROOT_INO, b"user.donor", b"x").unwrap();
-    w.remove_xattr(ROOT_INO, b"user.donor").unwrap();
-    drop(w);
+    root_the_xattrs_btree(img);
     let id = find_empty_root(img, except)
         .unwrap_or_else(|| panic!("no empty btree with a root to give btree {except}"));
     compact(img, id);
     id
+}
+
+/// Give btree `id`, which records no root, a root that holds no keys. The
+/// xattrs btree cannot be its own donor, so it is given its own root: the
+/// writer makes it for a first xattr, and removing that xattr leaves it
+/// holding nothing once compacted. Every other btree takes an empty
+/// btree's root through `move_root`.
+#[cfg(feature = "write")]
+pub fn give_root(img: &Path, id: u8) {
+    use fs_bcachefs::btree::btree_id::XATTRS;
+
+    if id == XATTRS {
+        root_the_xattrs_btree(img);
+        compact(img, XATTRS);
+    } else {
+        move_root(img, empty_root(img, id), id);
+    }
+}
+
+/// Set and remove one xattr on the root directory: the writer gives the
+/// xattrs btree a root for the first, and the second leaves that root
+/// holding no live key.
+#[cfg(feature = "write")]
+fn root_the_xattrs_btree(img: &Path) {
+    use fs_bcachefs::inode::ROOT_INO;
+    use fs_bcachefs::write::Writer;
+
+    let mut w = Writer::open(FileDevice::open_rw(img).unwrap()).unwrap();
+    w.set_xattr(ROOT_INO, b"user.donor", b"x").unwrap();
+    w.remove_xattr(ROOT_INO, b"user.donor").unwrap();
 }
 
 /// Rewrite btree `id`'s root through the writer so it physically holds

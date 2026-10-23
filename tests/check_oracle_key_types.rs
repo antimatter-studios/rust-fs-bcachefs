@@ -1,23 +1,24 @@
-//! Which key types each btree this checker judges holds, as the reference
-//! checker judges it (#163), INSIDE the harness guest only (`chore
-//! test:vm`); anywhere else it fails naming that. Nothing skips.
+//! Which key types each btree holds, as the reference checker judges it
+//! (#163, #305), INSIDE the harness guest only (`chore test:vm`); anywhere
+//! else it fails naming that. Nothing skips.
 //!
-//! Each judged btree of a copy of `default` is planted with a key of every
-//! type S1 names, and one past them, one key to an image. A btree
-//! `default` records no root for is first given the root of a btree that
-//! holds no keys. The planted key sits after the btree's last key, and
-//! carries the value of a key of its type the reference wrote into a
-//! fixture where one has, so that a type the btree holds is not refused for
-//! its value instead. The reference checker's verdict on the planted key
-//! is read from its printed output, and nothing else of it, and this
-//! checker must report `invalid_bkey` for exactly the keys the reference
-//! refuses. The pairs the reference itself writes, across the fixtures,
-//! are printed beside any disagreement.
+//! Every btree S1 names, in a copy of `default`, is planted with a key of
+//! every type S1 names, and one past them, one key to an image. A btree
+//! `default` records no root for is first given a root that holds no keys.
+//! The planted key sits after the btree's last key, and carries the value
+//! of a key of its type the reference wrote into a fixture where one has,
+//! so that a type the btree holds is not refused for its value instead. The
+//! reference checker's verdict on the planted key is read from its printed
+//! output, and nothing else of it, and this checker must report
+//! `invalid_bkey` for exactly the keys the reference refuses. The pairs the
+//! reference itself writes, across the fixtures, are printed beside any
+//! disagreement.
 //! Only a refusal the reference gives for the key's own type counts. A key
-//! it refuses for its value size is planted once more with a zeroed value
-//! of the size it names; a key it still refuses for anything but its type
-//! leaves that type unresolved, and an unresolved type fails the test
-//! rather than passing as accepted.
+//! it refuses for something it names before the type -- its value size, a
+//! size of zero, its snapshot -- is planted again with that changed (see
+//! `replant`); a key it still refuses for anything but its type leaves that
+//! type unresolved, and an unresolved type fails the test rather than
+//! passing as accepted.
 //!
 //! A case on which the reference crashes or hangs is counted and never
 //! described (#164's disclosure rule): the test fails naming only the
@@ -32,7 +33,7 @@ use std::path::Path;
 use std::process::Command;
 
 use common::fixture;
-use common::plant::{self, empty_root, move_root, ACCOUNTING, LOGGED_OPS, RECONCILE_WORK_PHYS};
+use common::plant::{self, LOGGED_OPS};
 use fs_bcachefs::bkey::{Bkey, Bpos};
 use fs_bcachefs::btree;
 use fs_bcachefs::check::{check, Report};
@@ -56,10 +57,18 @@ const MADE_BY_THE_REFERENCE: &[&str] = &[
     "kernel-prealloc",
 ];
 
-/// The btrees whose key types this checker judges: the three in which the
-/// reference checker's `invalid bkey` showed up in #163's differential.
-/// Every other btree is #305.
-const JUDGED: &[u8] = &[LOGGED_OPS, ACCOUNTING, RECONCILE_WORK_PHYS];
+/// The btrees whose key types are judged: every btree S1 names (#305), not
+/// only the three in which the reference checker's `invalid bkey` showed
+/// up in #163's differential.
+fn judged() -> Vec<u8> {
+    (0..plant::BTREES.len() as u8).collect()
+}
+const INODES: u8 = 1;
+const DIRENTS: u8 = 2;
+const ALLOC: u8 = 4;
+const REFLINK: u8 = 7;
+const SNAPSHOTS: u8 = 9;
+const DAMAGE: u8 = 28;
 const FREESPACE: u8 = 11;
 const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
 const XATTRS: u8 = 3;
@@ -74,12 +83,48 @@ const KEY_XATTR: u8 = 11;
 /// nothing, while the same dirent planted alone is refused for its type
 /// (`check_oracle_reconcile_dirent.rs`, the same run).
 ///
-/// Times a key refused for its value size is planted again, at the size
-/// the reference names.
-const RESIZES: usize = 2;
+/// Times a key refused for something other than its type is planted again
+/// (`replant`): twice for its value size, as before #305, once for a size
+/// of zero and once for its snapshot.
+const REPLANTS: usize = 4;
+
+/// The size a key refused for "size == 0" is planted again with: extents,
+/// reflink and freespace name that before a key's type (docs/clean-room.md,
+/// "The key types a btree holds"). Eight sectors; the planted position's
+/// offset, 0x100 or more past the btree's last key, is always past it.
+const PLANTED_SIZE: u32 = 8;
+
+/// How long the reference checker may take over one planted image. It took
+/// about 0.2 s an image across the three btrees judged before #305 (queue
+/// run 39895568461), so a minute is far beyond a judgement and well short
+/// of letting a few hangs among every btree's images run out the job.
+const REFERENCE_TIMEOUT_SECONDS: &str = "60";
 
 fn planted_types() -> Vec<u8> {
     (1..=plant::KEY_TYPES.len() as u8).collect()
+}
+
+#[test]
+fn a_key_of_every_type_is_planted_into_every_btree() {
+    let judged = judged();
+    assert_eq!(
+        judged.len(),
+        plant::BTREES.len(),
+        "every btree S1 names is judged"
+    );
+    for id in [
+        0, INODES, DIRENTS, XATTRS, ALLOC, REFLINK, SNAPSHOTS, FREESPACE, DAMAGE,
+    ] {
+        assert!(
+            judged.contains(&id),
+            "btree {} is not judged",
+            plant::BTREES[usize::from(id)]
+        );
+    }
+    assert_eq!(plant::BTREES[usize::from(DAMAGE)], "damage");
+    assert_eq!(plant::BTREES[usize::from(SNAPSHOTS)], "snapshots");
+    assert_eq!(plant::BTREES[usize::from(REFLINK)], "reflink");
+    assert_eq!(plant::BTREES[usize::from(ALLOC)], "alloc");
 }
 
 #[test]
@@ -271,6 +316,50 @@ fn wanted_val_size(said: &str) -> Option<usize> {
     rest.split(')').next()?.trim().parse().ok()
 }
 
+/// What a key the reference refused for something other than its type is
+/// planted again with, so that its type is judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replant {
+    /// A zeroed value of this many bytes: "bad val size (n < N)".
+    ValueSize(usize),
+    /// This size: "size == 0" (extents, reflink, freespace).
+    Size(u32),
+    /// This snapshot: "snapshot == 0" (damage) asks for one,
+    /// "nonzero snapshot" (reconcile_work_phys) for none.
+    Snapshot(u32),
+}
+
+impl Replant {
+    fn apply(self, key: &mut Bkey) {
+        match self {
+            Replant::ValueSize(n) => key.value = vec![0; n],
+            Replant::Size(n) => key.size = n,
+            Replant::Snapshot(s) => key.pos.snapshot = s,
+        }
+    }
+}
+
+/// How to plant `key` again after the reference said `said` of it without
+/// refusing its type, or `None` when what it said asks for nothing `key`
+/// does not already have: a reason asked for once and still given is a
+/// verdict, not a retry. The value size is asked for first, as the
+/// reference names it before the rest.
+fn replant(said: &str, key: &Bkey) -> Option<Replant> {
+    if let Some(n) = wanted_val_size(said).filter(|&n| n > key.value.len()) {
+        return Some(Replant::ValueSize(n.next_multiple_of(8)));
+    }
+    if said.contains("size == 0") && key.size == 0 {
+        return Some(Replant::Size(PLANTED_SIZE));
+    }
+    if said.contains("snapshot == 0") && key.pos.snapshot == 0 {
+        return Some(Replant::Snapshot(u32::MAX));
+    }
+    if said.contains("nonzero snapshot") && key.pos.snapshot != 0 {
+        return Some(Replant::Snapshot(0));
+    }
+    None
+}
+
 /// What became of one planted image.
 enum Judged {
     /// The reference crashed or hung rather than judged.
@@ -291,7 +380,7 @@ fn judge(src: &[u8], img: &Path, rooted: bool, id: u8, key: &Bkey) -> Result<Jud
 
 fn plant_and_run(img: &Path, rooted: bool, id: u8, key: &Bkey) -> Result<Judged, String> {
     if !rooted {
-        move_root(img, empty_root(img, id), id);
+        plant::give_root(img, id);
     }
     let planted = catch_unwind(AssertUnwindSafe(|| {
         let mut w = Writer::open(FileDevice::open_rw(img).unwrap())?;
@@ -308,7 +397,7 @@ fn plant_and_run(img: &Path, rooted: bool, id: u8, key: &Bkey) -> Result<Judged,
         Err(_) => return Err("this checker panicked".into()),
     };
     let out = Command::new("timeout")
-        .args(["300", "bcachefs-ref", "fsck", "-n"])
+        .args([REFERENCE_TIMEOUT_SECONDS, "bcachefs-ref", "fsck", "-n"])
         .arg(img)
         .output()
         .unwrap();
@@ -353,6 +442,8 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
     // it lets the btree hold that type is not known, so they are compared by
     // neither side and fail the test as unresolved.
     let mut unresolved: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
+    // Keys the reference judged and did not refuse.
+    let mut accepted: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
     let mut said: BTreeMap<String, (usize, String)> = BTreeMap::new();
     let mut failures = Vec::new();
     // Per btree, the reference's output on the first image whose verdict
@@ -360,7 +451,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
     let mut shown: BTreeMap<u8, Vec<String>> = BTreeMap::new();
     let mut crashes = 0;
     let mut ratelimited = false;
-    for &id in JUDGED {
+    for id in judged() {
         let name = plant::BTREES[usize::from(id)];
         let has_root = rooted.contains(&id);
         let last = if has_root {
@@ -381,9 +472,10 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
                 pos: planted_at(last, snapshot, t),
                 value: written.values.get(&t).cloned().unwrap_or_default(),
             };
-            let p = key.pos.to_string();
             let img = dir.join(format!("{name}-{t}.img"));
-            for attempt in 0..=RESIZES {
+            for attempt in 0..=REPLANTS {
+                // A replant may move the key to another snapshot.
+                let p = key.pos.to_string();
                 let (text, report) = match judge(&src, &img, has_root, id, &key) {
                     Ok(Judged::Seen(text, report)) => (text, report),
                     Ok(Judged::Crashed) => {
@@ -398,14 +490,14 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
                 ratelimited |= text.to_lowercase().contains("ratelimit");
                 let lines: Vec<&str> = text.lines().collect();
                 let (rejected, text) = verdict(&lines, &p, &[]);
-                // A value-size refusal is not a verdict on the type yet:
-                // the key is planted again with a zeroed value of the size
-                // the reference names.
-                let wanted = text
+                // A refusal for what the reference judges before the type
+                // (a value size, a size of zero, a snapshot) is not a
+                // verdict on the type yet: the key is planted again with
+                // what it asked for.
+                let again = text
                     .as_deref()
                     .filter(|_| !rejected)
-                    .and_then(wanted_val_size)
-                    .filter(|&n| n > key.value.len());
+                    .and_then(|s| replant(s, &key));
                 if let Some(text) = &text {
                     let text = replace_word(text, &plant::type_name(t), "<type>");
                     let e = said
@@ -413,8 +505,8 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
                         .or_insert((0, format!("{name} {}", plant::type_name(t))));
                     e.0 += 1;
                 }
-                if let Some(n) = wanted.filter(|_| attempt < RESIZES) {
-                    key.value = vec![0; n.next_multiple_of(8)];
+                if let Some(r) = again.filter(|_| attempt < REPLANTS) {
+                    r.apply(&mut key);
                     continue;
                 }
                 let open = !rejected && text.is_some();
@@ -429,6 +521,9 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
                     unresolved.entry(id).or_default().insert(t);
                 } else if reported {
                     ours.entry(id).or_default().insert(t);
+                }
+                if !rejected && !open {
+                    accepted.entry(id).or_default().insert(t);
                 }
                 if open || rejected != reported {
                     shown.entry(id).or_insert_with(|| {
@@ -446,7 +541,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
     }
 
     let mut disagree = Vec::new();
-    for &id in JUDGED {
+    for id in judged() {
         let name = plant::BTREES[usize::from(id)];
         let t = theirs.get(&id).cloned().unwrap_or_default();
         let o = ours.get(&id).cloned().unwrap_or_default();
@@ -475,8 +570,18 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
             )
         }));
         msg.extend(failures);
+        // What the checker's table is written from: per btree, the types
+        // the reference judged and did not refuse.
+        msg.push("## the key types the reference let each btree hold".into());
+        msg.extend(accepted.iter().map(|(id, t)| {
+            format!(
+                "{}: {}",
+                plant::BTREES.get(usize::from(*id)).copied().unwrap_or("?"),
+                names_of(t)
+            )
+        }));
         msg.push("## what the reference said of the keys it refused".into());
-        msg.extend(said.iter().take(60).map(|(text, (n, first))| {
+        msg.extend(said.iter().take(200).map(|(text, (n, first))| {
             format!(
                 "{n}x (first {first}): {}",
                 text.chars().take(300).collect::<String>()
@@ -791,5 +896,102 @@ fn a_key_refused_for_its_value_size_is_planted_again_at_the_size_named() {
         said.as_deref().and_then(wanted_val_size),
         None,
         "a type refusal names no value size: {said:?}"
+    );
+}
+
+/// A key as the matrix plants it: no size, at `snapshot`, with `value`.
+fn planted(snapshot: u32, value: Vec<u8>) -> Bkey {
+    Bkey {
+        key_type: 2,
+        size: 0,
+        version_hi: 0,
+        version_lo: 0,
+        pos: Bpos {
+            inode: 0,
+            offset: 0x102,
+            snapshot,
+        },
+        value,
+    }
+}
+
+/// The reasons docs/clean-room.md ("The key types a btree holds") records
+/// the reference giving before a key's type, in the form `verdict` keeps
+/// them: the `invalid bkey` line, then its reasons after ` | `.
+const SAID_SIZE_ZERO: &str = "invalid bkey in btree_node btree=extents level=0: u64s 5 type error <pos> len 0 ver 0 | size == 0, deleting";
+const SAID_SNAPSHOT_ZERO: &str = "invalid bkey in btree_node btree=damage level=0: u64s 5 type error <pos> len 0 ver 0 | snapshot == 0, deleting";
+const SAID_NONZERO_SNAPSHOT: &str = "invalid bkey in btree_node btree=reconcile_work_phys level=0: u64s 5 type deleted <pos> len 0 ver 0 | nonzero snapshot, deleting";
+const SAID_VAL_SIZE: &str = "invalid bkey in btree_node btree=reconcile_work_phys level=0: u64s 5 type cookie <pos> len 0 ver 0 | bad val size (0 < 8), deleting";
+
+#[test]
+fn a_key_refused_for_a_size_of_zero_is_planted_again_with_a_size() {
+    let mut key = planted(0, vec![]);
+    let r = replant(SAID_SIZE_ZERO, &key);
+    assert_eq!(r, Some(Replant::Size(PLANTED_SIZE)));
+    r.unwrap().apply(&mut key);
+    assert_eq!(key.size, PLANTED_SIZE);
+    assert!(
+        key.pos.offset >= u64::from(key.size),
+        "an extent's position is its end, so it must lie past its size"
+    );
+    assert_eq!(
+        replant(SAID_SIZE_ZERO, &key),
+        None,
+        "a key refused for a zero size once it has a size is a verdict"
+    );
+}
+
+#[test]
+fn a_key_refused_for_snapshot_zero_is_planted_again_at_a_snapshot() {
+    let mut key = planted(0, vec![]);
+    let r = replant(SAID_SNAPSHOT_ZERO, &key);
+    assert_eq!(r, Some(Replant::Snapshot(u32::MAX)));
+    r.unwrap().apply(&mut key);
+    assert_eq!(key.pos.snapshot, u32::MAX);
+    assert_eq!(key.pos.to_string(), "0:258:U32_MAX", "the position moves");
+    assert_eq!(replant(SAID_SNAPSHOT_ZERO, &key), None);
+}
+
+#[test]
+fn a_key_refused_for_a_nonzero_snapshot_is_planted_again_at_snapshot_zero() {
+    let mut key = planted(u32::MAX, vec![]);
+    let r = replant(SAID_NONZERO_SNAPSHOT, &key);
+    assert_eq!(r, Some(Replant::Snapshot(0)));
+    r.unwrap().apply(&mut key);
+    assert_eq!(key.pos.snapshot, 0);
+    assert_eq!(replant(SAID_NONZERO_SNAPSHOT, &key), None);
+}
+
+#[test]
+fn a_key_refused_for_its_value_size_is_replanted_before_anything_else() {
+    let mut key = planted(0, vec![]);
+    let both = format!("{SAID_VAL_SIZE} | size == 0, deleting");
+    assert_eq!(replant(&both, &key), Some(Replant::ValueSize(8)));
+    replant(&both, &key).unwrap().apply(&mut key);
+    assert_eq!(key.value, vec![0; 8]);
+    assert_eq!(
+        replant(&both, &key),
+        Some(Replant::Size(PLANTED_SIZE)),
+        "the next reason is asked for once the value fits"
+    );
+    // A value size that is not a multiple of eight is rounded up to one.
+    let odd = SAID_VAL_SIZE.replace("(0 < 8)", "(0 < 12)");
+    assert_eq!(
+        replant(&odd, &planted(0, vec![])),
+        Some(Replant::ValueSize(16))
+    );
+}
+
+#[test]
+fn a_key_refused_for_its_type_or_not_named_is_not_planted_again() {
+    let key = planted(0, vec![]);
+    let (rejected, said) = verdict(OBSERVED, "0:260:0", &["0:259:0".to_string()]);
+    assert!(rejected);
+    assert_eq!(said.as_deref().and_then(|s| replant(s, &key)), None);
+    assert_eq!(replant("", &key), None);
+    assert_eq!(
+        replant("invalid bkey in btree_node btree=inodes level=0: u64s 5 type inode <pos> len 0 ver 0 | something else, deleting", &key),
+        None,
+        "a reason the matrix does not know how to satisfy is left unresolved"
     );
 }
