@@ -130,5 +130,4 @@ ours-only	key-value	check:backpointer_to_missing_ptr	#230: unresolved backpointe
 ref-only	key-inode	check_subvol_children...incorrect entry in subvolume_children btree #, not fixing	#382: The checker misses a subvolume_children entry at an inode no subvolume has
 ref-only	key-value	check_allocations...accounting mismatch for btree btree=logged_ops:	#381: The checker misses an accounting mismatch for the logged_ops btree
 ref-only	key-inode	check_btree_backpointers...backpointer for missing device:	#383: The checker misses a backpointer for a device the filesystem does not have
-ref-only	key-type	invalid bkey in btree_node btree=backpointers level=#: u#s # type snapshot # len # ver # : parent # 	#378: The checker accepts a snapshot key in the backpointers btree
 ref-only	key-type	check_allocations...bucket # gen # data type user has wrong dirty_sectors: got #, should be #, fixin	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold

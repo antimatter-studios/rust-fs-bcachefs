@@ -1789,6 +1789,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             "bkey_invalid_type_for_btree",
             format!("btree {name}: key {} is an inode", k.pos),
         ),
+        // Nightly differential run 39756419740, re-run as 39764355709
+        // (kernel-rootsnap seed 1659883), saw the reference refuse a
+        // backpointer changed into a snapshot as "invalid bkey in btree_node
+        // btree=backpointers ... type snapshot" (#378).
+        (BACKPOINTERS, KEY_SNAPSHOT) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is a snapshot", k.pos),
+        ),
         _ => {}
     }
 }
@@ -2360,6 +2368,37 @@ mod tests {
         let mut unrelated = Report::default();
         check_key_fields(btree_id::INODES, &k, &mut unrelated);
         assert!(unrelated.clean(), "{unrelated:?}");
+    }
+
+    #[test]
+    fn a_snapshot_in_backpointers_is_named() {
+        // Nightly differential run 39756419740, re-run on the top of stack
+        // #365 as run 39764355709, kernel-rootsnap seed 1659883: the
+        // backpointer at 0:390070272:0 changed to snapshot, keeping its
+        // 32-byte value, was refused by the reference as "invalid bkey in
+        // btree_node btree=backpointers level=0: u64s 9 type snapshot" (#378).
+        let mut k = key(KEY_BACKPOINTER, 390070272, vec![0; 32]);
+        let mut clean = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        k.key_type = KEY_SNAPSHOT;
+        let mut report = Report::default();
+        check_key_fields(BACKPOINTERS, &k, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "bkey_invalid_type_for_btree");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+        // The snapshots btree is where a snapshot belongs.
+        let mut unrelated = Report::default();
+        check_key_fields(SNAPSHOTS, &k, &mut unrelated);
+        assert!(
+            !unrelated
+                .problems
+                .iter()
+                .any(|p| p.kind == "bkey_invalid_type_for_btree"),
+            "{unrelated:?}"
+        );
     }
 
     #[test]

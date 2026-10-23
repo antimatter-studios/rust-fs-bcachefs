@@ -1791,6 +1791,14 @@ backpointers (inode_v3)" (`bkey_invalid_type_for_btree`), where this checker
 had called the image clean (#268). The checker now reports that one pair.
 Which other types backpointers holds stays open (#305).
 
+Nightly differential run 39756419740, re-run on the top of stack #365 as run
+39764355709, changed the backpointer at `0:390070272:0` of
+`kernel-rootsnap.img` into a `snapshot`, keeping its value (seed 1659883).
+The reference refused it as "invalid bkey in btree_node btree=backpointers
+level=0: u64s 9 type snapshot", where this checker had called the image
+clean (#378). The checker now reports that pair too, with the code it uses
+for #268's inode. The other types backpointers may hold are still #305's.
+
 ### Inode key inode positions (S3, #255)
 
 The same [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)

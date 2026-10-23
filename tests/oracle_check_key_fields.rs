@@ -410,3 +410,15 @@ fn an_inode_in_backpointers_is_refused() {
     let to = Change::KeyType(key_type::INODE_V3);
     refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
 }
+
+/// Nightly differential run 39756419740, re-run on the top of stack #365 as
+/// run 39764355709, changed a backpointer of kernel-rootsnap.img into a
+/// snapshot (seed 1659883, at 0:390070272:0, its value kept); the reference
+/// refused it as "invalid bkey in btree_node btree=backpointers level=0:
+/// u64s 9 type snapshot" (#378).
+#[test]
+fn a_snapshot_in_backpointers_is_refused() {
+    let kind = "bkey_invalid_type_for_btree";
+    let to = Change::KeyType(SNAPSHOT);
+    refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
+}
