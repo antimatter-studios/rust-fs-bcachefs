@@ -34,6 +34,7 @@ const NEED_DISCARD: u8 = 12;
 const BACKPOINTERS: u8 = 13;
 const BUCKET_GENS: u8 = 14;
 const SNAPSHOT_TREES: u8 = 15;
+const SUBVOLUME_CHILDREN: u8 = 19;
 const LOGGED_OPS: u8 = 17;
 const ACCOUNTING: u8 = 20;
 const SUBVOLUME: u8 = 21;
@@ -354,4 +355,31 @@ fn a_bucket_gens_key_on_a_device_the_filesystem_lacks_is_refused() {
     let kind = "pointer_to_nonexistent_device";
     let moved = Change::Inode(1);
     refused("kernel", BUCKET_GENS, BUCKET_GENS_KEY, any, moved, kind);
+}
+
+/// Nightly differential run 38878947701 (#219) gave the root snapshot a size
+/// (aged seed 1659430, kernel seed 1659425), gave a subvolume_children key a
+/// size (kernel-rootsnap seeds 1659417 and 1659425) and moved a
+/// snapshot_tree to a snapshot (kernel seed 1659439). The reference deleted
+/// each one, as "size != 0" and as "nonzero snapshot".
+#[test]
+fn a_sized_snapshot_key_is_refused() {
+    let kind = "bkey_size_nonzero";
+    for set in ["aged", "kernel"] {
+        refused(set, SNAPSHOTS, SNAPSHOT, any, Change::Size(1), kind);
+    }
+}
+
+#[test]
+fn a_sized_subvolume_children_key_is_refused() {
+    let kind = "bkey_size_nonzero";
+    let size = Change::Size(1);
+    refused("kernel-rootsnap", SUBVOLUME_CHILDREN, SET, any, size, kind);
+}
+
+#[test]
+fn a_snapshot_tree_at_a_snapshot_is_refused() {
+    let kind = "bkey_snapshot_nonzero";
+    let snap = Change::Snapshot(u32::MAX - 1);
+    refused("kernel", SNAPSHOT_TREES, SNAPSHOT_TREE, any, snap, kind);
 }

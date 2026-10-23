@@ -1633,11 +1633,12 @@ fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
 /// an accounting key holding more than its kind and btree, and an xattr
 /// whose lengths run past its value. Each pair of btree and key type below
 /// is one differential run 38579070302, nightly-seed run 39018152705 or
-/// nightly run 39756419740 saw the reference refuse; a pair nobody
-/// observed is not judged (docs/clean-room.md).
+/// nightly runs 38878947701 and 39756419740 saw the reference refuse; a pair
+/// nobody observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
+    const SUBVOLUME_CHILDREN: u8 = 19;
     const KEY_SNAPSHOT_TREE: u8 = 31;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
     /// An accounting key's kind, the top byte of its inode; the lister
@@ -1654,6 +1655,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
         (ACCOUNTING, KEY_ACCOUNTING),
+        // Nightly run 38878947701 (#219).
+        (SNAPSHOTS, KEY_SNAPSHOT),
+        (SUBVOLUME_CHILDREN, KEY_SET),
     ];
     const SNAPSHOT_ZERO: &[(u8, u8)] = &[
         (SUBVOLUMES, KEY_SUBVOLUME),
@@ -1662,6 +1666,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (NEED_DISCARD, KEY_SET),
         (FREESPACE, KEY_SET),
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
+        // Nightly run 38878947701 (#219).
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -2200,6 +2206,81 @@ mod tests {
             assert!(unrelated.clean(), "{unrelated:?}");
             k.key_type = key_type::EXTENT;
             check_key_fields(btree_id::XATTRS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_key_with_a_nonzero_size_is_named() {
+        // Nightly run 38878947701 (#219): the root snapshot at
+        // 0:4294967295:0 given size 1 (aged seed 1659430) and size
+        // 4294967295 (kernel seed 1659425) is refused as "size != 0".
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(KEY_SNAPSHOT, u64::from(u32::MAX), snapshot(1, [0; 3]));
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOTS, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+                assert!(report.problems[0].detail.contains(&format!("size {size}")));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::EXTENTS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_subvolume_children_key_with_a_nonzero_size_is_named() {
+        // The same run, kernel-rootsnap seeds 1659417 and 1659425: the set
+        // key at 1:2:0 given size 1 and 4294967295 is refused as
+        // "size != 0".
+        const SUBVOLUME_CHILDREN: u8 = 19;
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(KEY_SET, 2, vec![]);
+            k.pos.inode = 1;
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(SUBVOLUME_CHILDREN, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            // A freespace run's size is its length in buckets.
+            let mut unrelated = Report::default();
+            check_key_fields(FREESPACE, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_tree_key_at_a_snapshot_is_named() {
+        // The same run, kernel seed 1659439: tree 2 moved to
+        // 0:2:4294967294 is refused as "nonzero snapshot".
+        for snap in [0, u32::MAX - 1, u32::MAX] {
+            let mut k = key(KEY_SNAPSHOT_TREE, 2, tree(2, u32::MAX - 1));
+            k.pos.snapshot = snap;
+            let mut report = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut report);
+            if snap == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(btree_id::INODES, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
         }
     }
