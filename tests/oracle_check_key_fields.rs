@@ -399,3 +399,14 @@ fn a_logged_operation_in_subvolume_children_is_refused() {
         refused("kernel-rootsnap", SUBVOLUME_CHILDREN, SET, any, to, kind);
     }
 }
+
+/// Nightly-seed run 39018152705 changed a backpointer of kernel-rootsnap.img
+/// into an inode_v3 (seed 1659466, at 0:381681664:0, its value kept); the
+/// reference deleted it as "invalid key type for btree backpointers
+/// (inode_v3)" (#268).
+#[test]
+fn an_inode_in_backpointers_is_refused() {
+    let kind = "bkey_invalid_type_for_btree";
+    let to = Change::KeyType(key_type::INODE_V3);
+    refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
+}
