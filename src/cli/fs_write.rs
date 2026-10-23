@@ -138,7 +138,7 @@ fn failed(e: fs_bcachefs::Error) -> CliError {
 /// A namespace verb's error: what the volume's state refuses (a name not
 /// there, a name already taken, a directory that is not empty, a name that
 /// is not a directory where one is needed) is the CLI contract's exit 4,
-/// `refused` (diskjockey#413); anything else is [`failed`]'s.
+/// `refused` (EXIT_REFUSED); anything else is [`failed`]'s.
 fn state_failed(e: fs_bcachefs::Error) -> CliError {
     if e.is_state_refusal() {
         CliError::refused_by_state(e.to_string())

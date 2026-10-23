@@ -75,7 +75,7 @@ offset=0
 
 # Refusals: a name that exists, a directory that is not empty. What the
 # volume's state refuses is exit 4, `refused`, in the CLI contract
-# (diskjockey#413), with the JSON error and the image byte-identical.
+# (EXIT_REFUSED), with the JSON error and the image byte-identical.
 cp "$FIXTURES/write-study/base.img" "$SANDBOX/refuse.img"
 printf 'x' | fs.bcachefs "$SANDBOX/refuse.img" put /d >/dev/null 2>&1
 check "put over a directory is refused" test $? -ne 0
