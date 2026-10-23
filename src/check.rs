@@ -1587,6 +1587,7 @@ fn walk_checked(
                 // 38814891184) as bkey_invalid_type_for_btree, the one code
                 // for that offender (#219).
                 check_key_fields(id, k, r);
+                check_key_device(id, k, u64::from(sb.dev_idx), r);
             }
             Some(keys)
         }
@@ -1595,6 +1596,33 @@ fn walk_checked(
             None
         }
     }
+}
+
+/// A key of a btree filed by device, at `device:bucket` (alloc and
+/// bucket_gens), on a device other than `dev`, the filesystem's one device:
+/// the reference's "pointer to nonexistent device" (#163). Nightly
+/// differential run 38878947701 moved an alloc key (seed 1659438) and a
+/// bucket_gens key (seed 1659387) from device 0 to device 1 on one-device
+/// fixtures, and the reference stopped on each, in check_allocations and in
+/// alloc_read. A deleted key or a whiteout holds no bucket and is not
+/// judged; no other btree is, as no run has moved one of its keys to
+/// another device (docs/clean-room.md). `check` judges one device only.
+fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
+    if !matches!(id, btree_id::ALLOC | BUCKET_GENS)
+        || k.pos.inode == dev
+        || matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT)
+    {
+        return;
+    }
+    r.add(
+        "pointer_to_nonexistent_device",
+        format!(
+            "btree {}: key {} is on device {}, and the filesystem has only device {dev}",
+            journal::btree_name(id),
+            k.pos,
+            k.pos.inode
+        ),
+    );
 }
 
 /// What the reference refuses in a key's own fields (#219): a size on a
