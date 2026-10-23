@@ -54,3 +54,35 @@ impl From<fs_core::Error> for Error {
         Error::Io(e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn a_state_refusal_is_told_apart_from_damage() {
+        // The writer's own words for what the volume's state refuses
+        // (src/write.rs), which the C ABI already maps to EEXIST and
+        // ENOTEMPTY (src/capi_write.rs): the CLI's exit 4 (#394).
+        for refusal in [
+            Error::NotFound(format!("{:?}", "x")),
+            Error::Corrupt(format!("{:?} already exists", "x")),
+            Error::Corrupt("the directory is not empty".into()),
+            Error::Corrupt(format!("{:?} is not a directory", "x")),
+            Error::Corrupt("inode 4096 is not a directory".into()),
+        ] {
+            assert!(refusal.is_state_refusal(), "{refusal}");
+        }
+        // A directory given to `rm` is the verb's mistake, not the state's,
+        // and damage is damage.
+        for other in [
+            Error::Corrupt(format!("{:?} is a directory", "x")),
+            Error::Corrupt("unpacked key shorter than 40 bytes".into()),
+            Error::Unsupported("the filesystem is encrypted".into()),
+            Error::Io("short read".into()),
+            Error::BadMagic { what: "superblock" },
+        ] {
+            assert!(!other.is_state_refusal(), "{other}");
+        }
+    }
+}

@@ -73,12 +73,25 @@ for mode in in-place journal in-place-offset journal-offset; do
 done
 offset=0
 
-# Refusals: a name that exists, a directory that is not empty.
+# Refusals: a name that exists, a directory that is not empty. What the
+# volume's state refuses is exit 4, `refused`, in the CLI contract
+# (diskjockey#413), with the JSON error and the image byte-identical.
 cp "$FIXTURES/write-study/base.img" "$SANDBOX/refuse.img"
 printf 'x' | fs.bcachefs "$SANDBOX/refuse.img" put /d >/dev/null 2>&1
 check "put over a directory is refused" test $? -ne 0
-fs.bcachefs "$SANDBOX/refuse.img" rmdir /d >/dev/null 2>&1
-check "rmdir of a directory with entries is refused" test $? -ne 0
+cp "$SANDBOX/refuse.img" "$SANDBOX/refuse-before.img"
+state_refused() {
+    local why="$1"
+    shift
+    fs.bcachefs "$SANDBOX/refuse.img" "$@" >"$SANDBOX/out" 2>"$SANDBOX/err"
+    check "$* exits 4" test $? -eq 4
+    check "$* prints nothing on stdout" test ! -s "$SANDBOX/out"
+    check "$* is refused: $why" \
+        jq -e --arg why "$why" '.code == 4 and (.error | contains($why))' "$SANDBOX/err" >/dev/null
+    check "$* leaves the image byte-identical" cmp -s "$SANDBOX/refuse.img" "$SANDBOX/refuse-before.img"
+}
+state_refused "not empty" rmdir /d
+state_refused "already exists" mkdir /d
 
 # The shared spelling and its alias have the same input, mode and journal
 # options, and every predictable refusal preserves the complete image.
