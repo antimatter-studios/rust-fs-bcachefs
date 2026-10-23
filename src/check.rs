@@ -1789,6 +1789,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             "bkey_invalid_type_for_btree",
             format!("btree {name}: key {} is an inode", k.pos),
         ),
+        // Nightly differential run 39756419740, re-run as 39764355709
+        // (kernel-rootsnap seed 1659883), saw the reference refuse a
+        // backpointer changed into a snapshot as "invalid bkey in btree_node
+        // btree=backpointers ... type snapshot" (#378).
+        (BACKPOINTERS, KEY_SNAPSHOT) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is a snapshot", k.pos),
+        ),
         _ => {}
     }
 }
