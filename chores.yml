@@ -9,7 +9,7 @@ vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_bcachefs
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.3.14
+  FS_CORE_REF: v0.3.15
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.4.1
 
@@ -132,6 +132,12 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-key-type-parser 150 12000 -- cargo test --locked --features write --test check_oracle_key_types -- a_key_'
       # The same run executed five parser cases; the boundary guard adds one.
       - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-key-type-parser 6'
+      # The export command line's tree options (#342) are the tools', so this
+      # builds `cli`; it still reads no fixture and runs no tool or VM, so it
+      # runs here and fails in minutes. Budget copied from the unit row until
+      # a run measures it.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-cli-export 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --features cli --test cli_export_tree_args -- --quiet'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-cli-export 2'
 
   test:oracle:
     desc: 'Every fixture read by this crate and compared with the reference tools'' recorded view (needs chore fixtures)'
@@ -287,9 +293,12 @@ tasks:
     cmds:
       # #341 adds three scripts: nine fixed header/verdict lines, 274 bytes
       # at their 168 + 11 + 17 success counts, above the existing budget.
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 49 2000 -- scripts/test-cli.sh'
+      # #342 adds test-export-tree.sh: three more fixed lines, 94 bytes at
+      # its 49 checks ("== test-export-tree", its result, its verdict).
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 52 2100 -- scripts/test-cli.sh'
       # #341 adds 168 export, 11 documentation and 17 kernel export checks.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7725'
+      # #342 adds 49 recursive export checks.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7774'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
