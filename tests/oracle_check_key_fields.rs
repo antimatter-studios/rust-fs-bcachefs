@@ -422,3 +422,14 @@ fn a_snapshot_in_backpointers_is_refused() {
     let to = Change::KeyType(SNAPSHOT);
     refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
 }
+
+/// Nightly differential run 39756419740, re-run as 39764355709, moved the
+/// backpointer at 0:390070272:0 of kernel-rootsnap.img to inode U64_MAX, its
+/// device (seed 1659851); the reference reported "backpointer for missing
+/// device" (#383).
+#[test]
+fn a_backpointer_on_a_device_the_filesystem_lacks_is_refused() {
+    let kind = "backpointer_for_missing_device";
+    let to = Change::Inode(u64::MAX);
+    refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
+}

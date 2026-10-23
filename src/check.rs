@@ -2194,6 +2194,26 @@ mod tests {
     }
 
     #[test]
+    fn a_backpointer_on_a_device_the_filesystem_lacks_is_named() {
+        // Nightly differential run 39756419740, re-run as 39764355709,
+        // kernel-rootsnap seed 1659851: the backpointer at 0:390070272:0
+        // moved to inode U64_MAX (a backpointer's inode is its device) was
+        // reported by the reference as "backpointer for missing device"
+        // (#383).
+        let mut clean = Report::default();
+        let here = on_device(KEY_BACKPOINTER, 0, 390070272);
+        check_key_device(BACKPOINTERS, &here, 0, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let k = on_device(KEY_BACKPOINTER, u64::MAX, 390070272);
+        let mut report = Report::default();
+        check_key_device(BACKPOINTERS, &k, 0, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "backpointer_for_missing_device");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+    }
+
+    #[test]
     fn a_bucket_gens_key_on_a_device_the_filesystem_lacks_is_named() {
         // The same run, seed 1659387: a bucket_gens key moved from 0:0:0 to
         // 1:0:0 on kernel.img stopped the reference in alloc_read with
