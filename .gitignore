@@ -6,6 +6,11 @@ Cargo.lock.bak
 # macOS
 .DS_Store
 
+# Python's bytecode cache, written wherever a script is imported and stale
+# once it changes (#393); tests/scripts/no-bytecode-is-tracked.sh holds this.
+__pycache__/
+*.pyc
+
 # Editor
 .vscode/
 .idea/
