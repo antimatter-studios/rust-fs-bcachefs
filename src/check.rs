@@ -1587,6 +1587,7 @@ fn walk_checked(
                 // 38814891184) as bkey_invalid_type_for_btree, the one code
                 // for that offender (#219).
                 check_key_fields(id, k, r);
+                check_key_device(id, k, u64::from(sb.dev_idx), r);
             }
             Some(keys)
         }
@@ -1595,6 +1596,33 @@ fn walk_checked(
             None
         }
     }
+}
+
+/// A key of a btree filed by device, at `device:bucket` (alloc and
+/// bucket_gens), on a device other than `dev`, the filesystem's one device:
+/// the reference's "pointer to nonexistent device" (#163). Nightly
+/// differential run 38878947701 moved an alloc key (seed 1659438) and a
+/// bucket_gens key (seed 1659387) from device 0 to device 1 on one-device
+/// fixtures, and the reference stopped on each, in check_allocations and in
+/// alloc_read. A deleted key or a whiteout holds no bucket and is not
+/// judged; no other btree is, as no run has moved one of its keys to
+/// another device (docs/clean-room.md). `check` judges one device only.
+fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
+    if !matches!(id, btree_id::ALLOC | BUCKET_GENS)
+        || k.pos.inode == dev
+        || matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT)
+    {
+        return;
+    }
+    r.add(
+        "pointer_to_nonexistent_device",
+        format!(
+            "btree {}: key {} is on device {}, and the filesystem has only device {dev}",
+            journal::btree_name(id),
+            k.pos,
+            k.pos.inode
+        ),
+    );
 }
 
 /// What the reference refuses in a key's own fields (#219): a size on a
@@ -2027,6 +2055,72 @@ mod tests {
             let mut unrelated = Report::default();
             check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    /// A key at `device:bucket`, as the alloc and bucket_gens btrees file
+    /// theirs.
+    fn on_device(key_type: u8, device: u64, bucket: u64) -> Bkey {
+        let mut k = key(key_type, bucket, vec![0; 8]);
+        k.pos.inode = device;
+        k
+    }
+
+    #[test]
+    fn an_alloc_key_on_a_device_the_filesystem_lacks_is_named() {
+        // Nightly differential run 38878947701, seed 1659438: an alloc key
+        // moved from 0:28:0 to 1:28:0 on aged.img (and from 0:0:0 to 1:0:0
+        // on kernel-written.img) stopped the reference in check_allocations
+        // with "pointer to nonexistent device 1" (#163).
+        let mut clean = Report::default();
+        check_key_device(
+            btree_id::ALLOC,
+            &on_device(key_type::ALLOC_V4, 0, 28),
+            0,
+            &mut clean,
+        );
+        assert!(clean.clean(), "{clean:?}");
+
+        let k = on_device(key_type::ALLOC_V4, 1, 28);
+        let mut report = Report::default();
+        check_key_device(btree_id::ALLOC, &k, 0, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "pointer_to_nonexistent_device");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+    }
+
+    #[test]
+    fn a_bucket_gens_key_on_a_device_the_filesystem_lacks_is_named() {
+        // The same run, seed 1659387: a bucket_gens key moved from 0:0:0 to
+        // 1:0:0 on kernel.img stopped the reference in alloc_read with
+        // "pointer to nonexistent device 1".
+        let k = on_device(KEY_BUCKET_GENS, 1, 0);
+        let mut report = Report::default();
+        check_key_device(BUCKET_GENS, &k, 0, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "pointer_to_nonexistent_device");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+        // The filesystem's one device need not be device 0.
+        let mut own = Report::default();
+        check_key_device(BUCKET_GENS, &k, 1, &mut own);
+        assert!(own.clean(), "{own:?}");
+    }
+
+    #[test]
+    fn only_live_keys_of_the_device_keyed_btrees_are_judged_for_their_device() {
+        // A deleted key or a whiteout holds no bucket.
+        for kt in [key_type::DELETED, key_type::WHITEOUT] {
+            let mut report = Report::default();
+            check_key_device(btree_id::ALLOC, &on_device(kt, 1, 28), 0, &mut report);
+            assert!(report.clean(), "type {kt}: {report:?}");
+        }
+        // No run has moved a key of another btree to another device, so no
+        // other btree is judged (docs/clean-room.md).
+        for id in [btree_id::INODES, LRU, FREESPACE, NEED_DISCARD, BACKPOINTERS] {
+            let mut report = Report::default();
+            check_key_device(id, &on_device(KEY_SET, 1, 28), 0, &mut report);
+            assert!(report.clean(), "btree {id}: {report:?}");
         }
     }
 

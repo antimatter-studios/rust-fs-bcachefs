@@ -1608,6 +1608,31 @@ The same report shows four more refusals, each after one change:
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.
 
+### Keys on a device the filesystem lacks (S3, #163)
+
+Nightly differential run 38878947701 changed only the inode field, the
+device, of a key in each of two btrees filed by `device:bucket`, and
+committed it through the writer's raw `insert`, on one-device fixtures:
+
+- an alloc key, moved from device 0 to device 1 on `aged.img` (at 1:28:0)
+  and `kernel-written.img` (at 1:0:0), seed 1659438;
+- a bucket_gens key, moved from 0:0:0 to 1:0:0 on `kernel.img`, seed 1659387.
+
+Each time the reference checker stopped, exit 1, with "pointer to
+nonexistent device 1": in check_allocations for the alloc key and in
+alloc_read for the bucket_gens key. This crate had called each image clean,
+because every pass over those btrees reads only the keys of the
+filesystem's own device.
+
+The checker now reports `pointer_to_nonexistent_device` for a live key of
+alloc or bucket_gens whose position names a device other than the
+filesystem's one device. A deleted key or a whiteout holds no bucket and is
+not judged. No rule is inferred for the other btrees filed by device
+(freespace, need_discard, backpointers, lru), because no run has moved one
+of their keys to another device. The unit cases cover the rule, and
+`tests/oracle_check_key_fields.rs` repeats the three mutations on the
+fixtures they were seen on. Only black-box output was read.
+
 ### Snapshot inode positions (S3, #253)
 
 The current-main nightly-equivalent [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)

@@ -334,3 +334,24 @@ fn an_xattr_in_dirents_is_refused() {
         kind,
     );
 }
+
+/// Nightly differential run 38878947701 moved an alloc key from device 0 to
+/// device 1 (seed 1659438, on aged.img and kernel-written.img) and a
+/// bucket_gens key the same way (seed 1659387, on kernel.img). Each fixture
+/// has one device, and the reference stopped on each key with "pointer to
+/// nonexistent device 1" (#163).
+#[test]
+fn an_alloc_key_on_a_device_the_filesystem_lacks_is_refused() {
+    let kind = "pointer_to_nonexistent_device";
+    for set in ["aged", "kernel-written"] {
+        let moved = Change::Inode(1);
+        refused(set, btree_id::ALLOC, key_type::ALLOC_V4, any, moved, kind);
+    }
+}
+
+#[test]
+fn a_bucket_gens_key_on_a_device_the_filesystem_lacks_is_refused() {
+    let kind = "pointer_to_nonexistent_device";
+    let moved = Change::Inode(1);
+    refused("kernel", BUCKET_GENS, BUCKET_GENS_KEY, any, moved, kind);
+}
