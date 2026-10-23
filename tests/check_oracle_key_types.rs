@@ -505,18 +505,16 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
     let source = fixture("aged.img");
     let dev = FileDevice::open(&source).unwrap();
     let sb = Superblock::read(&dev).unwrap();
-    let pos = Bpos {
-        inode: 0,
-        offset: 2040,
-        snapshot: 0,
-    };
+    // The differential planted at 0:2040:0. The aged.img every CI run
+    // builds has held its one free extent there so far, but which buckets
+    // stay free is the kernel's choice, so the first set key is taken.
     let mut key = btree::walk(&dev, &sb, FREESPACE)
         .unwrap()
         .into_iter()
-        .find(|k| k.pos == pos)
-        .expect("the pinned aged fixture has the differential's freespace key");
-    assert_eq!(key.key_type, 25, "the planted key must begin as a set");
+        .find(|k| k.key_type == 25)
+        .expect("the aged fixture has a freespace set key");
     key.key_type = KEY_LOGGED_OP_TRUNCATE;
+    let p = key.pos.to_string();
 
     let dir = common::ScratchDir::new("check-freespace-logged-op-truncate");
     let img = dir.join("aged-1659445.img");
@@ -526,7 +524,7 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
         Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
     };
     let lines: Vec<&str> = text.lines().collect();
-    let (rejected, reason) = verdict(&lines, "0:2040:0", &[]);
+    let (rejected, reason) = verdict(&lines, &p, &[]);
     assert!(
         rejected,
         "the reference did not reject the key for its type: {reason:?}\n{text}"
@@ -534,7 +532,9 @@ fn logged_op_truncate_in_freespace_is_rejected_by_both_checkers() {
     assert!(
         report.problems.iter().any(|problem| {
             problem.kind == "invalid_bkey"
-                && problem.detail.contains("btree freespace: key 0:2040:0")
+                && problem
+                    .detail
+                    .contains(&format!("btree freespace: key {p}"))
         }),
         "the checker did not report the planted key: {:?}",
         report.problems
@@ -586,6 +586,63 @@ fn lru_in_xattrs_is_rejected_by_both_checkers() {
             problem.kind == "invalid_bkey"
                 && problem.detail.contains(&format!("btree xattrs: key {p}"))
         }),
+        "the checker did not report the planted key: {:?}",
+        report.problems
+    );
+}
+
+/// The differential's kernel seed 1659466 changes the key at 1:4:0 to
+/// inode_v3 and commits it in logged_ops. The reference refuses that type
+/// there; the short value is retained so the mutation stays the recorded
+/// one. That key is one of kernel.img's inode allocation cursors, which sit
+/// at 1:1:0 upwards and number three or four from one fixture build to the
+/// next (queue run 39868718949 held three), so the last one is taken.
+#[test]
+fn inode_v3_in_logged_ops_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("kernel.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut key = btree::walk(&dev, &sb, LOGGED_OPS)
+        .unwrap()
+        .into_iter()
+        .rfind(|k| k.pos.inode == 1 && k.pos.snapshot == 0)
+        .expect("kernel.img holds an inode allocation cursor in logged_ops");
+    assert_ne!(key.key_type, fs_bcachefs::bkey::key_type::INODE_V3);
+    assert_eq!(key.value.len(), 16, "the recorded mutation keeps its value");
+    key.key_type = fs_bcachefs::bkey::key_type::INODE_V3;
+    let p = key.pos.to_string();
+
+    let dir = common::ScratchDir::new("check-logged-ops-inode-v3");
+    let img = dir.join("kernel-1659466.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, LOGGED_OPS, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (rejected, reason) = verdict(&lines, &p, &[]);
+    assert!(
+        rejected,
+        "the reference did not reject inode_v3 for its type: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("invalid key type for btree logged_ops (inode_v3)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|problem| problem.kind == "invalid_bkey"
+                && problem
+                    .detail
+                    .contains(&format!("btree logged_ops: key {p}"))),
         "the checker did not report the planted key: {:?}",
         report.problems
     );
