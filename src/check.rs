@@ -1600,12 +1600,13 @@ fn walk_checked(
 /// What the reference refuses in a key's own fields (#219): a size on a
 /// key of a btree whose keys have none ("size != 0", `bkey_size_nonzero`),
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
-/// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot or
-/// snapshot_tree at a position it cannot have, an accounting key holding
-/// more than its kind and btree, and an xattr whose lengths run past its
-/// value. Each pair of btree and key type below is one differential run
-/// 38579070302 or nightly-seed run 39018152705 saw the reference refuse;
-/// a pair nobody observed is not judged (docs/clean-room.md).
+/// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot,
+/// snapshot_tree or inode allocation cursor at a position it cannot have,
+/// an accounting key holding more than its kind and btree, and an xattr
+/// whose lengths run past its value. Each pair of btree and key type below
+/// is one differential run 38579070302, nightly-seed run 39018152705 or
+/// nightly run 39756419740 saw the reference refuse; a pair nobody
+/// observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
@@ -1632,6 +1633,7 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (LRU, KEY_SET),
         (NEED_DISCARD, KEY_SET),
         (FREESPACE, KEY_SET),
+        (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -1668,6 +1670,16 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (SNAPSHOTS, KEY_SNAPSHOT) if k.pos.inode != 0 => r.add(
             "snapshot_pos_bad",
             format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
+        ),
+        // The inode allocation cursor is at 1:1:0 (S8). Nightly run
+        // 39756419740 rejects it moved to inode U64_MAX and to inode 0 as
+        // "k.p.inode bad" (#376).
+        (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR) if k.pos.inode != 1 => r.add(
+            "inode_alloc_cursor_inode_bad",
+            format!(
+                "btree {name}: inode_alloc_cursor at {}, not at inode 1",
+                k.pos
+            ),
         ),
         // Run 39018152705 also rejects tree 1 moved to inode 1 as
         // "bad pos"; the tree id remains in the offset (#254). Nightly run
@@ -1967,6 +1979,50 @@ mod tests {
                 assert_eq!(report.problems[0].kind, "snapshot_pos_bad");
                 assert!(report.problems[0].detail.contains(&k.pos.to_string()));
             }
+
+            let mut unrelated = Report::default();
+            check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    /// The logged_ops inode allocation cursor, at 1:1:0 (S8).
+    const KEY_INODE_ALLOC_CURSOR: u8 = 35;
+
+    fn cursor(inode: u64, snapshot: u32) -> Bkey {
+        let mut k = key(KEY_INODE_ALLOC_CURSOR, 1, vec![0; 16]);
+        k.pos.inode = inode;
+        k.pos.snapshot = snapshot;
+        k
+    }
+
+    #[test]
+    fn an_inode_alloc_cursor_at_a_snapshot_is_named() {
+        // Nightly differential run 39756419740 (seed 1659898): the reference
+        // refuses the cursor at 1:1:4294967294 as "nonzero snapshot" (#376).
+        let mut clean = Report::default();
+        check_key_fields(LOGGED_OPS, &cursor(1, 0), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let k = cursor(1, u32::MAX - 1);
+        let mut report = Report::default();
+        check_key_fields(LOGGED_OPS, &k, &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+        assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+    }
+
+    #[test]
+    fn an_inode_alloc_cursor_off_inode_1_is_named() {
+        // The same run refuses the cursor moved to inode U64_MAX (seed
+        // 1659851) and to inode 0 (seed 1659879) as "k.p.inode bad" (#376).
+        for inode in [0, u64::MAX] {
+            let k = cursor(inode, 0);
+            let mut report = Report::default();
+            check_key_fields(LOGGED_OPS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "inode_alloc_cursor_inode_bad");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
 
             let mut unrelated = Report::default();
             check_key_fields(SNAPSHOT_TREES, &k, &mut unrelated);

@@ -1532,6 +1532,16 @@ snapshot, so neither rule belongs to a key type or a btree alone: the
 checker judges exactly the observed pairs of btree and key type, and every
 other pair is an open question until an oracle is seen to answer it.
 
+Nightly run 39756419740 (seeds from 1659840) added the logged_ops
+inode_alloc_cursor to both rules' neighbours (#376). The cursor moved to
+snapshot 4294967294 on `default.img` and `block4k.img` (seed 1659898) was
+refused as "nonzero snapshot" (`bkey_snapshot_nonzero`). The cursor moved off
+inode 1, to U64_MAX on `aged.img` and `kernel.img` (seed 1659851) and to 0 on
+`kernel-rootsnap.img` (seed 1659879), was refused as "k.p.inode bad"
+(`inode_alloc_cursor_inode_bad`). Every fixture's cursor is at inode 1, so
+the checker reports a cursor at any other inode; its offset varies between
+fixtures and is not judged.
+
 Run 39018152705's aged-fixture mutation at seed 1659445 changed only the key
 type at `0:2040:0` in the freespace btree, from `set` to
 `logged_op_truncate`. The reference checker reported `invalid key type for
