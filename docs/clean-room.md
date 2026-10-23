@@ -1542,6 +1542,17 @@ inode 1, to U64_MAX on `aged.img` and `kernel.img` (seed 1659851) and to 0 on
 the checker reports a cursor at any other inode; its offset varies between
 fixtures and is not judged.
 
+Nightly run 38878947701 added three more pairs (#219). The root snapshot at
+`0:4294967295:0` given size 1 on `aged.img` (seed 1659430) and size
+4294967295 on `kernel.img` (seed 1659425) was refused as "size != 0"
+(`bkey_size_nonzero`). So was the subvolume_children `set` key at `1:2:0` of
+`kernel-rootsnap.img`, given the same two sizes (seeds 1659417 and 1659425).
+The snapshot_tree of tree 2, moved to snapshot 4294967294 on `kernel.img`
+(seed 1659439), was refused as "nonzero snapshot" (`bkey_snapshot_nonzero`).
+The checker judges exactly those pairs: snapshots/snapshot and
+subvolume_children/set for a size, and snapshot_trees/snapshot_tree for a
+snapshot.
+
 Run 39018152705's aged-fixture mutation at seed 1659445 changed only the key
 type at `0:2040:0` in the freespace btree, from `set` to
 `logged_op_truncate`. The reference checker reported `invalid key type for

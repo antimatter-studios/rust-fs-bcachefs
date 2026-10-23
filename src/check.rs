@@ -1633,11 +1633,12 @@ fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
 /// an accounting key holding more than its kind and btree, and an xattr
 /// whose lengths run past its value. Each pair of btree and key type below
 /// is one differential run 38579070302, nightly-seed run 39018152705 or
-/// nightly run 39756419740 saw the reference refuse; a pair nobody
-/// observed is not judged (docs/clean-room.md).
+/// nightly runs 38878947701 and 39756419740 saw the reference refuse; a pair
+/// nobody observed is not judged (docs/clean-room.md).
 fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const SNAPSHOT_TREES: u8 = 15;
     const LOGGED_OPS: u8 = 17;
+    const SUBVOLUME_CHILDREN: u8 = 19;
     const KEY_SNAPSHOT_TREE: u8 = 31;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
     /// An accounting key's kind, the top byte of its inode; the lister
@@ -1654,6 +1655,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
         (ACCOUNTING, KEY_ACCOUNTING),
+        // Nightly run 38878947701 (#219).
+        (SNAPSHOTS, KEY_SNAPSHOT),
+        (SUBVOLUME_CHILDREN, KEY_SET),
     ];
     const SNAPSHOT_ZERO: &[(u8, u8)] = &[
         (SUBVOLUMES, KEY_SUBVOLUME),
@@ -1662,6 +1666,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (NEED_DISCARD, KEY_SET),
         (FREESPACE, KEY_SET),
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
+        // Nightly run 38878947701 (#219).
+        (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
