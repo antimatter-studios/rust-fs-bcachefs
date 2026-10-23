@@ -1640,6 +1640,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const LOGGED_OPS: u8 = 17;
     const SUBVOLUME_CHILDREN: u8 = 19;
     const KEY_SNAPSHOT_TREE: u8 = 31;
+    const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+    const KEY_LOGGED_OP_FINSERT: u8 = 33;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
     /// An accounting key's kind, the top byte of its inode; the lister
     /// prints 6 as `btree`, with the btree's id in the byte below.
@@ -1766,6 +1768,18 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (btree_id::DIRENTS, key_type::XATTR) => r.add(
             "bkey_invalid_type_for_btree",
             format!("btree {name}: key {} is an xattr", k.pos),
+        ),
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659445) and
+        // nightly run 38878947701 (seed 1659394) saw the reference delete a
+        // subvolume_children key changed into a logged_op_truncate and into a
+        // logged_op_finsert, as "invalid key type for btree
+        // subvolume_children" (#266). No other type there is judged (#305).
+        (SUBVOLUME_CHILDREN, KEY_LOGGED_OP_TRUNCATE | KEY_LOGGED_OP_FINSERT) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!(
+                "btree {name}: key {} is a logged operation (type {})",
+                k.pos, k.key_type
+            ),
         ),
         _ => {}
     }
@@ -2282,6 +2296,37 @@ mod tests {
             let mut unrelated = Report::default();
             check_key_fields(btree_id::INODES, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_logged_operation_in_subvolume_children_is_named() {
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659445) and
+        // nightly run 38878947701 (seed 1659394) changed the set key at
+        // 1:2:0 to logged_op_truncate and to logged_op_finsert; the
+        // reference deleted each as "invalid key type for btree
+        // subvolume_children" (#266).
+        const SUBVOLUME_CHILDREN: u8 = 19;
+        const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+        const KEY_LOGGED_OP_FINSERT: u8 = 33;
+        let mut k = key(KEY_SET, 2, vec![]);
+        k.pos.inode = 1;
+        let mut clean = Report::default();
+        check_key_fields(SUBVOLUME_CHILDREN, &k, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        for kt in [KEY_LOGGED_OP_TRUNCATE, KEY_LOGGED_OP_FINSERT] {
+            k.key_type = kt;
+            let mut report = Report::default();
+            check_key_fields(SUBVOLUME_CHILDREN, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "type {kt}: {report:?}");
+            assert_eq!(report.problems[0].kind, "bkey_invalid_type_for_btree");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+            // logged_ops is where a logged operation belongs.
+            let mut unrelated = Report::default();
+            check_key_fields(LOGGED_OPS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "type {kt}: {unrelated:?}");
         }
     }
 

@@ -1758,6 +1758,16 @@ Tree 24 is now named using S1's existing documented order, also recorded
 in the planting helper. These observations use only the reference tools'
 printed output, never their source.
 
+Two runs added one more btree's observed type refusals (#266). Nightly-seed
+run 39018152705 (seed 1659445) changed the subvolume_children `set` key at
+`1:2:0` of `kernel-rootsnap.img` into a `logged_op_truncate`, and nightly run
+38878947701 (seed 1659394) changed it into a `logged_op_finsert`. The
+reference deleted each with "invalid key type for btree subvolume_children"
+(`bkey_invalid_type_for_btree`, exit 9), where this checker had called the
+image clean. The checker now reports exactly those two pairs, with the code
+it uses for an xattr found in dirents. Which other types subvolume_children
+holds stays open (#305).
+
 ### Inode key inode positions (S3, #255)
 
 The same [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
