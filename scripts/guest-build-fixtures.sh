@@ -239,6 +239,42 @@ for entry in "${sets[@]}"; do
     fi
 done
 
+# THE DEEP SET (#342): a tree 33 directories deep under /tree, for the
+# shared recursive export (tests/cli/test-export-tree.sh). Each level holds
+# one directory and one file; /tree/big is 3 MiB and one byte of seeded
+# bytes, unique on the image, so a test can damage it by its content; three
+# symlinks: to a file, dangling, and one leaving the tree upwards. Its own
+# source, so no other set's tree changes.
+step "deep (a tree 33 directories deep)"
+deep_src="$work/deep-src"
+python3 - "$deep_src" <<'PY'
+import os, random, sys
+root = os.path.join(sys.argv[1], "tree")
+os.makedirs(root)
+p = root
+for i in range(1, 34):
+    p = os.path.join(p, f"d{i}")
+    os.mkdir(p)
+    with open(os.path.join(p, f"f{i}"), "wb") as f:
+        f.write(b"file %d\n" % i)
+rng = random.Random(342)
+with open(os.path.join(root, "big"), "wb") as f:
+    f.write(bytes(rng.getrandbits(8) for _ in range(3 * 1024 * 1024 + 1)))
+open(os.path.join(root, "empty"), "wb").close()
+os.symlink("big", os.path.join(root, "link"))
+os.symlink("absent", os.path.join(root, "dangling"))
+os.symlink("../..", os.path.join(root, "d1", "up"))
+PY
+truncate -s 64M "$out/deep.img"
+bcachefs-ref format -q --source="${deep_src#"$ROOT"}" "$out/deep.img" > "$out/deep.format.txt" 2>&1
+manifest "$deep_src" "$out/deep.json"
+if ! bcachefs-ref fsck -n "$out/deep.img" > "$out/deep.fsck.txt" 2>&1; then
+    echo "the reference checker did not pass deep:" >&2
+    tail -n 30 "$out/deep.fsck.txt" >&2
+    exit 1
+fi
+rm -rf "$deep_src"
+
 # THE LARGE SET: one directory of 30000 entries, so the inodes and dirents
 # btrees are many leaves wide and a lookup that reads only its path can be
 # told from one that reads the whole tree (tests/oracle_cursor.rs).
