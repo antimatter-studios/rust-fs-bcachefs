@@ -1640,6 +1640,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     const LOGGED_OPS: u8 = 17;
     const SUBVOLUME_CHILDREN: u8 = 19;
     const KEY_SNAPSHOT_TREE: u8 = 31;
+    const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+    const KEY_LOGGED_OP_FINSERT: u8 = 33;
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
     /// An accounting key's kind, the top byte of its inode; the lister
     /// prints 6 as `btree`, with the btree's id in the byte below.
@@ -1766,6 +1768,18 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (btree_id::DIRENTS, key_type::XATTR) => r.add(
             "bkey_invalid_type_for_btree",
             format!("btree {name}: key {} is an xattr", k.pos),
+        ),
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659445) and
+        // nightly run 38878947701 (seed 1659394) saw the reference delete a
+        // subvolume_children key changed into a logged_op_truncate and into a
+        // logged_op_finsert, as "invalid key type for btree
+        // subvolume_children" (#266). No other type there is judged (#305).
+        (SUBVOLUME_CHILDREN, KEY_LOGGED_OP_TRUNCATE | KEY_LOGGED_OP_FINSERT) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!(
+                "btree {name}: key {} is a logged operation (type {})",
+                k.pos, k.key_type
+            ),
         ),
         _ => {}
     }
