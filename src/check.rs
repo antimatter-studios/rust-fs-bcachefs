@@ -1294,7 +1294,22 @@ fn snapshot_links(
         .filter(|k| k.key_type == KEY_SNAPSHOT && k.value.len() >= SNAP_TREE + 4)
         .map(|k| (k.pos.offset as u32, le32(&k.value, SNAP_TREE)))
         .collect();
-    for (id, (subvol, _)) in &snapshot_trees {
+    for (id, (subvol, root)) in &snapshot_trees {
+        // A tree's root snapshot is in the snapshots btree and names the
+        // tree back; the reference refuses a tree whose root is missing or
+        // in another tree as pointing "to missing/incorrect snapshot"
+        // (#267).
+        match snapshot_tree_of.get(root) {
+            Some(t) if t == id => {}
+            Some(other) => r.add(
+                "snapshot_tree_to_bad_root_snapshot",
+                format!("snapshot tree {id}'s root snapshot {root} is in tree {other}"),
+            ),
+            None => r.add(
+                "snapshot_tree_to_bad_root_snapshot",
+                format!("snapshot tree {id}'s root snapshot {root} is not in the snapshots btree"),
+            ),
+        }
         let Some(&(_, snap)) = subvolumes.get(subvol) else {
             r.add(
                 "snapshot_tree_to_missing_subvol",
@@ -2080,7 +2095,8 @@ mod tests {
             kinds(&[(1, tree(1, 100))], &snaps(42), &parents, &[1]),
             ["snapshot_bad_skiplist"]
         );
-        // A snapshot naming a tree the btree does not have.
+        // A snapshot naming a tree the btree does not have: tree 1's root
+        // is then in another tree as well (#267).
         assert_eq!(
             kinds(
                 &[(1, tree(1, 100))],
@@ -2088,9 +2104,13 @@ mod tests {
                 &[(100, 0)],
                 &[1]
             ),
-            ["snapshot_to_bad_snapshot_tree"]
+            [
+                "snapshot_tree_to_bad_root_snapshot",
+                "snapshot_to_bad_snapshot_tree"
+            ]
         );
-        // A tree whose root is not the root the snapshot's parents reach.
+        // A tree whose root is not the root the snapshot's parents reach:
+        // the snapshots btree lacks the tree's root, 100 (#267).
         assert_eq!(
             kinds(
                 &[(1, tree(1, 100))],
@@ -2098,9 +2118,13 @@ mod tests {
                 &[(50, 0)],
                 &[1]
             ),
-            ["snapshot_to_bad_snapshot_tree"]
+            [
+                "snapshot_tree_to_bad_root_snapshot",
+                "snapshot_to_bad_snapshot_tree"
+            ]
         );
-        // A parent cycle reaches no root.
+        // A parent cycle reaches no root, and the tree's root, 100, is not
+        // in the snapshots btree (#267).
         assert_eq!(
             kinds(
                 &[(1, tree(1, 100))],
@@ -2109,6 +2133,7 @@ mod tests {
                 &[1]
             ),
             [
+                "snapshot_tree_to_bad_root_snapshot",
                 "snapshot_to_bad_snapshot_tree",
                 "snapshot_to_bad_snapshot_tree"
             ]
