@@ -2073,7 +2073,12 @@ mod tests {
         // on kernel-written.img) stopped the reference in check_allocations
         // with "pointer to nonexistent device 1" (#163).
         let mut clean = Report::default();
-        check_key_device(btree_id::ALLOC, &on_device(key_type::ALLOC_V4, 0, 28), 0, &mut clean);
+        check_key_device(
+            btree_id::ALLOC,
+            &on_device(key_type::ALLOC_V4, 0, 28),
+            0,
+            &mut clean,
+        );
         assert!(clean.clean(), "{clean:?}");
 
         let k = on_device(key_type::ALLOC_V4, 1, 28);
