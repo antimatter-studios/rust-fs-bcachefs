@@ -25,6 +25,27 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    /// Whether this is the volume's current state refusing a change to its
+    /// names, not damage or a limit of this crate: a name that is not
+    /// there, or one of the writer's own refusals of a name already taken,
+    /// a directory that is not empty, and a name that is not a directory
+    /// where one is needed (src/write.rs reports those three as `Corrupt`,
+    /// in these words, which the C ABI maps to EEXIST and ENOTEMPTY). The
+    /// CLI's exit 4 (#394).
+    pub fn is_state_refusal(&self) -> bool {
+        match self {
+            Error::NotFound(_) => true,
+            Error::Corrupt(m) => {
+                m.ends_with(" already exists")
+                    || m == "the directory is not empty"
+                    || m.ends_with(" is not a directory")
+            }
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -52,5 +73,37 @@ impl std::error::Error for Error {}
 impl From<fs_core::Error> for Error {
     fn from(e: fs_core::Error) -> Self {
         Error::Io(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn a_state_refusal_is_told_apart_from_damage() {
+        // The writer's own words for what the volume's state refuses
+        // (src/write.rs), which the C ABI already maps to EEXIST and
+        // ENOTEMPTY (src/capi_write.rs): the CLI's exit 4 (#394).
+        for refusal in [
+            Error::NotFound(format!("{:?}", "x")),
+            Error::Corrupt(format!("{:?} already exists", "x")),
+            Error::Corrupt("the directory is not empty".into()),
+            Error::Corrupt(format!("{:?} is not a directory", "x")),
+            Error::Corrupt("inode 4096 is not a directory".into()),
+        ] {
+            assert!(refusal.is_state_refusal(), "{refusal}");
+        }
+        // A directory given to `rm` is the verb's mistake, not the state's,
+        // and damage is damage.
+        for other in [
+            Error::Corrupt(format!("{:?} is a directory", "x")),
+            Error::Corrupt("unpacked key shorter than 40 bytes".into()),
+            Error::Unsupported("the filesystem is encrypted".into()),
+            Error::Io("short read".into()),
+            Error::BadMagic { what: "superblock" },
+        ] {
+            assert!(!other.is_state_refusal(), "{other}");
+        }
     }
 }

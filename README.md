@@ -185,7 +185,10 @@ writes require a clean image and are not crash-safe.
 
 Capability, path and input refusals are checked before opening the image
 for writing. Symlinks are refused. Errors use the shared stderr contract:
-status 1 for failure, 2 for invalid arguments and 3 for unsupported operations.
+status 1 for failure, 2 for invalid arguments, 3 for unsupported operations,
+and 4 when the volume's state refuses `mkdir`, `rm`, `rmdir`, `mv` or `ln`: a
+directory that is not empty, a name already there, a missing target or a part
+of the path that is not a directory.
 
 ## Filesystem properties
 

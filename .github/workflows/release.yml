@@ -25,7 +25,7 @@ permissions:
 # `rust-deps-pinned` pre-commit hook refuses a lock that names a version
 # no workflow pins, which is what catches them being raised apart.
 env:
-  FS_CORE_REF: v0.3.15
+  FS_CORE_REF: v0.3.17
 
 jobs:
   # Cheap and release-specific: a tag that disagrees with Cargo.toml
@@ -84,9 +84,9 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@48d5d0460899baa30e9c24e5cb9e5a2e15bcd675 # v0.3.15
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@34e3610c298b3789dd1d39d3635e9aad38fae06a # v0.3.17
     with:
-      core-ref: v0.3.15
+      core-ref: v0.3.17
       toolchain: 1.95.0
 
   publish:

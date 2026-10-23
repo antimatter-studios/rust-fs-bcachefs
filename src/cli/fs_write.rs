@@ -135,6 +135,18 @@ fn failed(e: fs_bcachefs::Error) -> CliError {
     }
 }
 
+/// A namespace verb's error: what the volume's state refuses (a name not
+/// there, a name already taken, a directory that is not empty, a name that
+/// is not a directory where one is needed) is the CLI contract's exit 4,
+/// `refused` (EXIT_REFUSED); anything else is [`failed`]'s.
+fn state_failed(e: fs_bcachefs::Error) -> CliError {
+    if e.is_state_refusal() {
+        CliError::refused_by_state(e.to_string())
+    } else {
+        failed(e)
+    }
+}
+
 /// A path's parent directory, by inode, and its last component.
 fn split(target: &Target<'_>, p: &str) -> Result<(u64, Vec<u8>), CliError> {
     let trimmed = p.trim_end_matches('/');
@@ -148,7 +160,7 @@ fn split(target: &Target<'_>, p: &str) -> Result<(u64, Vec<u8>), CliError> {
     let fs = Filesystem::open(target.open()?).map_err(failed)?;
     let dir = fs
         .lookup(if dir.is_empty() { "/" } else { dir })
-        .map_err(failed)?;
+        .map_err(state_failed)?;
     Ok((dir, name.as_bytes().to_vec()))
 }
 
@@ -303,33 +315,38 @@ fn run_verb(target: &Target<'_>, verb: &str, m: &ArgMatches) -> Result<Outcome, 
         "mkdir" => {
             let (dir, name) = split(target, &s("path"))?;
             let mode = octal(&s("mode"))?;
-            let ino = open()?.mkdir(dir, &name, mode).map_err(failed)?;
+            let ino = open()?.mkdir(dir, &name, mode).map_err(state_failed)?;
             report.push(("ino", Json::UInt(ino)));
         }
         "rm" => {
             let (dir, name) = split(target, &s("path"))?;
-            open()?.unlink(dir, &name).map_err(failed)?;
+            open()?.unlink(dir, &name).map_err(state_failed)?;
         }
         "rmdir" => {
             let (dir, name) = split(target, &s("path"))?;
-            open()?.rmdir(dir, &name).map_err(failed)?;
+            open()?.rmdir(dir, &name).map_err(state_failed)?;
         }
         "mv" => {
             let (from_dir, from) = split(target, &s("from"))?;
             let (to_dir, to) = split(target, &s("to"))?;
             open()?
                 .rename(from_dir, &from, to_dir, &to)
-                .map_err(failed)?;
+                .map_err(state_failed)?;
         }
         "ln" => {
             let (dir, name) = split(target, &s("path"))?;
             let t = s("target");
             if m.get_flag("symbolic") {
-                let ino = open()?.symlink(dir, &name, t.as_bytes()).map_err(failed)?;
+                let ino = open()?
+                    .symlink(dir, &name, t.as_bytes())
+                    .map_err(state_failed)?;
                 report.push(("ino", Json::UInt(ino)));
             } else {
-                let ino = lookup(target, &t)?;
-                open()?.link(ino, dir, &name).map_err(failed)?;
+                let ino = Filesystem::open(target.open()?)
+                    .map_err(failed)?
+                    .lookup(&t)
+                    .map_err(state_failed)?;
+                open()?.link(ino, dir, &name).map_err(state_failed)?;
                 report.push(("ino", Json::UInt(ino)));
             }
         }
