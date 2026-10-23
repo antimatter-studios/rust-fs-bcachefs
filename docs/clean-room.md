@@ -140,6 +140,22 @@ all eight fixture sets.
   bpos is snapshot u32, offset u64, inode u64 (reverse of the documented
   order); an unpacked key is u64s, format (1 = unpacked), type, pad,
   version (12 bytes), size u32, bpos (S4, checked).
+- **The version (#358, fixed by #361)** of an unpacked key is its 12
+  bytes read as one little-endian integer: version_lo u64 at key bytes
+  4..12, then version_hi u32 at 12..16. S3 and S4: a hexdump of
+  `encrypted-compressed.img` (the `fixtures` artifact of run 39160355497)
+  read against the reference lister's output for it. The extent key the
+  lister printed as `2147483649:437:U32_MAX len 437 ver 1` holds 1 at
+  byte 4. Observed: version_lo at bytes 4..12. Read this way, all 44
+  extent keys on the image carry the version the lister printed
+  (`every_extent_key_version_agrees_with_the_lister`), and
+  `bkey::tests::an_unpacked_key_version_decodes_as_the_lister_printed_it`
+  pins the hexdumped key. Inferred, not observed: version_hi at bytes
+  12..16, from reading the 12 bytes as one integer. Every version the
+  lister printed on that image (1 to 41, 65577 and 65578) is below 2^32,
+  so no observed key has a high part. Until #361 the bytes were read
+  version_hi first, which gave version_lo 0 for every extent key on the
+  image, and so the wrong extent nonce.
 - Packed keys (format 0): the node's bkey_format is key_u64s u8, nr_fields
   u8, bits[6] u8, field_offset[6] u64 (S1 names the fields; S4 the layout,
   confirmed by the lister's `formats` mode). Fields are taken from the most
