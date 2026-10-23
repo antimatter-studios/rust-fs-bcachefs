@@ -164,7 +164,10 @@ elif name == 'python3':
         # Execute the real before/after assertion over the stand-in manifests.
         sys.argv = args
         exec(compile(code, '<manifest comparison>', 'exec'))
-    elif 'for i in range(30000)' in code or 'def write(path, data)' in code:
+    elif ('for i in range(30000)' in code or 'def write(path, data)' in code
+          or 'for i in range(1, 34)' in code):
+        # The large, sparse and deep (#342) sets' generators: a source
+        # directory the stand-in formatter can see.
         Path(args[1]).mkdir(parents=True)
     elif 'victim' in code and 'with open' in code:
         (Path(args[1]) / 'victim').write_text('victim')
