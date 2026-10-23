@@ -2247,8 +2247,9 @@ mod tests {
             assert!(report.clean(), "type {kt}: {report:?}");
         }
         // No run has moved a key of another btree to another device, so no
-        // other btree is judged (docs/clean-room.md).
-        for id in [btree_id::INODES, LRU, FREESPACE, NEED_DISCARD, BACKPOINTERS] {
+        // other btree is judged (docs/clean-room.md). Backpointers are,
+        // since #383.
+        for id in [btree_id::INODES, LRU, FREESPACE, NEED_DISCARD] {
             let mut report = Report::default();
             check_key_device(id, &on_device(KEY_SET, 1, 28), 0, &mut report);
             assert!(report.clean(), "btree {id}: {report:?}");
