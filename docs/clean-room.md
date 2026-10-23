@@ -1670,6 +1670,15 @@ of their keys to another device. The unit cases cover the rule, and
 `tests/oracle_check_key_fields.rs` repeats the three mutations on the
 fixtures they were seen on. Only black-box output was read.
 
+Nightly differential run 39756419740, re-run on the top of stack #365 as run
+39764355709, moved the backpointer at `0:390070272:0` of
+`kernel-rootsnap.img` to inode U64_MAX, its device (seed 1659851). The
+reference reported "check_btree_backpointers...backpointer for missing
+device", where this checker had called the image clean (#383). The checker
+now reports `backpointer_for_missing_device` for a live backpointer whose
+device is not the filesystem's one device. Freespace, need_discard and lru
+are still not judged by device.
+
 ### Snapshot inode positions (S3, #253)
 
 The current-main nightly-equivalent [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)
