@@ -1768,6 +1768,13 @@ image clean. The checker now reports exactly those two pairs, with the code
 it uses for an xattr found in dirents. Which other types subvolume_children
 holds stays open (#305).
 
+The same nightly-seed run changed the backpointer at `0:381681664:0` of
+`kernel-rootsnap.img` into an `inode_v3`, keeping its 32-byte value (seed
+1659466). The reference deleted it with "invalid key type for btree
+backpointers (inode_v3)" (`bkey_invalid_type_for_btree`), where this checker
+had called the image clean (#268). The checker now reports that one pair.
+Which other types backpointers holds stays open (#305).
+
 ### Inode key inode positions (S3, #255)
 
 The same [run 39018152705](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39018152705)

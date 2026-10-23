@@ -1781,6 +1781,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 k.pos, k.key_type
             ),
         ),
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659466) saw the
+        // reference delete a backpointer changed into an inode_v3 as
+        // "invalid key type for btree backpointers (inode_v3)" (#268). No
+        // other type there is judged (#305).
+        (BACKPOINTERS, key_type::INODE_V3) => r.add(
+            "bkey_invalid_type_for_btree",
+            format!("btree {name}: key {} is an inode", k.pos),
+        ),
         _ => {}
     }
 }
