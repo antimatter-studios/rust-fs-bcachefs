@@ -383,3 +383,19 @@ fn a_snapshot_tree_at_a_snapshot_is_refused() {
     let snap = Change::Snapshot(u32::MAX - 1);
     refused("kernel", SNAPSHOT_TREES, SNAPSHOT_TREE, any, snap, kind);
 }
+
+/// Nightly-seed run 39018152705 changed kernel-rootsnap.img's
+/// subvolume_children key at 1:2:0 into a logged_op_truncate (seed 1659445),
+/// and nightly run 38878947701 into a logged_op_finsert (seed 1659394); the
+/// reference deleted each as "invalid key type for btree subvolume_children"
+/// (#266).
+#[test]
+fn a_logged_operation_in_subvolume_children_is_refused() {
+    const LOGGED_OP_TRUNCATE: u8 = 32;
+    const LOGGED_OP_FINSERT: u8 = 33;
+    let kind = "bkey_invalid_type_for_btree";
+    for kt in [LOGGED_OP_TRUNCATE, LOGGED_OP_FINSERT] {
+        let to = Change::KeyType(kt);
+        refused("kernel-rootsnap", SUBVOLUME_CHILDREN, SET, any, to, kind);
+    }
+}

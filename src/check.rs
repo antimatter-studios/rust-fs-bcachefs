@@ -2286,6 +2286,37 @@ mod tests {
     }
 
     #[test]
+    fn a_logged_operation_in_subvolume_children_is_named() {
+        // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659445) and
+        // nightly run 38878947701 (seed 1659394) changed the set key at
+        // 1:2:0 to logged_op_truncate and to logged_op_finsert; the
+        // reference deleted each as "invalid key type for btree
+        // subvolume_children" (#266).
+        const SUBVOLUME_CHILDREN: u8 = 19;
+        const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
+        const KEY_LOGGED_OP_FINSERT: u8 = 33;
+        let mut k = key(KEY_SET, 2, vec![]);
+        k.pos.inode = 1;
+        let mut clean = Report::default();
+        check_key_fields(SUBVOLUME_CHILDREN, &k, &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        for kt in [KEY_LOGGED_OP_TRUNCATE, KEY_LOGGED_OP_FINSERT] {
+            k.key_type = kt;
+            let mut report = Report::default();
+            check_key_fields(SUBVOLUME_CHILDREN, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "type {kt}: {report:?}");
+            assert_eq!(report.problems[0].kind, "bkey_invalid_type_for_btree");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+
+            // logged_ops is where a logged operation belongs.
+            let mut unrelated = Report::default();
+            check_key_fields(LOGGED_OPS, &k, &mut unrelated);
+            assert!(unrelated.clean(), "type {kt}: {unrelated:?}");
+        }
+    }
+
+    #[test]
     fn an_inode_key_with_a_nonzero_inode_position_is_named() {
         // Run 39018152705, seed 1659490 (#255): the reference rejects
         // inode_v3 at U64_MAX:2147483849:U32_MAX, leaving its value intact.
