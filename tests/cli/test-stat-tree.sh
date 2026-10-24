@@ -162,7 +162,7 @@ fi
 fs.bcachefs "$FIXTURES/default.img" stat /no-such-path >"$SANDBOX/m.out" 2>"$SANDBOX/m.err"
 check "stat of a missing path exits 1" test $? -eq 1
 check "stat of a missing path prints nothing on stdout" test ! -s "$SANDBOX/m.out"
-check "stat of a missing path is the shared error, code 1" jq -e '.code == 1' "$SANDBOX/m.err" >/dev/null
+check "stat of a missing path is the not_found kind" jq -e '.code == 1 and .kind == "not_found"' "$SANDBOX/m.err" >/dev/null
 # A non-UTF-8 PATH is resolved as bytes, as ls resolves it: one that names
 # nothing is not found (1), not a malformed command line (2).
 fs.bcachefs "$FIXTURES/default.img" stat "$(printf '/\377')" >/dev/null 2>&1

@@ -871,3 +871,36 @@ fn failed(e: fs_bcachefs::Error) -> CliError {
 fn open(dev: Device) -> Result<Filesystem<Device>, CliError> {
     Filesystem::open(dev).map_err(failed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `kind` the JSON error carries, as compact JSON.
+    fn json_kind(e: &CliError) -> Option<String> {
+        e.to_json().get("kind").map(Json::to_compact)
+    }
+
+    #[test]
+    fn a_missing_path_is_the_not_found_kind() {
+        // What lookup and resolve_bytes answer for a name that is not
+        // there, or for one under a parent that is not there.
+        let missing = || fs_bcachefs::Error::NotFound("/missing/f".into());
+        for e in [failed(missing()), at(Path::new("/missing/f"), missing())] {
+            let json = e.to_json().to_compact();
+            assert_eq!(e.code, fs_core::cli::output::EXIT_FAILED, "{json}");
+            assert_eq!(json_kind(&e).as_deref(), Some("\"not_found\""), "{json}");
+        }
+    }
+
+    #[test]
+    fn damage_and_limits_carry_no_kind() {
+        for e in [
+            failed(fs_bcachefs::Error::Corrupt("btree node".into())),
+            failed(fs_bcachefs::Error::Unsupported("encryption".into())),
+            at(Path::new("/f"), fs_bcachefs::Error::Io("short read".into())),
+        ] {
+            assert_eq!(json_kind(&e), None, "{}", e.to_json().to_compact());
+        }
+    }
+}
