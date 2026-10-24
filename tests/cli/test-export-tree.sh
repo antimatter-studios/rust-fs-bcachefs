@@ -210,12 +210,16 @@ for replace in no yes; do
 done
 check 'export changed no image' cmp -s "$deep" "$SANDBOX/before.img"
 
-# Hard links and times, judged by the reference mount's own lstat.
+# Hard links and times, judged by the reference mount's own lstat. The
+# export goes under a `*.noindex` directory, which Spotlight never indexes:
+# on the macOS runner its indexer read freshly exported files before the
+# check's lstat, moving their access times to the time of the run (#405).
 aged="$FIXTURES/aged.img"
-export_tree "$aged" / "$SANDBOX/aged" --preserve=links,times
+mkdir -p "$SANDBOX/aged.noindex"
+export_tree "$aged" / "$SANDBOX/aged.noindex/aged" --preserve=links,times
 check 'the aged export is complete' test "$status" -eq 0
 check 'aged export fails nothing' jreport '.failed == 0 and .refused == 0'
-check 'aged export matches the reference mount' tree "$FIXTURES/aged.json" / "$SANDBOX/aged" content,links,hard,times
+check 'aged export matches the reference mount' tree "$FIXTURES/aged.json" / "$SANDBOX/aged.noindex/aged" content,links,hard,times
 
 if [ -s "$SANDBOX/tree.err" ]; then
     echo "tree mismatches:" >&2
