@@ -32,7 +32,7 @@ path = "src/lib.rs"
 libfuzzer-sys = "0.4"
 rust-fs-bcachefs = { path = "..", features = ["write"] }
 # The device traits the whole-image overlay implements.
-rust-fs-core = { path = "../../rust-fs-core", version = "0.3.17" }
+rust-fs-core = { path = "../../rust-fs-core", version = "0.4.2" }
 
 [[bin]]
 name = "superblock"

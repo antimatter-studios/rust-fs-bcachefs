@@ -957,7 +957,7 @@ SOFTWARE.
 
 ## rust-fs-core
 
-rust-fs-core 0.3.17, licensed MIT (https://github.com/antimatter-studios/rust-fs-core).
+rust-fs-core 0.4.2, licensed MIT (https://github.com/antimatter-studios/rust-fs-core).
 This notice is its `LICENSE`.
 
 ```text
