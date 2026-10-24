@@ -121,4 +121,23 @@ for verb in read cat; do
     check "$verb rename failure removes its partial" test ! -e "$SANDBOX/directory-$verb.partial"
 done
 
+# A path that is not there: status 1, nothing on stdout, and the shared
+# contract's `not_found` kind, which a script matches whatever the message
+# says. A missing parent is the same answer as a missing leaf.
+need_fixture default
+not_found() {
+    fs.bcachefs "$FIXTURES/default.img" "$@" >"$SANDBOX/nf.out" 2>"$SANDBOX/nf.err"
+    check "$* exits 1" test $? -eq 1
+    check "$* prints nothing on stdout" test ! -s "$SANDBOX/nf.out"
+    check "$* reports the not_found kind" jq -e '.code == 1 and .kind == "not_found"' "$SANDBOX/nf.err" >/dev/null
+}
+not_found ls /missing
+not_found ls /missing/f
+not_found read /missing
+not_found read /missing/f
+not_found export /missing "$SANDBOX/exported"
+not_found export --recursive /missing "$SANDBOX/exported-tree"
+check "export of a missing path writes no destination" test ! -e "$SANDBOX/exported"
+check "export --recursive of a missing path writes no destination" test ! -e "$SANDBOX/exported-tree"
+
 finish

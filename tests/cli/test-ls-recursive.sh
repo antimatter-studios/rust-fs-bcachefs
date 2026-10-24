@@ -76,7 +76,7 @@ done
 fs.bcachefs "$img" ls -R /missing >"$SANDBOX/out" 2>"$SANDBOX/err"
 check 'missing starting path exits 1' test $? -eq 1
 check 'missing starting path has no report' test ! -s "$SANDBOX/out"
-jcheck 'missing starting path is named' '.code == 1 and (.error|contains("/missing"))' "$SANDBOX/err"
+jcheck 'missing starting path is the not_found kind' '.code == 1 and .kind == "not_found"' "$SANDBOX/err"
 { head -c 1048576 /dev/zero; cat "$img"; } >"$SANDBOX/whole.img"
 fs.bcachefs "$SANDBOX/whole.img" ls -R / --offset 1048576 >"$SANDBOX/offset" 2>/dev/null
 check 'recursive walk honors the device offset' test $? -eq 0

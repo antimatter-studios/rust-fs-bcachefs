@@ -520,13 +520,16 @@ impl TreeExport<'_> {
 }
 
 /// A path in an error message: lossy, for people; the bytes are what is
-/// resolved.
+/// resolved. A missing path keeps [`failed`]'s `not_found` kind.
 fn at(path: &Path, e: fs_bcachefs::Error) -> CliError {
-    match failed(e) {
-        e if e.code == fs_core::cli::output::EXIT_FAILED => {
-            CliError::failed(format!("{}: {}", path.display(), e.message))
-        }
-        e => e,
+    match e {
+        fs_bcachefs::Error::NotFound(_) => CliError::not_found(format!("{}: {e}", path.display())),
+        e => match failed(e) {
+            e if e.code == fs_core::cli::output::EXIT_FAILED => {
+                CliError::failed(format!("{}: {}", path.display(), e.message))
+            }
+            e => e,
+        },
     }
 }
 
@@ -756,7 +759,11 @@ fn ls_recursive(
         .expect("defaulted")
         .as_bytes();
     let at = |path: &[u8], e: fs_bcachefs::Error| {
-        CliError::failed(format!("{}: {e}", String::from_utf8_lossy(path)))
+        let message = format!("{}: {e}", String::from_utf8_lossy(path));
+        match e {
+            fs_bcachefs::Error::NotFound(_) => CliError::not_found(message),
+            _ => CliError::failed(message),
+        }
     };
     let root = fs.resolve_bytes(path).map_err(|e| at(path, e))?;
     let inode = fs.inode_at(root).map_err(|e| at(path, e))?;
@@ -861,13 +868,56 @@ fn ls_recursive(
     Ok(report)
 }
 
+/// A library error as the CLI contract has it. `NotFound` is the library's
+/// "the path or key does not exist" (the C ABI's ENOENT), so it is the
+/// contract's `not_found` kind, still exit 1, which a script matches
+/// whatever the message says.
 fn failed(e: fs_bcachefs::Error) -> CliError {
     match e {
         fs_bcachefs::Error::Unsupported(m) => CliError::not_implemented(m),
+        fs_bcachefs::Error::NotFound(_) => CliError::not_found(e.to_string()),
         e => CliError::failed(e.to_string()),
     }
 }
 
+/// Opening looks nothing up by path, so a structure missing there is
+/// damage, an ordinary failure, not a missing path.
 fn open(dev: Device) -> Result<Filesystem<Device>, CliError> {
-    Filesystem::open(dev).map_err(failed)
+    Filesystem::open(dev).map_err(|e| match e {
+        fs_bcachefs::Error::NotFound(_) => CliError::failed(e.to_string()),
+        e => failed(e),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `kind` the JSON error carries, as compact JSON.
+    fn json_kind(e: &CliError) -> Option<String> {
+        e.to_json().get("kind").map(Json::to_compact)
+    }
+
+    #[test]
+    fn a_missing_path_is_the_not_found_kind() {
+        // What lookup and resolve_bytes answer for a name that is not
+        // there, or for one under a parent that is not there.
+        let missing = || fs_bcachefs::Error::NotFound("/missing/f".into());
+        for e in [failed(missing()), at(Path::new("/missing/f"), missing())] {
+            let json = e.to_json().to_compact();
+            assert_eq!(e.code, fs_core::cli::output::EXIT_FAILED, "{json}");
+            assert_eq!(json_kind(&e).as_deref(), Some("\"not_found\""), "{json}");
+        }
+    }
+
+    #[test]
+    fn damage_and_limits_carry_no_kind() {
+        for e in [
+            failed(fs_bcachefs::Error::Corrupt("btree node".into())),
+            failed(fs_bcachefs::Error::Unsupported("encryption".into())),
+            at(Path::new("/f"), fs_bcachefs::Error::Io("short read".into())),
+        ] {
+            assert_eq!(json_kind(&e), None, "{}", e.to_json().to_compact());
+        }
+    }
 }
