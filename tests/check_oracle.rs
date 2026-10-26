@@ -301,6 +301,62 @@ fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
     }
 }
 
+/// The reference recomputes alloc_v4's stripe-sector count from the bucket.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_wrong_alloc_stripe_sector_count() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-alloc-stripe-sectors");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("stripe-sectors.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+
+    let root = fs_bcachefs::Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/")
+        .unwrap();
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer
+        .create_file(root, b"stripe-sectors.bin", &vec![0x5a; 64 << 10], 0o644)
+        .unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the writer's unchanged image must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let alloc = btree::walk(&dev, &sb, btree_id::ALLOC)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == bkey::key_type::ALLOC_V4 && k.value.get(14) == Some(&4))
+        .expect("the writer's file has a user alloc_v4 key");
+    let original = u16::from_le_bytes(alloc.value[56..58].try_into().unwrap());
+    let mut wrong = alloc.clone();
+    wrong.value[56..58].copy_from_slice(&original.wrapping_add(1).to_le_bytes());
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(btree_id::ALLOC, vec![wrong]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(bad && text.contains("wrong stripe_sectors"), "{text}");
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "alloc_stripe_sectors_wrong"),
+        "stripe_sectors was not checked against the reference finding: {:?}\n{text}",
+        ours.problems
+    );
+}
+
 /// #247's primary-only mutation, with equal-sequence backup controls and
 /// a newer-primary control. Ask the actual checker before comparing ours.
 #[test]

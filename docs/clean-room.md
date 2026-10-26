@@ -796,9 +796,13 @@ checker judged each attempt and named what was missing until nothing was.
   it became non-empty, word 1 flags in byte 0 (0x23 on every bucket in use;
   bit 0 need_discard, bit 1 need_inc_gen), gen byte 4, oldest_gen byte 5,
   data type byte 6 (1 sb, 2 journal, 3 btree, 4 user, 9 need_discard),
-  word 2 dirty sectors, word 3 read clock, word 4 write clock, word 6 the
-  journal seq when it became empty (S3 + S4, field by field against the
-  lister over 259 keys and the reused buckets of `aged`).
+  word 2 dirty sectors (low half) and cached sectors (high half), word 3 read
+  clock, word 4 write clock, word 5's low half stripe refcount, word 6 the
+  journal seq when it became empty, and word 7's low u16 stripe sectors. A
+  one-sector change at value bytes 56..57 makes the reference report
+  `wrong stripe_sectors`; all 29 single-device alloc listings show zero
+  (S3 + S4, field by field against the lister over 259 keys and the reused
+  buckets of `aged`).
 - Generations: bucket_gens (id 14) keys of type 30 at `dev:bucket/256`,
   256 one-byte generations; a pointer carries its bucket's (S3 + S4).
 - Data extents: a crc32 entry (crc32c from zero, type 5; sizes minus one in

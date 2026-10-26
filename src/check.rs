@@ -84,6 +84,9 @@ const KEY_BACKPOINTER: u8 = 28;
 /// An alloc_v4 key's data type, byte 6 of its second word, and the type of
 /// a bucket holding file data (docs/clean-room.md, "Allocating space").
 const ALLOC_DATA_TYPE: usize = 14;
+/// alloc_v4's stripe-sector count, observed at value bytes 56..58 by
+/// changing one field at a time and reading the reference checker's verdict.
+const ALLOC_STRIPE_SECTORS: usize = 56;
 const DATA_BTREE: u8 = 3;
 const DATA_USER: u8 = 4;
 /// The lru btree, and the key type of its entries: a partly filled bucket's
@@ -772,6 +775,30 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // generation ahead of its alloc key). So they are judged against the
     // rest only on a filesystem shut down cleanly (#163).
     let judge_alloc = sb.is_clean();
+    // This checker supports one-device filesystems. A stripe spans devices,
+    // so none of the alloc keys it can judge may claim stripe sectors (#163).
+    if judge_alloc && sb.nr_devices == 1 {
+        for k in trees
+            .get(&btree_id::ALLOC)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+        {
+            let Some(sectors) = k.value.get(ALLOC_STRIPE_SECTORS..ALLOC_STRIPE_SECTORS + 2) else {
+                continue;
+            };
+            let sectors = u16::from_le_bytes(sectors.try_into().unwrap());
+            if sectors != 0 {
+                r.add(
+                    "alloc_stripe_sectors_wrong",
+                    format!(
+                        "alloc key {} has {sectors} stripe sectors on a single-device filesystem",
+                        k.pos
+                    ),
+                );
+            }
+        }
+    }
     // A written extent's bucket is a user bucket in its alloc key; a bucket
     // with no alloc key is free (#163). An unwritten extent's is not judged:
     // no fixture shows what the reference gives it.

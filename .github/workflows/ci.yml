@@ -183,15 +183,16 @@ jobs:
 
   # The reference tools build the fixtures, inside the harness VM, on an
   # x86_64 runner with KVM. Nothing of theirs ever runs on the runner.
-  # A green build takes 13 to 19 minutes (the ten before 2026-10-09); the
-  # limit is about twice that, so a hung reference mount fails the run in
-  # half an hour, not ninety minutes (#94's runs hung until 90).
+  # A green `chore fixtures` run takes 13 to 19 minutes. The full job also
+  # provisions KVM and packs the result: run 40309210102 spent 20m27s setting
+  # up and 14m13s generating fixtures, then hit 35m while packing. The 45m
+  # limit leaves 10m for packing and upload; #94's runs hung until 90m.
   fixtures:
     name: fixtures (harness VM, x86_64 KVM)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
