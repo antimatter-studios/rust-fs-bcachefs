@@ -690,10 +690,7 @@ fn an_xattr_key_in_the_dirents_btree_is_reported() {
     let img = scratch("dirents-xattr");
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(
-        !report
-            .problems
-            .iter()
-            .any(|p| p.kind == "bkey_invalid_type_for_btree"),
+        !report.problems.iter().any(|p| p.kind == "invalid_bkey"),
         "the unchanged fixture already reports an invalid key: {:?}",
         report.problems
     );
@@ -724,8 +721,7 @@ fn an_xattr_key_in_the_dirents_btree_is_reported() {
         report
             .problems
             .iter()
-            .any(|p| p.kind == "bkey_invalid_type_for_btree"
-                && p.detail.contains(&dirent.pos.to_string())),
+            .any(|p| p.kind == "invalid_bkey" && p.detail.contains(&dirent.pos.to_string())),
         "the xattr key in dirents at {} was not reported: {:?}",
         dirent.pos,
         report.problems

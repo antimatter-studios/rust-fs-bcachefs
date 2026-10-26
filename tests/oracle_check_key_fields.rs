@@ -324,7 +324,7 @@ fn a_freespace_key_at_a_snapshot_is_refused() {
 /// for btree dirents (xattr)".
 #[test]
 fn an_xattr_in_dirents_is_refused() {
-    let kind = "bkey_invalid_type_for_btree";
+    let kind = "invalid_bkey";
     let xattr = Change::KeyType(key_type::XATTR);
     refused(
         "kernel-rootsnap",
@@ -393,7 +393,7 @@ fn a_snapshot_tree_at_a_snapshot_is_refused() {
 fn a_logged_operation_in_subvolume_children_is_refused() {
     const LOGGED_OP_TRUNCATE: u8 = 32;
     const LOGGED_OP_FINSERT: u8 = 33;
-    let kind = "bkey_invalid_type_for_btree";
+    let kind = "invalid_bkey";
     for kt in [LOGGED_OP_TRUNCATE, LOGGED_OP_FINSERT] {
         let to = Change::KeyType(kt);
         refused("kernel-rootsnap", SUBVOLUME_CHILDREN, SET, any, to, kind);
@@ -406,7 +406,7 @@ fn a_logged_operation_in_subvolume_children_is_refused() {
 /// (inode_v3)" (#268).
 #[test]
 fn an_inode_in_backpointers_is_refused() {
-    let kind = "bkey_invalid_type_for_btree";
+    let kind = "invalid_bkey";
     let to = Change::KeyType(key_type::INODE_V3);
     refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
 }
@@ -418,7 +418,7 @@ fn an_inode_in_backpointers_is_refused() {
 /// u64s 9 type snapshot" (#378).
 #[test]
 fn a_snapshot_in_backpointers_is_refused() {
-    let kind = "bkey_invalid_type_for_btree";
+    let kind = "invalid_bkey";
     let to = Change::KeyType(SNAPSHOT);
     refused("kernel-rootsnap", BACKPOINTERS, BACKPOINTER, any, to, kind);
 }

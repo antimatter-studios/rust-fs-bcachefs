@@ -1831,6 +1831,6 @@ fn an_xattr_key_in_the_dirents_btree_is_refused_by_the_reference() {
 
     let line = assert_reference_refuses(&img, &["btree=dirents", "type xattr"]);
     eprintln!("reference: {line}");
-    assert_ours_reports(&img, "bkey_invalid_type_for_btree", &dirent.pos.to_string());
+    assert_ours_reports(&img, "invalid_bkey", &dirent.pos.to_string());
     std::fs::remove_file(&img).ok();
 }
