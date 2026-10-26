@@ -119,32 +119,51 @@ const ACCT_BTREE: u64 = 6;
 const LOGGED_OPS: u8 = 17;
 const RECONCILE_WORK_PHYS: u8 = 24;
 const KEY_COOKIE: u8 = 3;
-/// The key types the reference lets every btree hold: deleted, whiteout,
-/// error and cookie. It judges a key's type before its value size (an
-/// inode_generation key with no value is refused for its type in
-/// reconcile_work_phys, for its value size in inodes), and of the last
-/// three it refuses none for its type in any btree, only for its value
-/// size, size or snapshot (#163, run 39020187551).
-const KEY_TYPES_ANYWHERE: [u8; 4] = [
+/// Common type allowances from the complete, one-key-per-image reference
+/// matrix (#305, docs/clean-room.md). Deleted keys do not survive merging
+/// and keep their earlier allowance. Type 40 is the one unnamed boundary
+/// probe; no meaning or rule for other unnamed types is inferred.
+const KEY_TYPES_ANYWHERE: [u8; 6] = [
     key_type::DELETED,
     key_type::WHITEOUT,
     key_type::ERROR,
     KEY_COOKIE,
+    KEY_SET,
+    40,
 ];
-/// The key types a btree may hold beyond those. The reference has refused
-/// logged_op_truncate and lru in freespace (#257, #264), lru in xattrs
-/// (#259), and inode_v3 in logged_ops (#263); logged_ops holds only its
-/// logged operations and the inode allocation cursor, accounting holds
-/// accounting keys, and those three btrees hold set keys.
-/// Run 39037096192 also reports no type refusal for unnamed type 40 in
-/// these three btrees; no other unnamed type has been judged.
-/// Every other btree is #305.
+/// Every documented btree's additional types, from the reference's
+/// complete printed verdicts, not its implementation. Empty rows still
+/// participate in checking: they permit only the common types above.
 const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
-    (btree_id::XATTRS, &[key_type::XATTR]),
-    (FREESPACE, &[KEY_SET]),
-    (LOGGED_OPS, &[KEY_SET, 32, 33, 35, 37, 39, 40]),
-    (ACCOUNTING, &[KEY_SET, KEY_ACCOUNTING, 40]),
-    (RECONCILE_WORK_PHYS, &[KEY_SET, 40]),
+    (btree_id::EXTENTS, &[6, 7, 15, 17, 36]),
+    (btree_id::INODES, &[8, 9, 23, 29]),
+    (btree_id::DIRENTS, &[4, 10]),
+    (btree_id::XATTRS, &[4, 11]),
+    (btree_id::ALLOC, &[12, 20, 24, 27]),
+    (5, &[13]), // quotas
+    (6, &[14]), // stripes
+    (btree_id::REFLINK, &[16, 19]),
+    (SUBVOLUMES, &[KEY_SUBVOLUME]),
+    (SNAPSHOTS, &[KEY_SNAPSHOT]),
+    (LRU, &[]),
+    (FREESPACE, &[]),
+    (NEED_DISCARD, &[]),
+    (BACKPOINTERS, &[KEY_BACKPOINTER]),
+    (BUCKET_GENS, &[KEY_BUCKET_GENS]),
+    (SNAPSHOT_TREES, &[KEY_SNAPSHOT_TREE]),
+    (16, &[]), // deleted_inodes
+    (LOGGED_OPS, &[32, 33, 35, 37, 39]),
+    (18, &[]), // reconcile_work
+    (19, &[]), // subvolume_children
+    (ACCOUNTING, &[KEY_ACCOUNTING]),
+    (21, &[]),                // reconcile_hipri
+    (22, &[]),                // reconcile_pending
+    (23, &[KEY_BACKPOINTER]), // reconcile_scan
+    (RECONCILE_WORK_PHYS, &[]),
+    (25, &[]),                // reconcile_hipri_phys
+    (26, &[]),                // bucket_to_stripe
+    (27, &[KEY_BACKPOINTER]), // stripe_backpointers
+    (28, &[38]),              // damage
 ];
 /// A dirent's type when it names a subvolume (the lister's `type subvol`).
 const DT_SUBVOL: u8 = 16;
@@ -296,6 +315,18 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     for (id, allowed) in KEY_TYPES_ALLOWED {
         for k in trees.get(id).into_iter().flatten() {
             if !KEY_TYPES_ANYWHERE.contains(&k.key_type) && !allowed.contains(&k.key_type) {
+                let at = format!("btree {}: key {} ", journal::btree_name(*id), k.pos);
+                // The key-field checks already recognized a few wrong-type
+                // pairs. Keep one finding for that exact key, under the
+                // same type code the complete reference matrix requires.
+                if let Some(problem) = r
+                    .problems
+                    .iter_mut()
+                    .find(|p| p.kind == "bkey_invalid_type_for_btree" && p.detail.starts_with(&at))
+                {
+                    problem.kind = "invalid_bkey";
+                    continue;
+                }
                 r.add(
                     "invalid_bkey",
                     format!(
@@ -1848,7 +1879,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         // nightly run 38878947701 (seed 1659394) saw the reference delete a
         // subvolume_children key changed into a logged_op_truncate and into a
         // logged_op_finsert, as "invalid key type for btree
-        // subvolume_children" (#266). No other type there is judged (#305).
+        // subvolume_children" (#266). The general type table also judges
+        // the remaining documented types (#305).
         (SUBVOLUME_CHILDREN, KEY_LOGGED_OP_TRUNCATE | KEY_LOGGED_OP_FINSERT) => r.add(
             "bkey_invalid_type_for_btree",
             format!(
@@ -1858,8 +1890,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         ),
         // Nightly-seed run 39018152705 (kernel-rootsnap seed 1659466) saw the
         // reference delete a backpointer changed into an inode_v3 as
-        // "invalid key type for btree backpointers (inode_v3)" (#268). No
-        // other type there is judged (#305).
+        // "invalid key type for btree backpointers (inode_v3)" (#268).
+        // The general type table covers the remaining types too (#305).
         (BACKPOINTERS, key_type::INODE_V3) => r.add(
             "bkey_invalid_type_for_btree",
             format!("btree {name}: key {} is an inode", k.pos),
@@ -1883,16 +1915,45 @@ mod tests {
 
     #[test]
     fn judged_key_types_match_the_recorded_reference_verdicts() {
-        // Non-crashing, one-key images judged in run 39037096192's
-        // guest suite. These are type verdicts, not value validation.
-        for (id, accepted) in [
-            (17, vec![0, 1, 2, 3, 25, 32, 33, 35, 37, 39, 40]),
-            (20, vec![0, 1, 2, 3, 25, 34, 40]),
-            (24, vec![0, 1, 2, 3, 25, 40]),
-        ] {
+        // Complete local guest matrix, 2026-10-26: no unresolved types,
+        // failed plantings or reference crashes. These are type verdicts,
+        // not value validation (docs/clean-room.md, #305).
+        let recorded: &[(u8, &[u8])] = &[
+            (0, &[0, 1, 2, 3, 6, 7, 15, 17, 25, 36, 40]),
+            (1, &[0, 1, 2, 3, 8, 9, 23, 25, 29, 40]),
+            (2, &[0, 1, 2, 3, 4, 10, 25, 40]),
+            (3, &[0, 1, 2, 3, 4, 11, 25, 40]),
+            (4, &[0, 1, 2, 3, 12, 20, 24, 25, 27, 40]),
+            (5, &[0, 1, 2, 3, 13, 25, 40]),
+            (6, &[0, 1, 2, 3, 14, 25, 40]),
+            (7, &[0, 1, 2, 3, 16, 19, 25, 40]),
+            (8, &[0, 1, 2, 3, 21, 25, 40]),
+            (9, &[0, 1, 2, 3, 22, 25, 40]),
+            (10, &[0, 1, 2, 3, 25, 40]),
+            (11, &[0, 1, 2, 3, 25, 40]),
+            (12, &[0, 1, 2, 3, 25, 40]),
+            (13, &[0, 1, 2, 3, 25, 28, 40]),
+            (14, &[0, 1, 2, 3, 25, 30, 40]),
+            (15, &[0, 1, 2, 3, 25, 31, 40]),
+            (16, &[0, 1, 2, 3, 25, 40]),
+            (17, &[0, 1, 2, 3, 25, 32, 33, 35, 37, 39, 40]),
+            (18, &[0, 1, 2, 3, 25, 40]),
+            (19, &[0, 1, 2, 3, 25, 40]),
+            (20, &[0, 1, 2, 3, 25, 34, 40]),
+            (21, &[0, 1, 2, 3, 25, 40]),
+            (22, &[0, 1, 2, 3, 25, 40]),
+            (23, &[0, 1, 2, 3, 25, 28, 40]),
+            (24, &[0, 1, 2, 3, 25, 40]),
+            (25, &[0, 1, 2, 3, 25, 40]),
+            (26, &[0, 1, 2, 3, 25, 40]),
+            (27, &[0, 1, 2, 3, 25, 28, 40]),
+            (28, &[0, 1, 2, 3, 25, 38, 40]),
+        ];
+        assert_eq!(KEY_TYPES_ALLOWED.len(), recorded.len());
+        for (id, accepted) in recorded {
             let allowed = KEY_TYPES_ALLOWED
                 .iter()
-                .find(|(tree, _)| *tree == id)
+                .find(|(tree, _)| tree == id)
                 .unwrap()
                 .1;
             for t in 0..=40 {
@@ -1908,19 +1969,32 @@ mod tests {
             .find(|(tree, _)| *tree == btree_id::XATTRS)
             .unwrap()
             .1;
-        assert_eq!(xattrs, &[key_type::XATTR]);
+        assert_eq!(xattrs, &[key_type::HASH_WHITEOUT, key_type::XATTR]);
         let freespace = KEY_TYPES_ALLOWED
             .iter()
             .find(|(tree, _)| *tree == FREESPACE)
             .unwrap()
             .1;
-        assert_eq!(freespace, &[KEY_SET]);
+        assert!(
+            freespace.is_empty(),
+            "set keys are permitted by the common table"
+        );
     }
 
     #[test]
     fn the_reconcile_tree_name_matches_the_reference_diagnostic() {
         // Run 39037096192 prints this name when refusing the exact dirent.
         assert_eq!(journal::btree_name(24), "reconcile_work_phys");
+        // The complete #305 matrix prints these four names in its type
+        // refusals; numeric fallbacks hide the corresponding findings.
+        for (id, name) in [
+            (25, "reconcile_hipri_phys"),
+            (26, "bucket_to_stripe"),
+            (27, "stripe_backpointers"),
+            (28, "damage"),
+        ] {
+            assert_eq!(journal::btree_name(id), name);
+        }
         assert_eq!(journal::btree_name(255), "btree255");
     }
 

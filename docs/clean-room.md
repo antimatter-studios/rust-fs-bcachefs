@@ -1765,12 +1765,12 @@ image. What those runs show regardless:
   refused only for their snapshot ("snapshot == 0", damage) or size
   ("size == 0", extents, reflink, freespace), never for their type.
 
-The checker lets every btree hold deleted, whiteout, error and cookie
-keys, and judges the types of three btrees beyond them: logged_ops holds
+Before #305, the checker let every btree hold deleted, whiteout, error and
+cookie keys, and judged selected btrees beyond them: logged_ops holds
 the logged operations and the inode allocation cursor, and accounting the
-accounting key. All three judged btrees also permit `set` and unnamed
-type 40 in the observed single-key cases below. Which types every other
-btree holds is open (#305).
+accounting key. Those three btrees also permit `set` and unnamed
+type 40 in the observed single-key cases below. The complete matrix below
+resolves the other documented btrees (#305).
 
 Completed merge-queue run
 [39037096192](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39037096192),
@@ -1817,6 +1817,68 @@ The reference refused it as "invalid bkey in btree_node btree=backpointers
 level=0: u64s 9 type snapshot", where this checker had called the image
 clean (#378). The checker now reports that pair too, with the code it uses
 for #268's inode. The other types backpointers may hold are still #305's.
+
+### Completing the key-type matrix (S3, #305)
+
+The test-only head `44d0d129610aa27b7fe99ea0f22576cf6de8bc47` in
+[run 39914688019](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/39914688019)
+reported 26 btrees disagreeing, four unresolved types, no failed plantings
+and five reference crashes or hangs. Only the count of crashes is retained.
+Its fixture artifact supplies the images used for the local guest runs below.
+
+On 2026-10-26, black-box probes of the reference checker in the harness guest
+established controls for the unresolved types. A reference-written dirent
+and snapshot key pass unchanged at their original positions: appending the
+same value had instead produced a self-reference or an out-of-range snapshot
+position. Bucket-generation probes use an existing reference-written group.
+
+For a stripe control, the reference printer reads the sector count from
+bytes 0..2 and the pointer count from byte 3. A 24-byte value with bytes 0
+and 3 set to one, a reference-written extent pointer in bytes 8..16, and
+zero remaining bytes draws no invalid-key finding. The all-zero header
+instead reports zero sectors; a pointer count of zero reports no pointers.
+A damage control is a 16-byte value with byte 0 set to one and all other
+bytes zero. An all-zero value reports an invalid entry with id zero.
+These are observed test controls, not implementations of either value format.
+The control probes completed with zero reference crashes or hangs.
+
+The local guest matrix, with these controls and the checker unchanged,
+then judged all 1,160 pairs: 26 btrees disagreed, zero types were unresolved,
+zero plantings failed, and the reference crashed or hung on zero images
+(`tmp/logs/key-types-red.log`). Every btree permitted whiteout, error,
+cookie, set and unnamed type 40. Deleted keys are not retained by merging
+and keep their earlier allowance. Beyond those common types, the accepted
+sets were:
+
+| Btree | Additional key types |
+|---|---|
+| extents | extent, reservation, reflink_p, inline_data, extent_whiteout |
+| inodes | inode, inode_generation, inode_v2, inode_v3 |
+| dirents | hash_whiteout, dirent |
+| xattrs | hash_whiteout, xattr |
+| alloc | alloc, alloc_v2, alloc_v3, alloc_v4 |
+| quotas | quota |
+| stripes | stripe |
+| reflink | reflink_v, indirect_inline_data |
+| subvolumes | subvolume |
+| snapshots | snapshot |
+| backpointers, reconcile_scan, stripe_backpointers | backpointer |
+| bucket_gens | bucket_gens |
+| snapshot_trees | snapshot_tree |
+| logged_ops | logged_op_truncate, logged_op_finsert, inode_alloc_cursor, logged_op_stripe_update, logged_op_inode_opt_propagate |
+| accounting | accounting |
+| damage | damage |
+
+All other documented btrees permitted only the common types. No other
+unnamed type was judged. These observations use reference output and
+reference-written image bytes only; no reference implementation source was read.
+
+The same matrix, unchanged after its red run, then passed all 19 tests
+with the checker table filled from those verdicts (`tmp/logs/key-types-green.log`).
+Its first check after filling the table also exposed numeric diagnostic
+fallbacks for ids 25..28. Their reference-printed names, matching S1's
+documented order, are reconcile_hipri_phys, bucket_to_stripe,
+stripe_backpointers and damage; the journal name table now includes them.
 
 ### Inode key inode positions (S3, #255)
 
