@@ -1746,3 +1746,79 @@ fn both_checkers_reject_a_bucket_gens_key_with_a_nonzero_size() {
 fn the_snapshot_cases_need_the_write_feature() {
     panic!("the snapshot cases need --features write, as scripts/guest-suite.sh runs them");
 }
+
+/// A `set` key in a reconcile btree with no work behind it (#163). Every
+/// extent with a reconcile entry has a key at its own position in
+/// reconcile_work and one at its backpointer's position in
+/// reconcile_work_phys; the reference reports a key in either with no
+/// such extent.
+#[cfg(feature = "write")]
+fn both_checkers_reject_a_stray_reconcile_key(
+    btree: u8,
+    stray: impl Fn(&mut fs_bcachefs::bkey::Bkey),
+    message: &str,
+    kind: &str,
+) {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new(&format!("check-reconcile-{kind}"));
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("reconcile.img");
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut key = btree::walk(&dev, &sb, btree)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the fixture has extents waiting on background work");
+    drop(dev);
+    stray(&mut key);
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(btree, vec![key.clone()]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(bad && text.contains(message), "{text}");
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems.iter().any(|p| p.kind == kind),
+        "the stray key at {:?} was not reported: {:?}\n{text}",
+        key.pos,
+        ours.problems
+    );
+}
+
+/// A reconcile_work key at the next inode, where no extent is.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_reconcile_work_key_with_no_extent() {
+    both_checkers_reject_a_stray_reconcile_key(
+        18,
+        |k| k.pos.inode += 1,
+        "extent should be set in (none)",
+        "reconcile_work_incorrectly_set",
+    );
+}
+
+/// A reconcile_work_phys key one past a backpointer's position.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_reconcile_work_phys_key_with_no_backpointer() {
+    both_checkers_reject_a_stray_reconcile_key(
+        24,
+        |k| k.pos.offset += 1,
+        "backpointer should be set in (none)",
+        "reconcile_work_phys_incorrectly_set",
+    );
+}

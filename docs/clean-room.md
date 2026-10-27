@@ -941,6 +941,38 @@ counters, on clean images only, as for its other allocation checks. The
 third counter (data sectors) is not judged; nothing was measured about it.
 No reference source was read.
 
+### Reconcile work keys (#163, 2026-10-27)
+
+Black-box checks in the harness guest, using the reference-made `kernel`
+and `bgcompress` images. They are the only fixtures with keys in
+reconcile_work (btree 18) or reconcile_work_phys (btree 24): five in each
+on `kernel`, sixteen in each on `bgcompress`, all of type `set` (25) with
+an empty value. Every extent whose value carries a reconcile entry (entry
+type 7) has a key in reconcile_work at the extent's own position, and one
+in reconcile_work_phys at its backpointer's position: the pointer's device
+as the inode, `sector << 16` plus the crc entry's offset as the offset,
+snapshot 0.
+
+A `set` key inserted in reconcile_work at a position with no reconciling
+extent (the first key moved to the next inode, or to inode 0) makes the
+reference print "extent should be set in (none)", "but set in:
+reconcile_work", counted as `reconcile_work_incorrectly_set`. One inserted
+in reconcile_work_phys with nothing behind it (the first key moved to
+device 1, or one sector-offset past its position) makes it print
+"backpointer should be set in (none)", "but set in: reconcile_work_phys",
+counted as `reconcile_work_phys_incorrectly_set`. The old checker reported
+none of the four. On `bgcompress`, moving the first reconcile_work key to
+the next inode lands on that inode's own key, and the reference stays
+clean, as expected.
+
+The checker reports each `set` key with no such extent behind it, on clean
+images only, as for its other allocation checks. Where an indirect extent
+in the reflink btree carries a reconcile entry, the position its
+reconcile_work key takes was not observed, so reconcile_work is not judged
+on that image; its pointers' backpointer positions still count for
+reconcile_work_phys. The reverse, a reconciling extent with no key, was not
+measured and is not judged. No reference source was read.
+
 ### Committing through the journal (`src/write_journal.rs`) -- judged
 
 - A transaction is one jset in the layout the reader decodes: seq one past
