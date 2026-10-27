@@ -1750,6 +1750,41 @@ The same report shows four more refusals, each after one change:
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.
 
+### subvolume_children entries and their parent (S3, #219, #382)
+
+Our own walker reads two `set` keys in `kernel.img`'s subvolume_children
+btree (19): `1:2:0` and `1:3:0`. The reference lister shows subvolume 2
+(`sv`) with `creation_parent 0 fs_parent 1`, and subvolume 3 (`snap`, the
+snapshot of `sv`) with `creation_parent 2 fs_parent 1`. The reference
+checker calls the unchanged image clean.
+
+Three black-box cases in the harness guest (`tests/check_oracle.rs`, red
+CI run [40534384950](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/40534384950))
+each move one entry. Each writes a `deleted` key at the old position and
+the entry at the new one:
+
+- `1:3` to `2:3`, under `snap`'s `creation_parent`
+- `1:3` to `U64_MAX:3`
+- `1:2` to `1:4`, a child no subvolume is
+
+The reference reports each one as "check_subvol_children...incorrect entry
+in subvolume_children btree P:C, not fixing", with the new P:C. Before
+that it reports "check_subvols...subvolume not set in subvolume_children
+btree at 1:3" (or `1:2`) for the entry that is now missing.
+
+An entry at `parent:child` therefore names subvolume `child`, and
+`parent` is that subvolume's `fs_parent`, not its `creation_parent`: the
+unchanged `1:3` is accepted and `2:3` is not. The checker reports
+`subvol_children_entry_wrong` for a live `set` entry whose child the
+subvolumes btree does not have, or whose subvolume's `fs_parent` (the high
+half of the value's third word, "Snapshots and subvolumes -- read") is
+not `parent`.
+
+The reverse rule is not judged yet: a subvolume with a parent but no
+entry. The reference names it "subvolume not set in subvolume_children
+btree", but it was only seen together with a moved entry, never alone.
+No reference source was read.
+
 ### Keys on a device the filesystem lacks (S3, #163)
 
 Nightly differential run 38878947701 changed only the inode field, the
