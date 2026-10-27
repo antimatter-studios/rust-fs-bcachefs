@@ -894,6 +894,25 @@ checker judged each attempt and named what was missing until nothing was.
   once it reaches 16, so buckets of generation 16 or more are left
   waiting.
 
+### Btree-node backpointer lengths (#163, 2026-10-27)
+
+Black-box checks in the harness guest, using the reference-made `default`
+image, changed only bytes 8..12 of the inode root's backpointer value from
+64 to 63. The reference reports "backpointer doesn't match btree node it
+points to", shows `len=63` versus `len=64`, and counts
+`backpointer_to_missing_ptr`; the old checker reports no problems. The
+stored changed key and unchanged inode-root pointer are checked first.
+
+Independent one-byte mutations in the root and its leaf child establish
+the scope. Changing byte 8, giving length 65, is refused for both. Changing
+bytes 0, 1, 2, 16 or 24 individually (btree id, level, data type and target
+position) is accepted for both. These accepted controls do not establish
+those fields' validity, so no rejection rule is inferred for them. The
+checker compares the length of an existing backpointer at each reachable
+node's physical address with the superblock's node size, on clean images
+only, as for its other allocation checks. The tests retain both rejected
+lengths and all ten accepted field controls. No reference source was read.
+
 ### Committing through the journal (`src/write_journal.rs`) -- judged
 
 - A transaction is one jset in the layout the reader decodes: seq one past

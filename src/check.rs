@@ -848,6 +848,31 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 .collect()
         });
 
+    // A node's existing allocation backpointer must describe its pointer
+    // key, not just reside in an allocated bucket (#163). Recovery rebuilds
+    // allocation metadata, so this uses the same clean-image gate as data.
+    if let Some(bps) = &backpointers {
+        for &id in trees.keys() {
+            match btree::node_pointers(dev, &sb, id, replay.as_ref()) {
+                Ok(Some(nodes)) => {
+                    for (_, key) in nodes {
+                        let ptr = btree::NodePtr::from_key(&key)?;
+                        for p in ptr.ptrs.iter().filter(|p| p.dev == sb.dev_idx) {
+                            if let Some(bp) = bps.get(&(p.offset << 16)) {
+                                btree_backpointer(id, key.pos, sb.btree_node_size(), bp, &mut r);
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => r.add(
+                    "btree_node",
+                    format!("btree {}: {e}", journal::btree_name(id)),
+                ),
+            }
+        }
+    }
+
     // Every bucket's generation as bucket_gens records it, against its
     // alloc key's; a bucket with no alloc key is at generation 0 (#163: the
     // reference's "incorrect gen in bucket_gens").
@@ -1602,6 +1627,25 @@ fn nearest<'a>(chain: &[u32], keys: &[&'a Bkey]) -> Option<&'a Bkey> {
         .map(|(_, k)| k)
 }
 
+/// The node-length corruption refused by the reference (#163). Header and
+/// target-position mutations were accepted, so no rule for them is inferred.
+fn btree_backpointer(id: u8, pos: Bpos, sectors: u32, bp: &Bkey, r: &mut Report) {
+    let v = &bp.value;
+    let matches = v.len() >= 12 && le32(v, 8) == sectors;
+    if !matches {
+        r.add(
+            "backpointer_to_missing_ptr",
+            format!(
+                "backpointer {}: value does not match btree {} node at {} \
+                 (expected length {sectors})",
+                bp.pos,
+                journal::btree_name(id),
+                pos
+            ),
+        );
+    }
+}
+
 /// The observed backpointer lookup for a written data extent (#163).
 fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mut Report) {
     // The aged image's piece at offset 136 of the region at sector 26880
@@ -2060,6 +2104,45 @@ mod tests {
             },
             value,
         }
+    }
+
+    #[test]
+    fn a_btree_backpointer_must_agree_with_its_node() {
+        let pos = Bpos {
+            inode: u64::MAX,
+            offset: u64::MAX,
+            snapshot: u32::MAX,
+        };
+        let mut value = vec![btree_id::INODES, 2, DATA_BTREE, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&64u32.to_le_bytes());
+        value.extend_from_slice(&pos.snapshot.to_le_bytes());
+        value.extend_from_slice(&pos.offset.to_le_bytes());
+        value.extend_from_slice(&pos.inode.to_le_bytes());
+        let bp = key(KEY_BACKPOINTER, 400 << 16, value);
+        let check = |bp: &Bkey| {
+            let mut r = Report::default();
+            btree_backpointer(btree_id::INODES, pos, 64, bp, &mut r);
+            r
+        };
+        assert!(check(&bp).clean());
+        for length in [0u32, 63, 65, u32::MAX] {
+            let mut changed = bp.clone();
+            changed.value[8..12].copy_from_slice(&length.to_le_bytes());
+            let r = check(&changed);
+            assert_eq!(r.problems.len(), 1);
+            assert_eq!(r.problems[0].kind, "backpointer_to_missing_ptr");
+        }
+        for len in 0..12 {
+            let mut changed = bp.clone();
+            changed.value.truncate(len);
+            assert!(!check(&changed).clean());
+        }
+        // Reference-accepted field mutations must not create new findings.
+        let mut unjudged = bp.clone();
+        unjudged.value[..8].fill(255);
+        unjudged.value[12..16].fill(0);
+        unjudged.value[16..32].fill(0);
+        assert!(check(&unjudged).clean());
     }
 
     /// Backpointer fields observed by the reference tools, checked against

@@ -482,6 +482,22 @@ pub fn node_counts(
     id: u8,
     replay: Option<&crate::journal::Replay>,
 ) -> Result<Option<(u64, u64)>> {
+    Ok(node_pointers(dev, sb, id, replay)?.map(|nodes| {
+        (
+            nodes.len() as u64,
+            nodes.iter().filter(|(level, _)| *level != 0).count() as u64,
+        )
+    }))
+}
+
+/// Every reachable node's level and pointer key, including the root.
+/// Interior journal overlays are applied exactly as for a key walk.
+pub(crate) fn node_pointers(
+    dev: &dyn BlockRead,
+    sb: &Superblock,
+    id: u8,
+    replay: Option<&crate::journal::Replay>,
+) -> Result<Option<Vec<(u8, Bkey)>>> {
     let Some((root_level, root_key)) = root_of(sb, id, replay)? else {
         return Ok(None);
     };
@@ -498,14 +514,9 @@ pub fn node_counts(
         max_seq: replay.map(|r| r.seq).unwrap_or(u64::MAX),
         blacklist: sb.journal_seq_blacklist()?,
     };
-    let mut counts = (0, 0);
-    walk.count(
-        &NodePtr::from_key(&root_key)?,
-        root_key.pos,
-        root_level,
-        &mut counts,
-    )?;
-    Ok(Some(counts))
+    let mut pointers = Vec::new();
+    walk.pointers(root_key, root_level, &mut pointers)?;
+    Ok(Some(pointers))
 }
 
 /// The position just after `p` in key order.
@@ -844,16 +855,16 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// Add the node `ptr` points to, at `level`, and every node below it to
-    /// `counts`: nodes, then interior nodes.
-    fn count(&self, ptr: &NodePtr, max: Bpos, level: u8, counts: &mut (u64, u64)) -> Result<()> {
-        counts.0 += 1;
+    /// Collect this node's level and pointer key and those of every child.
+    fn pointers(&self, key: Bkey, level: u8, out: &mut Vec<(u8, Bkey)>) -> Result<()> {
+        let ptr = NodePtr::from_key(&key)?;
+        let max = key.pos;
+        out.push((level, key));
         if level == 0 {
             return Ok(());
         }
-        counts.1 += 1;
-        let node = read_node_upto(self.dev, self.sb, ptr, self.max_seq, &self.blacklist)?;
-        check_header(&node, self.id, level, ptr, max)?;
+        let node = read_node_upto(self.dev, self.sb, &ptr, self.max_seq, &self.blacklist)?;
+        check_header(&node, self.id, level, &ptr, max)?;
         for k in self.apply(node.keys, level, node.min_key, node.max_key) {
             if k.key_type != key_type::BTREE_PTR_V2 {
                 return Err(Error::Corrupt(format!(
@@ -861,7 +872,7 @@ impl Walk<'_> {
                     k.key_type
                 )));
             }
-            self.count(&NodePtr::from_key(&k)?, k.pos, level - 1, counts)?;
+            self.pointers(k, level - 1, out)?;
         }
         Ok(())
     }
