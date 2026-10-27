@@ -1822,3 +1822,68 @@ fn both_checkers_reject_a_reconcile_work_phys_key_with_no_backpointer() {
         "reconcile_work_phys_incorrectly_set",
     );
 }
+
+/// A snapshot node's subvol flag, bit 1 of its value's first word, is set
+/// exactly when the node names a subvolume (#219). Flipping it on `sv`'s
+/// leaf (subvolume 2) clears a flag that should be set; flipping it on
+/// the interior node (no subvolume) sets one that should be clear. The
+/// reference names both "has wrong subvol flag".
+#[cfg(feature = "write")]
+fn both_checkers_reject_a_snapshot_with_a_wrong_subvol_flag(offset: u64) {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-snapshot-subvol-flag");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("subvol-flag-{offset}.img"));
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, 9)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 22 && k.pos.inode == 0 && k.pos.offset == offset)
+        .unwrap_or_else(|| panic!("kernel.img has no snapshot at 0:{offset}"));
+    drop(dev);
+    k.value[0] ^= 1 << 1;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(9, vec![k]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains(&format!("snapshot node {offset} has wrong subvol flag")),
+        "{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "snapshot_subvol_flag_wrong"),
+        "snapshot {offset}'s flipped subvol flag was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// `sv`'s leaf names subvolume 2, and its flag is cleared.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_subvolume_snapshot_without_its_subvol_flag() {
+    both_checkers_reject_a_snapshot_with_a_wrong_subvol_flag(u64::from(u32::MAX - 3));
+}
+
+/// The interior node names no subvolume, and its flag is set.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_interior_snapshot_with_the_subvol_flag() {
+    both_checkers_reject_a_snapshot_with_a_wrong_subvol_flag(u64::from(u32::MAX - 1));
+}
