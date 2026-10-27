@@ -2212,3 +2212,121 @@ fn both_checkers_accept_accounting_keys_with_up_to_three_counters() {
         None,
     );
 }
+
+/// The last backpointer of `set` whose data type (value byte 2) is
+/// `data_type` (3 btree, 4 user), changed by `change` and committed, a
+/// `deleted` key at the old position when the position moved (#219). With
+/// `refused`, the reference must delete it on read as an invalid
+/// backpointers key with that reason and this checker report `ours` for
+/// it; without, both must call the image clean.
+#[cfg(feature = "write")]
+fn both_checkers_judge_a_changed_backpointer_key(
+    set: &str,
+    data_type: u8,
+    change: impl FnOnce(&mut fs_bcachefs::bkey::Bkey),
+    refused: Option<(&str, &str)>,
+) {
+    use fs_bcachefs::bkey::{key_type, Bkey};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BACKPOINTERS: u8 = 13;
+    const KEY_BACKPOINTER: u8 = 28;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-backpointer-key");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("backpointer-{set}-{data_type}.img"));
+    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let k = btree::walk(&dev, &sb, BACKPOINTERS)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|k| k.key_type == KEY_BACKPOINTER && k.value.get(2) == Some(&data_type))
+        .unwrap_or_else(|| panic!("{set}.img has no backpointer of data type {data_type}"));
+    drop(dev);
+    let mut changed = k.clone();
+    change(&mut changed);
+    let mut keys = vec![changed.clone()];
+    if changed.pos != k.pos {
+        keys.push(Bkey {
+            key_type: key_type::DELETED,
+            value: Vec::new(),
+            ..k
+        });
+        keys.sort_by_key(|k| k.pos);
+    }
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(BACKPOINTERS, keys).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    match refused {
+        Some((reason, kind)) => {
+            assert!(
+                bad && text.contains("invalid bkey in btree_node btree=backpointers")
+                    && text.contains(reason),
+                "{text}"
+            );
+            assert!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == kind && p.detail.contains(&changed.pos.to_string())),
+                "the backpointer changed to {} ({set}) was not reported as {kind}: {:?}\n{text}",
+                changed.pos,
+                ours.problems
+            );
+        }
+        None => {
+            assert!(!bad, "{text}");
+            assert!(ours.clean(), "{set}: {:?}", ours.problems);
+        }
+    }
+}
+
+/// Backpointers are not snapshotted: the reference deletes one at
+/// snapshot 1 as "nonzero snapshot", for user data and for a btree node.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_at_a_snapshot() {
+    for (set, data_type) in [("default", 4), ("kernel", 3)] {
+        both_checkers_judge_a_changed_backpointer_key(
+            set,
+            data_type,
+            |k| k.pos.snapshot = 1,
+            Some(("nonzero snapshot", "bkey_snapshot_nonzero")),
+        );
+    }
+}
+
+/// A backpointer's level (value byte 1) of 5 is "backpointer level bad:
+/// 5 >= 4"; the reference accepted 4 in the same probe.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_level_past_four() {
+    for (set, data_type) in [("default", 4), ("kernel", 3)] {
+        both_checkers_judge_a_changed_backpointer_key(
+            set,
+            data_type,
+            |k| k.value[1] = 5,
+            Some(("backpointer level bad: 5 >= 4", "backpointer_level_bad")),
+        );
+    }
+}
+
+/// A btree node's backpointer at level 4 is accepted by both.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_btree_node_backpointer_at_level_four() {
+    both_checkers_judge_a_changed_backpointer_key("kernel", 3, |k| k.value[1] = 4, None);
+}
