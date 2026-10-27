@@ -1112,9 +1112,10 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    mount makes one, and the reference key editor fabricates snapshot keys
    but never a whole subvolume the checker passes (#114), so the
    reference tool makes them in the kernel oracle's VM. Still open: what
-   the low half of a snapshot key's first word and of a subvolume key's
-   first word hold (2 and 0 seen; the lister prints `live` and, for a
-   snapshot of a subvolume, `snapshot`), and where the 128-bit bitmap of
+   the rest of the low half of a snapshot key's first word and of a
+   subvolume key's first word hold (2 and 0 seen; the lister prints `live`
+   and, for a snapshot of a subvolume, `snapshot`; bit 1 of a snapshot's is
+   its subvol flag, see "Snapshot subvol flag"), and where the 128-bit bitmap of
    near ancestors sits. S1 efec39c (9.4.2, 9.4.3) says what a snapshot
    node holds: its parent, up to two children, its depth, and a skiplist
    of three ancestor ids for quick ancestor queries, with a 128-bit bitmap
@@ -1425,6 +1426,21 @@ extents btrees is kept as `kernel.<btree>.txt`.
   mutation; `check_oracle.rs` requires both a clean native control and
   the native nonzero-snapshot finding. Current-head CI is still required;
   no differential baseline entry is added or broadened.
+
+- Snapshot subvol flag (S3, #219, 2026-10-27): in the harness guest, one
+  bit at a time of the low half of each `kernel.img` snapshot value's first
+  word (bits 0..7 and 31) was flipped through the writer, and the
+  reference checker judged each copy. Bit 1 (`0x2`) is the subvol flag: it
+  is set on the three snapshots that name a subvolume (4294967292 with
+  subvolume 2, 4294967293 with 3, 4294967295 with 1) and clear on the
+  interior node 4294967294, which names none. Flipped either way it draws
+  "snapshot node N has wrong subvol flag"; no other probed bit drew any
+  finding. Clearing the subvolume (the third word's low half) of a leaf
+  that a subvolume points at draws "snapshot leaf missing subvol backref"
+  instead. The checker reports `snapshot_subvol_flag_wrong` when the flag
+  is set with no subvolume or clear with one; `tests/check_oracle.rs`
+  holds both directions against the reference. No reference source was
+  read.
 
 ### First differential checker baseline (S3, #164)
 
