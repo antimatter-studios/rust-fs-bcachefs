@@ -606,6 +606,58 @@ fn both_checkers_reject_a_negative_accounting_counter() {
     );
 }
 
+/// A btree's per-snapshot counters (kind 5: keys, bytes, data sectors) are
+/// what the btree holds in that snapshot; the reference recounts them.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_per_snapshot_key_count_out_of_step() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const ACCOUNTING: u8 = 20;
+    let dirents_counter = 0x05ff_ffff_ff00_0000 | (u64::from(btree_id::DIRENTS) << 16);
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-snapshot-accounting");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("snapshot-accounting.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let counter = btree::walk(&dev, &sb, ACCOUNTING)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == dirents_counter && k.value.len() >= 8)
+        .expect("the fixture counts its dirents in the all-ones snapshot");
+    let keys = i64::from_le_bytes(counter.value[..8].try_into().unwrap());
+    let mut wrong = counter.clone();
+    wrong.value[..8].copy_from_slice(&(keys + 1).to_le_bytes());
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(ACCOUNTING, vec![wrong]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains("accounting mismatch for snapshot") && text.contains("btree=dirents"),
+        "{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "accounting_mismatch" && p.detail.contains("dirents")),
+        "the dirents counter of {keys} + 1 keys was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
 /// #247's primary-only mutation, with equal-sequence backup controls and
 /// a newer-primary control. Ask the actual checker before comparing ours.
 #[test]

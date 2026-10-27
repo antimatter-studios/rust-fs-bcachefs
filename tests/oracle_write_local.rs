@@ -1685,6 +1685,29 @@ fn every_xattr_a_run_of_batches_inserts_reads_back() {
              {read} and a walk of the btree finds {walked}; the root is at level {root:?}"
         );
     }
+    // `insert` writes keys and no accounting, so the padding's share of the
+    // xattrs btree's counter in its snapshot (keys, then bytes at 40 plus
+    // the value's length; the snapshot id little-endian) is put in the same
+    // way, as `set_xattr` would have counted it (#163).
+    let at = 0x0500_0000_0000_0000
+        | (u64::from(snapshot.swap_bytes()) << 24)
+        | (u64::from(btree_id::XATTRS) << 16);
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut counter = btree::walk(&dev, &sb, 20)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == at && k.value.len() >= 16)
+        .expect("set_xattr counted the xattrs btree");
+    let padding = (0..made).map(xattr).fold([0i64; 2], |[n, b], k| {
+        [n + 1, b + 40 + k.value.len() as i64]
+    });
+    for (i, add) in padding.into_iter().enumerate() {
+        let w8 = &mut counter.value[i * 8..i * 8 + 8];
+        let total = i64::from_le_bytes(w8.try_into().unwrap()) + add;
+        w8.copy_from_slice(&total.to_le_bytes());
+    }
+    w.insert(20, vec![counter]).unwrap();
     drop(w);
     let r = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(r.clean(), "{:?}", r.problems);

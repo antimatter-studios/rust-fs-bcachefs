@@ -114,6 +114,22 @@ const FREESPACE_GEN_UNOBSERVED: u8 = 16;
 const ACCOUNTING: u8 = 20;
 const KEY_ACCOUNTING: u8 = 34;
 const ACCT_DEV_DATA_TYPE: u64 = 3;
+/// The kind of accounting key that counts what a btree holds in one
+/// snapshot: the snapshot id at bits 24..56, its bytes little-endian in the
+/// big-endian position (the reference kernel's snapshot 4294967294 is
+/// 0xfeffffff there), the btree's id at bits 16..24;
+/// its value is keys, bytes at the unpacked size, data sectors (S8).
+const ACCT_SNAPSHOT_BTREE: u64 = 5;
+const UNPACKED_KEY_BYTES: u64 = 40;
+/// Keys the per-snapshot counters leave out: the kernel module's image
+/// holds a whiteout in inodes and dirents and an extent whiteout in extents
+/// at one snapshot, and each counter there is one key and 40 bytes short of
+/// counting them.
+const UNCOUNTED_KEY_TYPES: [u8; 3] = [
+    key_type::DELETED,
+    key_type::WHITEOUT,
+    key_type::EXTENT_WHITEOUT,
+];
 /// The kind of accounting key that is a btree's own, which the lister
 /// prints as `btree`: the btree's id in the byte below the kind, and its
 /// value is node sectors, nodes and interior nodes (#381).
@@ -335,6 +351,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             Ok(None) => {}
             Err(e) => r.add("btree_node", format!("btree logged_ops: {e}")),
         }
+    }
+    // A btree's per-snapshot counters (#163). Clean only, as above.
+    if sb.is_clean() {
+        check_snapshot_accounting(&trees, &mut r);
     }
     for (id, allowed) in KEY_TYPES_ALLOWED {
         for k in trees.get(id).into_iter().flatten() {
@@ -1752,6 +1772,46 @@ fn check_btree_accounting(
     }
 }
 
+/// A btree's per-snapshot counters are the keys it holds in that snapshot
+/// and their unpacked bytes (#163: the reference's "accounting mismatch for
+/// snapshot id=4294967295 btree=dirents"). Data sectors are not judged: no
+/// measurement says what they count.
+fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    for k in trees
+        .get(&ACCOUNTING)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_ACCOUNTING && k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE)
+    {
+        let snapshot = (((k.pos.inode >> 24) & 0xffff_ffff) as u32).swap_bytes();
+        let id = ((k.pos.inode >> 16) & 0xff) as u8;
+        let Some(keys) = trees.get(&id) else {
+            continue;
+        };
+        let held = keys
+            .iter()
+            .filter(|x| x.pos.snapshot == snapshot && !UNCOUNTED_KEY_TYPES.contains(&x.key_type));
+        let want = held.fold([0u64; 2], |[n, bytes], x| {
+            [n + 1, bytes + UNPACKED_KEY_BYTES + x.value.len() as u64]
+        });
+        let have = [0, 1].map(|i| k.value.get(i * 8..i * 8 + 8).map_or(0, |w| le64(w, 0)));
+        if want != have {
+            r.add(
+                "accounting_mismatch",
+                format!(
+                    "snapshot {snapshot} btree {}: it holds {} keys, {} bytes; the \
+                     accounting says {}, {}",
+                    journal::btree_name(id),
+                    want[0],
+                    want[1],
+                    have[0],
+                    have[1]
+                ),
+            );
+        }
+    }
+}
+
 /// Walk btree `id`, recording each node that cannot be read instead of
 /// stopping, and the order of the keys found. `None` when not even its root
 /// can be read.
@@ -2702,6 +2762,61 @@ mod tests {
         check_btree_accounting(LOGGED_OPS, 64, (1, 0), None, &mut missing);
         assert_eq!(missing.problems.len(), 1, "{missing:?}");
         assert_eq!(missing.problems[0].kind, "accounting_mismatch");
+    }
+
+    #[test]
+    fn a_per_snapshot_btree_counter_out_of_step_with_its_keys_is_named() {
+        // Two dirents in snapshot 4294967294, one of 16 value bytes and one
+        // of 24, one in another snapshot the counter does not cover, and a
+        // whiteout it does not count. The snapshot id's bytes are
+        // little-endian in the position.
+        const SNAPSHOT: u32 = u32::MAX - 1;
+        let dirent = |snapshot: u32, len: usize| {
+            let mut k = key(key_type::DIRENT, 0, vec![0; len]);
+            k.pos.snapshot = snapshot;
+            k
+        };
+        let mut whiteout = key(key_type::WHITEOUT, 1, Vec::new());
+        whiteout.pos.snapshot = SNAPSHOT;
+        let dirents = vec![
+            dirent(SNAPSHOT, 16),
+            dirent(SNAPSHOT, 24),
+            dirent(u32::MAX, 8),
+            whiteout,
+        ];
+        let at = (ACCT_SNAPSHOT_BTREE << 56)
+            | (u64::from(SNAPSHOT.swap_bytes()) << 24)
+            | (u64::from(btree_id::DIRENTS) << 16);
+        let counter = |keys: u64, bytes: u64| {
+            let mut v = keys.to_le_bytes().to_vec();
+            v.extend(bytes.to_le_bytes());
+            v.extend(0u64.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos = Bpos {
+                inode: at,
+                offset: 0,
+                snapshot: 0,
+            };
+            k
+        };
+        let trees = |acct: Bkey| {
+            BTreeMap::from([
+                (btree_id::DIRENTS, dirents.clone()),
+                (ACCOUNTING, vec![acct]),
+            ])
+        };
+
+        let mut clean = Report::default();
+        check_snapshot_accounting(&trees(counter(2, 40 * 2 + 16 + 24)), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        for (keys, bytes) in [(3, 120), (2, 121)] {
+            let mut report = Report::default();
+            check_snapshot_accounting(&trees(counter(keys, bytes)), &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "accounting_mismatch");
+            assert!(report.problems[0].detail.contains("dirents"), "{report:?}");
+        }
     }
 
     #[test]
