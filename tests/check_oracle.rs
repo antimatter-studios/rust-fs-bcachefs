@@ -357,6 +357,207 @@ fn both_checkers_reject_a_wrong_alloc_stripe_sector_count() {
     );
 }
 
+/// A node's backpointer must describe the node, not just an allocated bucket.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_btree_backpointer_with_the_wrong_length() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    let dir = ScratchDir::new("check-node-backpointer");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("node-backpointer.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let root = sb
+        .btree_roots()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.btree_id == btree_id::INODES)
+        .unwrap();
+    let key = bkey::decode(
+        &root.key,
+        &BkeyFormat {
+            key_u64s: 5,
+            nr_fields: 6,
+            bits: [0; 6],
+            field_offset: [0; 6],
+        },
+    )
+    .unwrap();
+    let ptr = NodePtr::from_key(&key).unwrap();
+    assert_eq!(ptr.ptrs.len(), 1);
+    let mut bp = btree::walk(&dev, &sb, backpointer::TREE)
+        .unwrap()
+        .into_iter()
+        .find(|k| {
+            k.key_type == 28
+                && k.pos.inode == u64::from(ptr.ptrs[0].dev)
+                && k.pos.offset == ptr.ptrs[0].offset << 16
+                && k.pos.snapshot == 0
+        })
+        .expect("the inode root has an allocation backpointer");
+    assert_eq!(bp.value.len(), 32);
+    assert_eq!(&bp.value[..3], &[btree_id::INODES, root.level + 1, 3]);
+    assert_eq!(
+        u32::from_le_bytes(bp.value[8..12].try_into().unwrap()),
+        sb.btree_node_size()
+    );
+    bp.value[8..12].copy_from_slice(&(sb.btree_node_size() - 1).to_le_bytes());
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(backpointer::TREE, vec![bp.clone()]).unwrap();
+    drop(writer);
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    assert!(
+        sb.btree_roots().unwrap().contains(&root),
+        "the target node's root pointer is unchanged"
+    );
+    assert!(
+        btree::walk(&dev, &sb, backpointer::TREE)
+            .unwrap()
+            .contains(&bp),
+        "the exact damaged backpointer is stored"
+    );
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains("backpointer doesn't match btree node it points to:"),
+        "{text}"
+    );
+    let ours = check(&dev).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "backpointer_to_missing_ptr"),
+        "a btree backpointer with the wrong length was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// Independently mutate each interpreted field, in both an interior root
+/// and its leaf child. The length-only regression above stays unchanged.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_btree_backpointer_field_mutations() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    for child in [false, true] {
+        for byte in [0, 1, 2, 8, 16, 24] {
+            let dir = ScratchDir::new("check-node-backpointer-fields");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("child-{child}-byte-{byte}.img"));
+            std::fs::copy(fixture("default.img"), &img).unwrap();
+            let (bad, text) = reference_finds_a_problem(&img);
+            assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+            assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+            let dev = FileDevice::open(&img).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            let root = sb
+                .btree_roots()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.btree_id == btree_id::INODES)
+                .unwrap();
+            assert_eq!(
+                root.level, 1,
+                "the fixture supplies an interior root and leaf children"
+            );
+            let mut key = bkey::decode(
+                &root.key,
+                &BkeyFormat {
+                    key_u64s: 5,
+                    nr_fields: 6,
+                    bits: [0; 6],
+                    field_offset: [0; 6],
+                },
+            )
+            .unwrap();
+            if child {
+                key = btree::read_node(&dev, &sb, &NodePtr::from_key(&key).unwrap())
+                    .unwrap()
+                    .keys
+                    .into_iter()
+                    .find(|k| k.key_type == bkey::key_type::BTREE_PTR_V2)
+                    .unwrap();
+            }
+            let ptr = NodePtr::from_key(&key).unwrap();
+            let mut bp = btree::walk(&dev, &sb, backpointer::TREE)
+                .unwrap()
+                .into_iter()
+                .find(|k| {
+                    k.key_type == 28
+                        && k.pos.inode == u64::from(ptr.ptrs[0].dev)
+                        && k.pos.offset == ptr.ptrs[0].offset << 16
+                        && k.pos.snapshot == 0
+                })
+                .unwrap();
+            bp.value[byte] ^= 1;
+            let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            writer.insert(backpointer::TREE, vec![bp.clone()]).unwrap();
+            drop(writer);
+            let dev = FileDevice::open(&img).unwrap();
+            let sb = Superblock::read(&dev).unwrap();
+            assert!(sb.btree_roots().unwrap().contains(&root));
+            assert!(btree::walk(&dev, &sb, backpointer::TREE)
+                .unwrap()
+                .contains(&bp));
+            let out = Command::new("timeout")
+                .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
+                .arg(&*img)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                matches!(out.status.code(), Some(0 | 1 | 8 | 9))
+                    && ![
+                        ".c:",
+                        ".h:",
+                        "BUG",
+                        "assertion",
+                        "Assertion",
+                        "backtrace",
+                        "Backtrace",
+                        "Call Trace"
+                    ]
+                    .iter()
+                    .any(|s| text.contains(s)),
+                "reference fault or timeout: no case details retained"
+            );
+            let ours = check(&dev).unwrap();
+            let rejected = byte == 8;
+            assert_eq!(
+                !out.status.success(),
+                rejected,
+                "child={child} byte={byte}: {text}"
+            );
+            if rejected {
+                assert!(
+                    text.contains("backpointer doesn't match btree node it points to:"),
+                    "{text}"
+                );
+            }
+            assert_eq!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == "backpointer_to_missing_ptr"
+                        && p.detail.contains("btree inodes node")),
+                rejected,
+                "child={child} byte={byte}: {:?}\n{text}",
+                ours.problems
+            );
+            assert!(rejected || ours.clean(), "{:?}", ours.problems);
+        }
+    }
+}
+
 /// Accounting counters are signed deltas summed at mount; the reference
 /// refuses a sum below zero. The lowest accounting key is `nr_inodes`.
 #[cfg(feature = "write")]

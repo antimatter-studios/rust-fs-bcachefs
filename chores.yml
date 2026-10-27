@@ -124,7 +124,9 @@ tasks:
       # #262 adds one journal-length unit case.
       # #358 adds one unpacked-key version unit case; #335 adds one 128-bit extent MAC case.
       # #376 adds two inode allocation cursor unit cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 77'
+      # Measured 2026-10-27 on fix/163-node-backpointer: 97 cases, including
+      # the node-length regression. Log: tmp/logs/unit.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 97'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -260,7 +262,9 @@ tasks:
       # #337 adds two encrypted unclean fixture oracle cases.
       # #335 adds one 128-bit extent MAC unit case and one oracle case.
       # #376 adds two inode allocation cursor unit cases and three oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 379'
+      # Measured 2026-10-27 on fix/163-node-backpointer: all 440 named base
+      # cases plus one unit and two live-reference regressions, 443 total.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 443'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -404,7 +408,9 @@ tasks:
       # #261's host optional-field regression also runs here.
       # #262 adds one unit and one host oracle case.
       # #335 adds one 128-bit extent MAC unit case and one oracle case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 170'
+      # Measured 2026-10-27 on fix/163-node-backpointer: 205 cases, 87.84%
+      # line coverage; the exact base's merge-tree CI ran 204 before this unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 205'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
