@@ -913,6 +913,34 @@ node's physical address with the superblock's node size, on clean images
 only, as for its other allocation checks. The tests retain both rejected
 lengths and all ten accepted field controls. No reference source was read.
 
+### Per-snapshot btree counters (#163, 2026-10-27)
+
+Black-box checks in the harness guest, using the reference-made `default`
+image, raised the key count (the first counter) of the accounting key at
+`0x05ffffffff000000 | 2 << 16`, the dirents btree's counter in the all-ones
+snapshot, by one. The reference reports "accounting mismatch for snapshot
+id=4294967295 btree=dirents"; the old checker reports no problems (red CI
+run [40500610531](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/40500610531)).
+
+The snapshot id in a kind 5 position is stored little-endian inside the
+big-endian position: the image the reference kernel module made, which
+holds snapshots, carries these keys at `0xfeffffff`, `0xfdffffff` and
+`0xfcffffff` in bits 24..56, that is snapshots 4294967294, 4294967293 and
+4294967292. Read as a big-endian id, every one of them counts keys the
+btree does not hold at that snapshot. Read little-endian, the counters at
+snapshot 4294967292 were each one key and 40 bytes above the keys there,
+and the one extra key was a `whiteout` (type 1) in inodes and in dirents
+and an `extent_whiteout` (type 36) in extents, each with an empty value:
+whiteouts are not counted. With them left out, every counter of every
+reference-made fixture agrees with the btree's keys at that exact
+snapshot: the count of keys other than `deleted`, `whiteout` and
+`extent_whiteout`, and their bytes at the unpacked size, 40 plus the
+value's length. Whether a `hash_whiteout` is counted was not measured
+here; the writer counts the ones it makes. The checker compares those two
+counters, on clean images only, as for its other allocation checks. The
+third counter (data sectors) is not judged; nothing was measured about it.
+No reference source was read.
+
 ### Committing through the journal (`src/write_journal.rs`) -- judged
 
 - A transaction is one jset in the layout the reader decodes: seq one past
