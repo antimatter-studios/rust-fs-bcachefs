@@ -904,6 +904,12 @@ checker judged each attempt and named what was missing until nothing was.
 - Accounting goes in as signed deltas with version (seq, position), which
   the replay adds once to keys of a lower version (S8: the reference's own
   journal carries `replicas user ... -14`, `inum -1 -14 -14`).
+- The merged accounting counters must be nonnegative. Setting the `nr_inodes`
+  total to -1 makes the reference report `Accounting underflow for nr_inodes`
+  and `accounting_key_underflow` (S8, black-box full run
+  [40462927967](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/40462927967),
+  #163). The checker judges totals after replay, so valid negative journal
+  deltas are added before their sign is checked.
 - The superblock's clean bit is cleared after the first entry, and its
   replicas_v0 field lists the journal on the device (`02 01 00`; S4, and the
   checker's "superblock not marked as containing replicas for journal
