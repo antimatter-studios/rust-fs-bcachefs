@@ -187,17 +187,24 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
     Ok(entries(v)?.0)
 }
 
+/// Whether an extent value carries a reconcile entry: background work is
+/// pending for it, and the reconcile_work btrees hold a key for it.
+pub fn reconciling(v: &[u8]) -> Result<bool> {
+    Ok(entries(v)?.2)
+}
+
 /// Whether an extent value carries a flags entry marking it poisoned:
 /// its data is known to be bad, and the reference refuses to read it.
 pub fn poisoned(v: &[u8]) -> Result<bool> {
     Ok((entries(v)?.1 & FLAG_POISONED) != 0)
 }
 
-/// The data entries of a value, and the bits of its flags entry (0 when
-/// it has none).
-fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
+/// The data entries of a value, the bits of its flags entry (0 when it
+/// has none), and whether it has a reconcile entry.
+fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64, bool)> {
     let mut out = Vec::new();
     let mut flags = 0;
+    let mut reconcile = false;
     let mut p = 0;
     while p + 8 <= v.len() {
         let w = le64(v, p);
@@ -312,6 +319,7 @@ fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
                 // 0x0000_0010_9010_0080 for `need_rb=background_compression
                 // replicas=1 checksum=crc32c background_compression=lz4`.
                 // Its fields are not decoded; the data reads without them.
+                reconcile = true;
                 p += 8;
             }
             t => {
@@ -323,7 +331,7 @@ fn entries(v: &[u8]) -> Result<(Vec<ExtentEntry>, u64)> {
             }
         }
     }
-    Ok((out, flags))
+    Ok((out, flags, reconcile))
 }
 
 /// One piece of a file's data: `len` sectors of the file starting at file

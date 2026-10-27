@@ -134,8 +134,9 @@ const UNCOUNTED_KEY_TYPES: [u8; 3] = [
 /// prints as `btree`: the btree's id in the byte below the kind, and its
 /// value is node sectors, nodes and interior nodes (#381).
 const ACCT_BTREE: u64 = 6;
-/// The logged_ops and reconcile_work_phys btrees.
+/// The logged_ops, reconcile_work and reconcile_work_phys btrees.
 const LOGGED_OPS: u8 = 17;
+const RECONCILE_WORK: u8 = 18;
 const RECONCILE_WORK_PHYS: u8 = 24;
 const KEY_COOKIE: u8 = 3;
 /// Common type allowances from the complete, one-key-per-image reference
@@ -172,7 +173,7 @@ const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
     (SNAPSHOT_TREES, &[KEY_SNAPSHOT_TREE]),
     (16, &[]), // deleted_inodes
     (LOGGED_OPS, &[32, 33, 35, 37, 39]),
-    (18, &[]), // reconcile_work
+    (RECONCILE_WORK, &[]),
     (19, &[]), // subvolume_children
     (ACCOUNTING, &[KEY_ACCOUNTING]),
     (21, &[]),                // reconcile_hipri
@@ -355,6 +356,11 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // A btree's per-snapshot counters (#163). Clean only, as above.
     if sb.is_clean() {
         check_snapshot_accounting(&trees, &mut r);
+    }
+    // The reconcile btrees' keys against the extents waiting on background
+    // work (#163). Clean only, as above.
+    if sb.is_clean() {
+        check_reconcile_work(&trees, &mut r);
     }
     for (id, allowed) in KEY_TYPES_ALLOWED {
         for k in trees.get(id).into_iter().flatten() {
@@ -1812,6 +1818,77 @@ fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
     }
 }
 
+/// A `set` key in reconcile_work or reconcile_work_phys with no extent
+/// waiting on background work behind it (#163). The bgcompress and kernel
+/// images give every extent with a reconcile entry a key at its own
+/// position in reconcile_work, and one in reconcile_work_phys at each of
+/// its pointers' backpointer positions, `device:sector << 16` plus the crc
+/// offset at snapshot 0; the reference reports a key in either with no such
+/// extent. Where an indirect extent is reconciling, its reconcile_work
+/// position has not been observed, and that btree is not judged.
+fn check_reconcile_work(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    let mut work = std::collections::BTreeSet::new();
+    let mut phys = std::collections::BTreeSet::new();
+    let mut indirect = false;
+    for (btree, skip) in [(btree_id::EXTENTS, 0), (btree_id::REFLINK, 8)] {
+        for k in trees.get(&btree).into_iter().flatten() {
+            if !matches!(k.key_type, key_type::EXTENT | key_type::REFLINK_V) {
+                continue;
+            }
+            let Some(v) = k.value.get(skip..) else {
+                continue;
+            };
+            if !matches!(crate::extent::reconciling(v), Ok(true)) {
+                continue;
+            }
+            if btree == btree_id::EXTENTS {
+                work.insert(k.pos);
+            } else {
+                indirect = true;
+            }
+            let mut crc_offset = 0;
+            for e in crate::extent::parse_entries(v).unwrap_or_default() {
+                match e {
+                    crate::extent::ExtentEntry::Crc(c) => crc_offset = u64::from(c.offset),
+                    crate::extent::ExtentEntry::Ptr(p) => {
+                        phys.insert((u64::from(p.dev), p.offset << 16 | crc_offset));
+                    }
+                }
+            }
+        }
+    }
+    let stray = |id: u8| {
+        trees
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == KEY_SET)
+    };
+    if !indirect {
+        for k in stray(RECONCILE_WORK).filter(|k| !work.contains(&k.pos)) {
+            r.add(
+                "reconcile_work_incorrectly_set",
+                format!(
+                    "reconcile_work key {}: no extent there waits on reconcile",
+                    k.pos
+                ),
+            );
+        }
+    }
+    for k in stray(RECONCILE_WORK_PHYS)
+        .filter(|k| k.pos.snapshot != 0 || !phys.contains(&(k.pos.inode, k.pos.offset)))
+    {
+        r.add(
+            "reconcile_work_phys_incorrectly_set",
+            format!(
+                "reconcile_work_phys key {}: no pointer of an extent waiting on reconcile has \
+                 its backpointer there",
+                k.pos
+            ),
+        );
+    }
+}
+
 /// Walk btree `id`, recording each node that cannot be read instead of
 /// stopping, and the order of the keys found. `None` when not even its root
 /// can be read.
@@ -2816,6 +2893,49 @@ mod tests {
             assert_eq!(report.problems.len(), 1, "{report:?}");
             assert_eq!(report.problems[0].kind, "accounting_mismatch");
             assert!(report.problems[0].detail.contains("dirents"), "{report:?}");
+        }
+    }
+
+    #[test]
+    fn a_reconcile_key_with_no_work_behind_it_is_reported() {
+        // The bgcompress image's reconcile word, and a ptr to sector 10889
+        // after a crc32 entry at offset 3.
+        const RECONCILE: u64 = 0x0000_0010_9010_0080;
+        let crc = 0b10 | (3 << 16);
+        let ptr = 1 | (10889 << 4);
+        let value = [RECONCILE, crc, ptr]
+            .iter()
+            .flat_map(|w: &u64| w.to_le_bytes())
+            .collect();
+        let mut extent = key(key_type::EXTENT, 8, value);
+        extent.pos.inode = 4096;
+        let mut work = key(KEY_SET, 8, Vec::new());
+        work.pos.inode = 4096;
+        let phys = key(KEY_SET, 10889 << 16 | 3, Vec::new());
+        let trees = |work: Bkey, phys: Bkey| {
+            BTreeMap::from([
+                (btree_id::EXTENTS, vec![extent.clone()]),
+                (RECONCILE_WORK, vec![work]),
+                (RECONCILE_WORK_PHYS, vec![phys]),
+            ])
+        };
+
+        let mut clean = Report::default();
+        check_reconcile_work(&trees(work.clone(), phys.clone()), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let mut stray_work = work.clone();
+        stray_work.pos.inode += 1;
+        let mut stray_phys = phys.clone();
+        stray_phys.pos.offset += 1;
+        for (w, p, kind) in [
+            (stray_work, phys, "reconcile_work_incorrectly_set"),
+            (work, stray_phys, "reconcile_work_phys_incorrectly_set"),
+        ] {
+            let mut report = Report::default();
+            check_reconcile_work(&trees(w, p), &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, kind);
         }
     }
 
