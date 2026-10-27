@@ -281,6 +281,27 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             None => continue,
         }
     }
+    // Accounting keys are totals after journal replay: negative deltas are
+    // valid in the journal, but a total below zero is an underflow (#163).
+    for k in trees
+        .get(&ACCOUNTING)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_ACCOUNTING)
+    {
+        for (i, word) in k.value.chunks_exact(8).enumerate() {
+            let total = i64::from_le_bytes(word.try_into().unwrap());
+            if total < 0 {
+                r.add(
+                    "accounting_underflow",
+                    format!(
+                        "accounting key {} counter {i} has negative total {total}",
+                        k.pos
+                    ),
+                );
+            }
+        }
+    }
     // A btree's own accounting key holds its nodes' sectors, its nodes and
     // its interior nodes (#381). Judged for logged_ops, the btree run
     // 39764355709 caught, and like the other allocation figures only on a

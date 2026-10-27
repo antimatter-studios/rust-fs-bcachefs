@@ -357,6 +357,54 @@ fn both_checkers_reject_a_wrong_alloc_stripe_sector_count() {
     );
 }
 
+/// Accounting counters are signed deltas summed at mount; the reference
+/// refuses a sum below zero. The lowest accounting key is `nr_inodes`.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_negative_accounting_counter() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const ACCOUNTING: u8 = 20;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-accounting-underflow");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("accounting-underflow.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let first = btree::walk(&dev, &sb, ACCOUNTING)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.value.len() >= 8)
+        .expect("the fixture has an accounting key with a counter");
+    let mut negative = first.clone();
+    negative.value[..8].copy_from_slice(&(-1i64).to_le_bytes());
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(ACCOUNTING, vec![negative]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(bad && text.contains("Accounting underflow"), "{text}");
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "accounting_underflow"),
+        "a negative accounting counter was not reported at {}: {:?}\n{text}",
+        first.pos,
+        ours.problems
+    );
+}
+
 /// #247's primary-only mutation, with equal-sequence backup controls and
 /// a newer-primary control. Ask the actual checker before comparing ours.
 #[test]
