@@ -1887,3 +1887,92 @@ fn both_checkers_reject_a_subvolume_snapshot_without_its_subvol_flag() {
 fn both_checkers_reject_an_interior_snapshot_with_the_subvol_flag() {
     both_checkers_reject_a_snapshot_with_a_wrong_subvol_flag(u64::from(u32::MAX - 1));
 }
+
+/// A subvolume_children entry at `parent:child` names a subvolume `child`
+/// whose `fs_parent` is `parent` (#219, #382). kernel.img holds `1:2` and
+/// `1:3`: `sv` (2) and its snapshot `snap` (3), both with `fs_parent` 1,
+/// `snap` with `creation_parent` 2. Each case moves one entry, a `deleted`
+/// key at the old position and the entry at the new one, and the
+/// reference reports "incorrect entry in subvolume_children btree P:C".
+#[cfg(feature = "write")]
+fn both_checkers_reject_a_moved_subvolume_children_entry(from: (u64, u64), to: (u64, u64)) {
+    use fs_bcachefs::bkey::{key_type, Bkey};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const SUBVOLUME_CHILDREN: u8 = 19;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-subvol-children");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("subvol-children-{}-{}.img", to.0, to.1));
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let k = btree::walk(&dev, &sb, SUBVOLUME_CHILDREN)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == from.0 && k.pos.offset == from.1)
+        .unwrap_or_else(|| panic!("kernel.img has no subvolume_children entry at {from:?}"));
+    drop(dev);
+    let gone = Bkey {
+        key_type: key_type::DELETED,
+        value: Vec::new(),
+        ..k.clone()
+    };
+    let mut moved = k;
+    moved.pos.inode = to.0;
+    moved.pos.offset = to.1;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer
+        .insert(SUBVOLUME_CHILDREN, vec![gone, moved])
+        .unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains(&format!(
+            "incorrect entry in subvolume_children btree {}:{}",
+            to.0, to.1
+        )),
+        "{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "subvol_children_entry_wrong"),
+        "the subvolume_children entry moved to {to:?} was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// `snap`'s entry moved under its `creation_parent`, 2: the entry's
+/// parent is the `fs_parent`, 1, not the subvolume it was snapshotted from.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_subvolume_children_entry_under_the_creation_parent() {
+    both_checkers_reject_a_moved_subvolume_children_entry((1, 3), (2, 3));
+}
+
+/// `snap`'s entry moved to inode U64_MAX, which no subvolume has, as
+/// nightly run 39756419740 did.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_subvolume_children_entry_under_no_subvolume() {
+    both_checkers_reject_a_moved_subvolume_children_entry((1, 3), (u64::MAX, 3));
+}
+
+/// `sv`'s entry moved to child 4, which no subvolume is.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_subvolume_children_entry_naming_no_subvolume() {
+    both_checkers_reject_a_moved_subvolume_children_entry((1, 2), (1, 4));
+}
