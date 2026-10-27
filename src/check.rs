@@ -73,6 +73,12 @@ const KEY_SNAPSHOT_TREE: u8 = 31;
 const TREE_ROOT: usize = 4;
 const SNAP_TREE: usize = 20;
 const SNAP_SKIPLIST: usize = 28;
+/// A snapshot's subvolume, the low half of its third word, and its subvol
+/// flag, bit 1 of its first word: set exactly when the subvolume is
+/// nonzero (S3: one bit flipped at a time on the kernel image's snapshots,
+/// docs/clean-room.md).
+const SNAP_SUBVOL: usize = 16;
+const SNAP_FLAG_SUBVOL: u32 = 1 << 1;
 /// The bucket_gens btree, and its key type: 256 buckets' generations a
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
@@ -463,6 +469,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         out
     };
     snapshot_links(&trees, &parents, &subvolumes, &mut r);
+    snapshot_subvol_flags(&trees, &mut r);
     // Each subvolume's snapshot, and the root directories it holds; with no
     // subvolumes btree, the root inode's snapshot alone.
     let mut views: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
@@ -1423,6 +1430,29 @@ fn free_space(
         }
         if at < to {
             hole(at, to, r);
+        }
+    }
+}
+
+/// Each snapshot's subvol flag against the subvolume it names (#219): the
+/// reference reports a flag set with no subvolume, or clear with one, as
+/// "has wrong subvol flag".
+fn snapshot_subvol_flags(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    for k in trees.get(&SNAPSHOTS).into_iter().flatten() {
+        if k.key_type != KEY_SNAPSHOT || k.value.len() < SNAP_SUBVOL + 4 {
+            continue;
+        }
+        let flagged = le32(&k.value, 0) & SNAP_FLAG_SUBVOL != 0;
+        let subvol = le32(&k.value, SNAP_SUBVOL);
+        if flagged != (subvol != 0) {
+            r.add(
+                "snapshot_subvol_flag_wrong",
+                format!(
+                    "snapshot {}: the subvol flag is {}, and it names subvolume {subvol}",
+                    k.pos.offset,
+                    if flagged { "set" } else { "clear" },
+                ),
+            );
         }
     }
 }
@@ -2995,6 +3025,28 @@ mod tests {
             check_key_fields(btree_id::INODES, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
         }
+    }
+
+    /// The kernel image's snapshots: flag set with a subvolume, clear
+    /// without one; either flipped is named (#219).
+    #[test]
+    fn a_snapshot_subvol_flag_out_of_step_with_its_subvolume_is_named() {
+        let kinds = |flags: u32, subvol: u32| {
+            let mut v = snapshot(1, [0; 3]);
+            v[..4].copy_from_slice(&flags.to_le_bytes());
+            v[SNAP_SUBVOL..SNAP_SUBVOL + 4].copy_from_slice(&subvol.to_le_bytes());
+            let mut btrees = BTreeMap::new();
+            btrees.insert(SNAPSHOTS, vec![key(KEY_SNAPSHOT, u64::from(u32::MAX), v)]);
+            let mut r = Report::default();
+            snapshot_subvol_flags(&btrees, &mut r);
+            r.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        assert!(kinds(SNAP_FLAG_SUBVOL, 2).is_empty());
+        assert!(kinds(0, 0).is_empty());
+        // Bit 0 is not the subvol flag: the reference accepts it flipped.
+        assert!(kinds(1 | SNAP_FLAG_SUBVOL, 2).is_empty());
+        assert_eq!(kinds(0, 2), ["snapshot_subvol_flag_wrong"]);
+        assert_eq!(kinds(SNAP_FLAG_SUBVOL, 0), ["snapshot_subvol_flag_wrong"]);
     }
 
     #[test]

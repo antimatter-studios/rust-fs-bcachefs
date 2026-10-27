@@ -268,7 +268,10 @@ tasks:
       # live-reference per-snapshot counter case more, 445 total.
       # Measured 2026-10-27 on fix/163-reconcile-work: one unit and two
       # live-reference reconcile work cases more, 448 total.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 448'
+      # Measured 2026-10-27 on fix/219-snapshot-subvol-flag: 450 executed,
+      # #416's two reconcile cases and one unit and two live-reference
+      # subvol-flag cases above the 445 (before #416's own unit case).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 450'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
