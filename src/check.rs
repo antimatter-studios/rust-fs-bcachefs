@@ -2040,8 +2040,8 @@ fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
 /// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot,
 /// snapshot_tree or inode allocation cursor at a position it cannot have,
-/// an accounting key holding more than its kind and btree, and an xattr
-/// whose lengths run past its value. Each pair of btree and key type below
+/// an accounting key holding more than its kind and btree, a backpointer
+/// whose level is above 4, and an xattr whose lengths run past its value. Each pair of btree and key type below
 /// is one differential run 38579070302, nightly-seed run 39018152705 or
 /// nightly runs 38878947701 and 39756419740 saw the reference refuse; a pair
 /// nobody observed is not judged (docs/clean-room.md).
@@ -2077,6 +2077,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
         // Nightly run 38878947701 (#219).
         (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
+        // Differential replay kernel-53 and the guest probe of 2026-10-27
+        // (#219).
+        (BACKPOINTERS, KEY_BACKPOINTER),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -2151,6 +2154,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 ),
             )
         }
+        // A backpointer's level is its value's byte 1. The guest probe of
+        // 2026-10-27 saw the reference refuse 5 and 255 as "backpointer level
+        // bad: 5 >= 4" and accept 3 and 4, on user data and on a btree node
+        // (#219): above 4 is judged, whatever the wording.
+        (BACKPOINTERS, KEY_BACKPOINTER) if v.get(1).is_some_and(|&level| level > 4) => r.add(
+            "backpointer_level_bad",
+            format!("btree {name}: backpointer {} is at level {}", k.pos, v[1]),
+        ),
         // An xattr's header gives its name's and its value's lengths
         // (src/xattr.rs); together they must fit the key's value.
         (btree_id::XATTRS, key_type::XATTR)
@@ -3040,6 +3051,40 @@ mod tests {
                 .any(|p| p.kind == "bkey_invalid_type_for_btree"),
             "{unrelated:?}"
         );
+    }
+
+    #[test]
+    fn a_backpointer_at_a_snapshot_or_past_level_four_is_named() {
+        // The guest probe of 2026-10-27 (#219): the reference deleted a
+        // backpointer at snapshot 1 or U32_MAX as "nonzero snapshot", and
+        // one at level 5 or 255 as "backpointer level bad", accepting 3 and 4.
+        let mut value = vec![0; 32];
+        value[2] = 4;
+        let k = key(KEY_BACKPOINTER, 1444413440, value);
+        for level in [0, 3, 4] {
+            let mut k = k.clone();
+            k.value[1] = level;
+            let mut clean = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut clean);
+            assert!(clean.clean(), "level {level}: {clean:?}");
+        }
+        for level in [5, 255] {
+            let mut k = k.clone();
+            k.value[1] = level;
+            let mut report = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "backpointer_level_bad");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+        }
+        for snapshot in [1, u32::MAX] {
+            let mut k = k.clone();
+            k.pos.snapshot = snapshot;
+            let mut report = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+        }
     }
 
     #[test]

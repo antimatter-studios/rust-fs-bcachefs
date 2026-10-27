@@ -1885,6 +1885,41 @@ repeats the observed U64_MAX mutation on `kernel.img`; the unit regression
 keeps offsets 1 and U32_MAX accepted and confines the rule to this
 btree/key-type pair.
 
+### A backpointer key's snapshot and level (S3, #219)
+
+The differential baseline's `node` class "invalid bkey in btree_node
+btree=backpointers ... type backpointer ... : bucket=..." (replayed as
+`kernel-53`, first described as a backpointer with a nonzero snapshot) was
+pinned down by a black-box probe in the harness guest on 2026-10-27
+(reference checker 1.39.7). The probe took the last backpointer of
+`default.img` (`0:1444413440:0`, user data, value bytes 0..3 `00 00 04 00`)
+and of `kernel.img` (`0:1614807040:0`, a btree node of reconcile_work at
+level 1, bytes `12 01 03 00`), changed one field, committed it with the
+writer's raw `insert` (a `deleted` key at the old position when the
+position moved) and read the copy with `bcachefs-ref fsck -n`. Both
+unchanged controls were clean to both checkers.
+
+Refused on read, with the key printed as `bucket=... btree=... level=...
+data_type=... suboffset=... len=... gen=... pos=...`, on both fixtures:
+
+| change | the reference's reason | this crate before |
+|---|---|---|
+| snapshot 1, and U32_MAX | "nonzero snapshot, deleting" (`bkey_snapshot_nonzero`) | clean |
+| size 1 | "size != 0, deleting" (`bkey_size_nonzero`) | already `bkey_size_nonzero` |
+| level (value byte 1) 5, and 255 | "backpointer level bad: 5 >= 4, deleting" (`backpointer_level_bad`) | clean on the btree node; only the value mismatch on user data |
+
+Levels 3 and 4 were accepted on both fixtures, although the reason line
+reads ">= 4": the checker judges a level above 4, which is every value
+observed, and `check_oracle.rs` keeps level 4 on a btree node accepted by
+both. A value 8 bytes short is refused under another reason, "(value too
+small: 24 < 32)" / "bad val size", outside this class. These cases were
+accepted by the reference, or refused by a later pass rather than as an
+invalid key, and are not judged here: device 1, a bucket past the device,
+offset U64_MAX, sector 1, a sector inside bucket 0, a nonzero low 16 bits
+of the offset, 8 trailing value bytes, btree id 200, data type 0 or 99,
+length 0 or 0xffffff, and value byte 3 at 0xff. This is black-box output
+only; no reference source was read.
+
 ### The key types a btree holds (S3, #163)
 
 `tests/check_oracle_key_types.rs` plants a key of every type into a copy
