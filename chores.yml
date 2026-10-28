@@ -283,7 +283,11 @@ tasks:
       # Measured 2026-10-28 on fix/219-inode-keys: 476 executed, #421's
       # unit case now on its base, and one unit and four live-reference
       # inode key cases above the 470.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 476'
+      # Measured 2026-10-28 on fix/partial-write-extents (#366) before its
+      # rebase: 473 executed on 4b1c56e, whose suite ran 471, the partial-
+      # write oracle case and the live-reference partial and far write case
+      # above it; on #434's 476 that is 478.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 478'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;

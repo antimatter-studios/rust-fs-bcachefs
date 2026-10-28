@@ -1343,31 +1343,29 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
-    /// A file's whole contents as this writer sees them, a session's
-    /// journal included: inline data, and data extents read, checked and
-    /// decompressed as the reader does (`fs::extent_bytes`). Holes,
-    /// reservations and unwritten extents read as zeros: an unwritten
-    /// extent's sectors are not the file's data (#158, #207). Reflinked data
-    /// is read from the indirect extents a `reflink_p` covers
-    /// ([`Writer::reflinked_into`]), so the rewrite copies it into extents
-    /// of the file's own.
-    fn contents(&self, ino: u64) -> Result<Vec<u8>> {
-        let claimed = self.inode(ino)?.raw.size;
-        // The whole file is held to be rewritten; one larger than the device
-        // is refused, as `Filesystem::read_at` refuses it (#149).
-        if claimed > self.dev.size_bytes() {
-            return Err(Error::Unsupported(format!(
-                "inode {ino}: {claimed} bytes is more than the device holds"
-            )));
-        }
-        let size = usize::try_from(claimed)
-            .map_err(|_| Error::Unsupported("file larger than memory".into()))?;
-        let mut out = crate::util::zeroed(size, format_args!("inode {ino}"))?;
-        for k in self.extents_of(ino)? {
+    /// The bytes `from..to` of file `ino`, a session's journal included,
+    /// read from `keys`, its extents there: inline data, and data extents
+    /// read, checked and decompressed as the reader does
+    /// (`fs::extent_bytes`). Holes, reservations and unwritten extents read
+    /// as zeros: an unwritten extent's sectors are not the file's data
+    /// (#158, #207); so does everything past `size`, the file's size.
+    /// Reflinked data is read from the indirect extents a `reflink_p`
+    /// covers ([`Writer::reflinked_into`]), so the rewrite copies it into
+    /// extents of the file's own. Only the extents that reach into the
+    /// window before `size` are read.
+    fn window(&self, ino: u64, keys: &[Bkey], from: u64, to: u64, size: u64) -> Result<Vec<u8>> {
+        let len = usize::try_from(to - from)
+            .map_err(|_| Error::Unsupported("a write larger than memory".into()))?;
+        let mut out = crate::util::zeroed(len, format_args!("inode {ino}"))?;
+        let end = to.min(size).max(from);
+        for k in keys {
             let start = k.start_offset().saturating_mul(512);
+            if start >= end || k.pos.offset.saturating_mul(512) <= from {
+                continue;
+            }
             match k.key_type {
                 key_type::EXTENT => {
-                    let e = crate::extent::DataExtent::from_key(&k)?;
+                    let e = crate::extent::DataExtent::from_key(k)?;
                     if e.ptr.is_unwritten() {
                         continue;
                     }
@@ -1375,13 +1373,13 @@ impl<D: BlockDevice> Writer<D> {
                         crate::fs::extent_bytes(&e, None, self.dev.size_bytes(), |at, buf| {
                             Ok(self.dev.read_at(at, buf)?)
                         })?;
-                    crate::fs::copy_window(&mut out, 0, size as u64, e.file_start * 512, &data);
+                    crate::fs::copy_window(&mut out, from, end, e.file_start * 512, &data);
                 }
                 key_type::INLINE_DATA => {
                     let n = k.value.len().min(k.size as usize * 512);
-                    crate::fs::copy_window(&mut out, 0, size as u64, start, &k.value[..n]);
+                    crate::fs::copy_window(&mut out, from, end, start, &k.value[..n]);
                 }
-                key_type::REFLINK_P => self.reflinked_into(ino, &k, &mut out)?,
+                key_type::REFLINK_P => self.reflinked_into(ino, k, &mut out, from, end)?,
                 key_type::RESERVATION | key_type::WHITEOUT | key_type::EXTENT_WHITEOUT => {}
                 other => {
                     return Err(Error::Unsupported(format!(
@@ -1394,12 +1392,19 @@ impl<D: BlockDevice> Writer<D> {
     }
 
     /// Copy the data `reflink_p` key `p` of file `ino` shows into `out`,
-    /// the file's bytes (#169): each indirect extent the pointer covers,
+    /// the file's bytes `win_from..win_to` (#169): each indirect extent the pointer covers,
     /// read as the reader reads it (`Filesystem::read_reflinked`), at the
     /// file sector it shows up at. The reflink btree is read through a
     /// cursor from the pointer's start to the end of its run, as
     /// `unreference` reads it (#193).
-    fn reflinked_into(&self, ino: u64, p: &Bkey, out: &mut [u8]) -> Result<()> {
+    fn reflinked_into(
+        &self,
+        ino: u64,
+        p: &Bkey,
+        out: &mut [u8],
+        win_from: u64,
+        win_to: u64,
+    ) -> Result<()> {
         const REFLINK: u8 = crate::btree::btree_id::REFLINK;
         let idx = crate::extent::reflink_p_idx(&p.value)?;
         let end = idx + u64::from(p.size);
@@ -1451,8 +1456,13 @@ impl<D: BlockDevice> Writer<D> {
                             v.pos
                         ))
                     })?;
-                let size = out.len() as u64;
-                crate::fs::copy_window(out, 0, size, (p.start_offset() + at - idx) * 512, cut);
+                crate::fs::copy_window(
+                    out,
+                    win_from,
+                    win_to,
+                    (p.start_offset() + at - idx) * 512,
+                    cut,
+                );
             }
             at = to;
         }
@@ -1464,53 +1474,16 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Write `data` into a file at byte `offset` (#102), growing it when
     /// the write ends past its size; a gap past the old end reads as zeros.
-    /// The file is rewritten whole, laid out as [`Writer::write_file`] lays
-    /// it out, so what the reference would store for those bytes is what
-    /// is stored. Its holes stay holes (#156): only the blocks that held
-    /// something and the blocks the write covers are written, so a gap of a
-    /// block or more past the old end is a hole too.
+    /// Only the extents the write overlaps are rewritten (#366, see
+    /// [`Writer::rewrite`]), so its cost is the write's, not the file's,
+    /// and a gap of a block or more past the old end is a hole (#156),
+    /// however large: nothing holds it.
     pub fn write_at(&mut self, ino: u64, offset: u64, data: &[u8]) -> Result<()> {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))?;
-        let mut c = self.contents(ino)?;
-        let block = (u64::from(self.sb.block_size) * 512).max(512);
-        let mut ranges = self.stored_ranges(ino, block)?;
-        let kept = (c.len() as u64).next_multiple_of(block);
-        let start = offset - offset % block;
-        if !data.is_empty() && start > kept {
-            let device = self.dev.size_bytes();
-            if end > device {
-                return Err(Error::Unsupported(format!(
-                    "inode {ino}: a size of {end} bytes is more than the device holds \
-                     ({device} bytes)"
-                )));
-            }
-            self.grow(ino, &mut c, kept)?;
-            let mut tail = Vec::new();
-            tail.try_reserve_exact((end - start) as usize)
-                .map_err(|_| {
-                    Error::Unsupported(format!(
-                        "inode {ino}: {} bytes do not fit in memory",
-                        end - start
-                    ))
-                })?;
-            tail.resize((offset - start) as usize, 0);
-            tail.extend_from_slice(data);
-            let mut pieces = pieces_of(&c, &ranges);
-            pieces.push((start, &tail[..]));
-            return self.write_pieces(ino, end, &pieces);
-        }
-        if end > c.len() as u64 {
-            self.grow(ino, &mut c, end)?;
-        }
-        let (from, to) = (offset as usize, end as usize);
-        c[from..to].copy_from_slice(data);
-        if !data.is_empty() {
-            ranges.push((start, end.next_multiple_of(block)));
-        }
-        let pieces = pieces_of(&c, &merge_ranges(ranges));
-        self.write_pieces(ino, c.len() as u64, &pieces)
+        let size = self.inode(ino)?.raw.size.max(end);
+        self.rewrite(ino, size, Some((offset, data)))
     }
 
     /// Append `data` to a file (#102).
@@ -1521,95 +1494,123 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Set a file's size (#102): cut short, or grown with zeros. The
     /// file's holes stay holes (#156), and growing leaves the new range one:
-    /// only the blocks that held something are rewritten, the last
-    /// zero-filled past the old end, and the size set, so the range has no
-    /// extent and reads as zeros. A size larger than the device is still
-    /// refused, as [`Writer::write_at`]'s is.
+    /// only the extents from the block the file now ends in are rewritten
+    /// or freed (#366, see [`Writer::rewrite`]), the last zero-filled past
+    /// the old end, and the size set, so the new range has no extent and
+    /// reads as zeros, however large.
     pub fn truncate(&mut self, ino: u64, size: u64) -> Result<()> {
-        let mut c = self.contents(ino)?;
-        let block = (u64::from(self.sb.block_size) * 512).max(512);
-        let ranges = self.stored_ranges(ino, block)?;
-        if size <= c.len() as u64 {
-            c.truncate(size as usize);
-            return self.write_pieces(ino, size, &pieces_of(&c, &ranges));
-        }
-        let device = self.dev.size_bytes();
-        if size > device {
-            return Err(Error::Unsupported(format!(
-                "inode {ino}: a size of {size} bytes is more than the device holds \
-                 ({device} bytes)"
-            )));
-        }
-        let kept = (c.len() as u64).next_multiple_of(block).min(size);
-        self.grow(ino, &mut c, kept)?;
-        self.write_pieces(ino, size, &pieces_of(&c, &ranges))
+        self.rewrite(ino, size, None)
     }
 
-    /// The byte ranges of file `ino` its extents btree holds something in,
-    /// widened to whole blocks of `block` bytes and merged, in order:
-    /// everything else is a hole (#156). A reservation or an unwritten
-    /// extent holds space, so it is kept as written zeros, as before.
-    fn stored_ranges(&self, ino: u64, block: u64) -> Result<Vec<(u64, u64)>> {
-        let mut out = Vec::new();
-        for k in self.extents_of(ino)? {
-            if k.size == 0 || matches!(k.key_type, key_type::WHITEOUT | key_type::EXTENT_WHITEOUT) {
-                continue;
-            }
-            let from = k.start_offset().saturating_mul(512);
-            let to = k.pos.offset.saturating_mul(512);
-            out.push((
-                from - from % block,
-                to.div_ceil(block).saturating_mul(block),
-            ));
-        }
-        Ok(merge_ranges(out))
-    }
-
-    /// Grow the contents `c` of file `ino` to `size` bytes with zeros, for
-    /// a write or a truncate that ends past them. The file is held in
-    /// memory whole, its holes as zeros, so a size larger than the device
-    /// is refused before anything is allocated, where holding it once
-    /// aborted the process (#156). The rest is reserved fallibly
-    /// ([`crate::util::zeroed`]).
-    fn grow(&self, ino: u64, c: &mut Vec<u8>, size: u64) -> Result<()> {
-        let device = self.dev.size_bytes();
-        if size > device {
-            return Err(Error::Unsupported(format!(
-                "inode {ino}: a size of {size} bytes is more than the device holds \
-                 ({device} bytes), and this writer writes a file whole, holes included"
-            )));
-        }
-        let more = usize::try_from(size)
-            .map_err(|_| Error::Unsupported("size larger than memory".into()))?
-            - c.len();
-        c.try_reserve_exact(more).map_err(|_| {
-            Error::Unsupported(format!("inode {ino}: {size} bytes do not fit in memory"))
-        })?;
-        c.resize(c.len() + more, 0);
-        Ok(())
-    }
-
-    /// Replace a file's whole contents with `data`, laid out as the
-    /// reference would (see [`inline_max`]); empty truncates it.
-    /// The old contents' space is freed.
-    pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
-        self.write_file_sized(ino, data, data.len() as u64)
-    }
-
-    /// Replace a file's contents with `pieces`, each the bytes at a byte
-    /// offset that is a whole block, in order and apart, with nothing
-    /// between them: a hole, which reads as zeros (#156). The file is
-    /// `size` bytes, and only a piece that ends there may end inside a
-    /// block. The pieces are laid out as the file would be were it all
-    /// data (see [`data_layout`]): full blocks in extents, and a short last
-    /// block inline when the reference would keep it inline.
-    fn write_pieces(&mut self, ino: u64, size: u64, pieces: &[(u64, &[u8])]) -> Result<()> {
+    /// Set file `ino`'s size to `size` and write `write`'s bytes at its
+    /// offset, rewriting only what that changes (#366): the blocks the
+    /// write covers, the block the old size ends in when the size changes,
+    /// and everything from the block the new size ends in when it shrinks,
+    /// each widened to the whole extents it overlaps. Those extents are
+    /// read, freed and written again, their holes left holes (#156), laid
+    /// out as [`Writer::write_file`] would lay out the file (see
+    /// [`data_layout`]), so what the reference would store for those bytes
+    /// is what is stored. Every other extent keeps its key, its pointer
+    /// and its bucket. A part of an extent is not cut away: the extents a
+    /// window overlaps are rewritten whole.
+    fn rewrite(&mut self, ino: u64, size: u64, write: Option<(u64, &[u8])>) -> Result<()> {
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
             return Err(Error::Corrupt(format!("inode {ino} is not a regular file")));
         }
+        let old_size = i.raw.size;
+        let block = (u64::from(self.sb.block_size) * 512).max(512);
+        let up = |at: u64| {
+            at.checked_next_multiple_of(block)
+                .ok_or_else(|| Error::Unsupported("a write past the largest offset".into()))
+        };
+        let down = |at: u64| at - at % block;
+        // The keys that hold something: a reservation or an unwritten
+        // extent holds space, so it is kept as written zeros when it is
+        // rewritten, as before.
+        let keys: Vec<Bkey> = self
+            .extents_of(ino)?
+            .into_iter()
+            .filter(|k| {
+                k.size > 0 && !matches!(k.key_type, key_type::WHITEOUT | key_type::EXTENT_WHITEOUT)
+            })
+            .collect();
+        let span = |k: &Bkey| {
+            (
+                k.start_offset().saturating_mul(512),
+                k.pos.offset.saturating_mul(512),
+            )
+        };
+        let mut windows = Vec::new();
+        let written = write.filter(|(_, data)| !data.is_empty());
+        if let Some((at, data)) = written {
+            windows.push((down(at), up(at + data.len() as u64)?));
+        }
+        if size < old_size {
+            let last = keys.iter().map(|k| span(k).1).max().unwrap_or(0);
+            windows.push((down(size), up(old_size)?.max(last)));
+        } else if size > old_size && old_size % block != 0 {
+            windows.push((down(old_size), up(old_size)?));
+        }
+        // Each window widened to the whole extents it overlaps and to whole
+        // blocks, until neither moves it.
+        loop {
+            let mut wider = merge_ranges(windows.clone());
+            for w in &mut wider {
+                for k in &keys {
+                    let (from, to) = span(k);
+                    if from < w.1 && to > w.0 {
+                        w.0 = w.0.min(from);
+                        w.1 = w.1.max(to);
+                    }
+                }
+                *w = (down(w.0), up(w.1)?);
+            }
+            let wider = merge_ranges(wider);
+            if wider == windows {
+                break;
+            }
+            windows = wider;
+        }
+        let inside = |k: &Bkey| {
+            let (from, to) = span(k);
+            windows.iter().any(|w| from < w.1 && to > w.0)
+        };
+        let (old, kept): (Vec<Bkey>, Vec<Bkey>) = keys.into_iter().partition(|k| inside(k));
+
+        // Each window's bytes up to the new size, the write laid over them,
+        // and the blocks of it that hold something: those the old extents
+        // held and those the write covers. Everything else is a hole.
+        let mut pieces: Vec<(u64, Vec<u8>)> = Vec::new();
+        for &(from, to) in &windows {
+            let to = to.min(size);
+            if from >= to {
+                continue;
+            }
+            let mut bytes = self.window(ino, &old, from, to, old_size)?;
+            let mut stored: Vec<(u64, u64)> = old
+                .iter()
+                .map(span)
+                .filter(|&(a, b)| a < to && b > from)
+                .map(|(a, b)| (down(a), b.div_ceil(block).saturating_mul(block)))
+                .collect();
+            if let Some((at, data)) = written {
+                crate::fs::copy_window(&mut bytes, from, to, at, data);
+                let end = at + data.len() as u64;
+                if at < to && end > from {
+                    stored.push((down(at), up(end)?));
+                }
+            }
+            for (a, b) in merge_ranges(stored) {
+                let (a, b) = (a.max(from), b.min(to));
+                if a < b {
+                    pieces.push((a, bytes[(a - from) as usize..(b - from) as usize].to_vec()));
+                }
+            }
+        }
+
         let whole = usize::try_from(size)
-            .map_err(|_| Error::Unsupported("size larger than memory".into()))?;
+            .map_err(|_| Error::Unsupported("size larger than memory addresses".into()))?;
         let in_extents = self.layout(whole).0 as u64;
         // Each piece's bytes before `in_extents` go in extents, the rest of
         // it, the file's short last block, inline.
@@ -1617,18 +1618,17 @@ impl<D: BlockDevice> Writer<D> {
             |at: u64, bytes: &[u8]| (in_extents.clamp(at, at + bytes.len() as u64) - at) as usize;
         // Buckets freed by earlier commits come back first; the ones this
         // rewrite frees wait for the next (#132).
-        if pieces.iter().any(|&(at, bytes)| split(at, bytes) > 0) {
+        if pieces.iter().any(|(at, bytes)| split(*at, bytes) > 0) {
             self.discard_freed()?;
         }
         let now = self.now();
         let mut t = Txn::default();
-        let old_extents = self.extents_of(ino)?;
-        self.free_extents(ino, &old_extents, &mut t)?;
+        self.free_extents(ino, &old, &mut t)?;
         let opts = data_options(&self.sb, &i.raw)?;
         let block_sectors = u64::from(self.sb.block_size).max(1);
-        let mut sectors = 0;
-        for &(at, bytes) in pieces {
-            let n = split(at, bytes);
+        let mut sectors: u64 = kept.iter().map(|k| u64::from(k.size)).sum();
+        for (at, bytes) in &pieces {
+            let n = split(*at, bytes);
             if n > 0 {
                 sectors += self.allocate_data(ino, opts, at / 512, &bytes[..n], &mut t)?;
             }
@@ -1641,12 +1641,19 @@ impl<D: BlockDevice> Writer<D> {
                 sectors += block_sectors;
             }
         }
-        let old = i.key.clone();
+        let key = i.key.clone();
         i.raw.size = size;
         i.raw.sectors = sectors;
         self.touch(&mut i, now);
-        t.put(ids::INODES, Some(&old), i.rekey());
+        t.put(ids::INODES, Some(&key), i.rekey());
         self.commit(t)
+    }
+
+    /// Replace a file's whole contents with `data`, laid out as the
+    /// reference would (see [`inline_max`]); empty truncates it.
+    /// The old contents' space is freed.
+    pub fn write_file(&mut self, ino: u64, data: &[u8]) -> Result<()> {
+        self.write_file_sized(ino, data, data.len() as u64)
     }
 
     /// [`Writer::write_file`], with the file's size set to `size`, at least
@@ -1731,18 +1738,6 @@ fn merge_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
         }
     }
     out
-}
-
-/// The bytes of `contents` each of `ranges` covers, cut at its end, and
-/// where they start: the pieces [`Writer::write_pieces`] writes. A range
-/// past the end is dropped.
-fn pieces_of<'a>(contents: &'a [u8], ranges: &[(u64, u64)]) -> Vec<(u64, &'a [u8])> {
-    let len = contents.len() as u64;
-    ranges
-        .iter()
-        .filter(|&&(from, _)| from < len)
-        .map(|&(from, to)| (from, &contents[from as usize..to.min(len) as usize]))
-        .collect()
 }
 
 const S_IFREG: u32 = 0o100000;

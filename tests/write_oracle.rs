@@ -1616,6 +1616,58 @@ fn a_sparse_file_written_inside_and_truncated_here_is_read_by_the_reference() {
     );
 }
 
+/// A write touches only the extents it overlaps (#366): a 10-byte write in
+/// the middle of a 1 MiB file, a one-byte write at 1 TiB on a small file
+/// and a small file truncated to 1 TiB, far larger than the device, pass
+/// the reference checker and read back through the reference mount as
+/// their data, the holes as zeros, and the writes.
+#[test]
+fn partial_and_far_writes_here_are_read_by_the_reference() {
+    const TIB: u64 = 1 << 40;
+    let img = scratch("write-study/base.img", "write-partial");
+    let dir = {
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let mut large = pattern(1 << 20, 15);
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let ino = w.create_file(dir, b"large", &large, 0o644).unwrap();
+    let far = w.create_file(dir, b"far", b"small\n", 0o644).unwrap();
+    let cut = w.create_file(dir, b"cut-up", b"small\n", 0o644).unwrap();
+    let at = (1 << 19) + 3;
+    w.write_at(ino, at as u64, b"0123456789").unwrap();
+    large[at..at + 10].copy_from_slice(b"0123456789");
+    w.write_at(far, TIB, b"x")
+        .unwrap_or_else(|e| panic!("a one-byte write at 1 TiB was refused: {e}"));
+    w.truncate(cut, TIB)
+        .unwrap_or_else(|e| panic!("a truncate to 1 TiB was refused: {e}"));
+    drop(w);
+    assert_fsck_clean(&img);
+    with_reference_mount(&img, |m| {
+        use std::io::{Read, Seek, SeekFrom};
+        assert!(
+            std::fs::read(m.join("d/large")).unwrap() == large,
+            "the reference read other bytes of the file written in its middle"
+        );
+        for (name, size, tail) in [("far", TIB + 1, &b"\0\0\0x"[..]), ("cut-up", TIB, &[0; 4])] {
+            let path = m.join("d").join(name);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                size,
+                "{name}'s size"
+            );
+            let mut f = std::fs::File::open(&path).unwrap();
+            let mut head = [0u8; 6];
+            f.read_exact(&mut head).unwrap();
+            assert_eq!(&head, b"small\n", "{name}'s first bytes");
+            f.seek(SeekFrom::Start(size - 4)).unwrap();
+            let mut last = [0u8; 4];
+            f.read_exact(&mut last).unwrap();
+            assert_eq!(&last[..], tail, "{name}'s last bytes");
+        }
+    });
+}
+
 /// Truncating up leaves the new range a hole (#156): an empty file and a
 /// file of 70,001 bytes, each truncated to 1 MiB here, pass the reference
 /// checker and read back through the reference mount as their data and
