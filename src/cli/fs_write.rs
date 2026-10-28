@@ -63,26 +63,30 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
                     .value_name("OCTAL")
                     .default_value("755"),
             )
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img mkdir /srv\n  fs.bcachefs disk.img mkdir /srv/private --mode 700 --journal"),
     )
     .subcommand(
         Cmd::new("rm")
             .about("(experimental) Remove a file or symlink")
             .arg(path("path", "The name to remove"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img rm /hello.txt\n  fs.bcachefs disk.img rm /srv/link --journal"),
     )
     .subcommand(
         Cmd::new("rmdir")
             .about("(experimental) Remove an empty directory")
             .arg(path("path", "The directory to remove"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img rmdir /srv/empty\n  fs.bcachefs disk.img rmdir /srv/empty --journal"),
     )
     .subcommand(
         Cmd::new("mv")
             .about("(experimental) Rename: FROM to TO, which must not exist")
             .arg(path("from", "The name to move"))
             .arg(path("to", "Its new name"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img mv /hello.txt /srv/hello.txt\n  fs.bcachefs disk.img mv /srv/old /srv/new --journal"),
     )
     .subcommand(
         Cmd::new("ln")
@@ -95,21 +99,24 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
             )
             .arg(Arg::new("target").value_name("TARGET").required(true))
             .arg(path("path", "The new name"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img ln /hello.txt /hello-again.txt\n  fs.bcachefs disk.img ln -s hello.txt /hello-link"),
     )
     .subcommand(
         Cmd::new("chmod")
             .about("(experimental) Set permissions")
             .arg(Arg::new("mode").value_name("OCTAL").required(true))
             .arg(path("path", "The path to change"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img chmod 600 /hello.txt\n  fs.bcachefs disk.img chmod 755 /srv --journal"),
     )
     .subcommand(
         Cmd::new("chown")
             .about("(experimental) Set owner and group: UID:GID, UID: or :GID")
             .arg(Arg::new("owner").value_name("UID:GID").required(true))
             .arg(path("path", "The path to change"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img chown 1000:1000 /hello.txt\n  fs.bcachefs disk.img chown :100 /srv"),
     )
     .subcommand(
         Cmd::new("setfattr")
@@ -117,14 +124,16 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
             .arg(Arg::new("name").value_name("NAME").required(true))
             .arg(Arg::new("value").value_name("VALUE").required(true))
             .arg(path("path", "The path to change"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img setfattr user.origin backup /hello.txt\n  fs.bcachefs disk.img setfattr trusted.note kept /srv --journal"),
     )
     .subcommand(
         Cmd::new("rmfattr")
             .about("(experimental) Remove an extended attribute")
             .arg(Arg::new("name").value_name("NAME").required(true))
             .arg(path("path", "The path to change"))
-            .arg(journal()),
+            .arg(journal())
+            .after_help("Examples:\n  fs.bcachefs disk.img rmfattr user.origin /hello.txt\n  fs.bcachefs disk.img rmfattr trusted.note /srv --journal"),
     )
 }
 
