@@ -30,33 +30,18 @@
 # reported since the checker refuses a tree id past U32_MAX.
 # #220's three snapshot-link classes were removed by #224 once a run at
 # seed 0, 80 cases a fixture, no longer found them.
-ref-only	key-offset	check_btree_backpointers...backpointer for nonexistent alloc key: #	#163: allocation metadata and allowed key types
-ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#163: allocation metadata and allowed key types
-ref-only	key-inode	check_alloc_info...entry in freespace btree for nonexistant dev:bucket #, fixing	#163: allocation metadata and allowed key types
+# #163's forty allocation and key-type classes were removed by #454 once
+# main run 40754536244 (seed 0, 80 cases a fixture, fixtures of CI run
+# 40744795974) no longer found them; the three it still found are at the
+# end, each tracked by its own issue.
 ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
-ref-only	key-type	invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max len # ver # : nr_in	#163: allocation metadata and allowed key types
-ref-only	key-offset	check_alloc_info...bucket incorrectly set in freespace btree	#163: allocation metadata and allowed key types
-ref-only	node	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#163: allocation metadata and allowed key types
-ref-only	node	check_allocations...bucket # gen # data type user has wrong stripe_sectors: got #, should be #, fixi	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type xattr # len # ver # : (type #):	#163: allocation metadata and allowed key types
-ref-only	key-size	check_alloc_info...hole in alloc btree missing in freespace btree	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type accounting # len # ver # : nr_inodes 	#163: allocation metadata and allowed key types
-ref-only	key-inode	check_reconcile_work...backpointer should be set in (none)	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type lru # len # ver # : idx #	#163: allocation metadata and allowed key types
-ref-only	key-value	accounting_read...accounting underflow for	#163: allocation metadata and allowed key types
-ref-only	key-inode	check_reconcile_work...extent should be set in (none)	#163: allocation metadata and allowed key types
-ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#163: allocation metadata and allowed key types
 
 # Measured on main 91a47a2 in CI run 38698985871, reference checker 1.39.7.
 # Fixtures rebuilt by main run 38680345154 change the nodes reached by seed 0.
 # Eight additional exact classes: seven missing checks and one disputed result.
 # Counts, fixture identities and unresolved ownership are recorded in
 # docs/clean-room.md, "Rebuilt-fixture differential control" (#227).
-ref-only	key-type	check_allocations...invalid bkey in btree_node btree=extents level=#: u#s # type accounting #:u#_max	#163: allocation metadata and allowed key types
 ours-only	node	check:missing_backpointer	#230: unresolved backpointer disagreement; reference clean is not proof of validity
-ref-only	node	check_allocations...invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver 	#163: allocation metadata and allowed key types
-ref-only	node	invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver # :	#163: allocation metadata and allowed key types
-ref-only	node	check_allocations...accounting mismatch for snapshot id=# btree=(unknown btree #):	#163: allocation metadata and allowed key types
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : nr_inodes	#219: metadata key invariants
 ref-only	key-value	check_extents...extent type past end of inode #, i_size #	#221: inode metadata consistency
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : replicas 	#219: metadata key invariants
@@ -67,40 +52,16 @@ ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type ac
 # three further exact classes did (report SHA-256 8921a81d...cacb, #227).
 ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#219: metadata key invariants
 ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
-ref-only	key-offset	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#163: allocation metadata and allowed key types
 
 # Measured in nightly run 38878947701 (2026-10-16, reference checker 1.39.7),
 # 648 cases at that night's seeds: 33 classes the baseline did not hold,
 # each recorded against the issue that tracks its family (#228).
-ref-only	key-type	invalid bkey in btree_node btree=subvolumes level=#: u#s # type alloc # len # ver # :	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=freespace level=#: u#s # type logged_op_finsert # len # ver #	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=snapshots level=#: u#s # type alloc_v# # len # ver # :	#163: allocation metadata and allowed key types
-ref-only	key-size	check_alloc_info...bucket incorrectly set in freespace btree	#163: allocation metadata and allowed key types
-ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer #:u#_max len # ver # :	#163: allocation metadata and allowed key types
-ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting #:u#_max len # ver # : sn	#163: allocation metadata and allowed key types
 ours-only	node	check:extent_data	not a defect: this crate verifies extent data checksums, which the reference checker does not read
-ref-only	key-type	invalid bkey in btree_node btree=subvolumes level=#: u#s # type accounting # len # ver # : nr_inodes	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type bucket_gens # len # ver # : # # # #	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # type indirect_inline_data # len # ver # :	#163: allocation metadata and allowed key types
 ref-only	key-inode	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
-ref-only	key-type	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type alloc_v# pos_min len # ver # :	#163: allocation metadata and allowed key types
-ref-only	key-size	invalid bkey in btree_node btree=need_discard level=#: u#s # type set # len # ver #	#163: allocation metadata and allowed key types
-ref-only	key-size	invalid bkey in btree_node btree=freespace level=#: u#s # type set # len # ver #	#163: allocation metadata and allowed key types
 ref-only	key-size	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#219: metadata key invariants
-ref-only	key-inode	check_allocations...pointer to nonexistent device #	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type alloc # len # ver # :	#163: allocation metadata and allowed key types
-ref-only	key-inode	alloc_read...pointer to nonexistent device #	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#163: allocation metadata and allowed key types
 ref-only	key-value	check_snapshots...snapshot node # has wrong subvol flag:	#219: metadata key invariants
 ref-only	key-snapshot	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : snapshot 	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=accounting level=#: u#s # type indirect_inline_data # len # ver # :	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type logged_op_finsert # len # ve	#163: allocation metadata and allowed key types
 ref-only	key-size	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type set # len # ver #	#219: metadata key invariants
-ref-only	key-offset	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting #:u#_max:# len # ver # : 	#163: allocation metadata and allowed key types
-ref-only	key-inode	check_allocations...accounting mismatch for snapshot id=# btree=extents:	#163: allocation metadata and allowed key types
-ref-only	key-snapshot	check_allocations...accounting mismatch for snapshot id=# btree=inodes:	#163: allocation metadata and allowed key types
-ref-only	key-type	invalid bkey in btree_node btree=logged_ops level=#: u#s # type logged_op_finsert # len # ver # : (v	#163: allocation metadata and allowed key types
 
 # Measured on main 08c02dc in run 39018152705 (2026-10-17), reference
 # checker 1.39.7: 648 cases, first seed 1659440. Each new class has its
@@ -131,3 +92,10 @@ ref-only	key-type	check_allocations...bucket # gen # data type user has wrong di
 # branch: reference checker 1.39.7, 648 cases, fixtures of CI run
 # 40688425980. One new class, tracked by its own child of #228 (#449).
 ref-only	node	check_reconcile_work...backpointer reconcile phys should be none, is pending	#449: The checker misses a backpointer whose reconcile_phys field says pending when nothing waits on it
+
+# Measured on main in run 40754536244 (2026-10-28, reference checker 1.39.7),
+# a dispatch at seed 0, 80 cases a fixture, fixtures of CI run 40744795974:
+# the three #163 classes it still found, each split into its own issue.
+ref-only	key-inode	check_lrus...incorrect lru entry: lru fragmentation, expected id # time #	#451: The checker misses an lru key filed under another lru id than its bucket's fragmentation lru
+ref-only	node	check_allocations...invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver 	#452: The checker accepts an alloc_v4 key the reference refuses for its value size
+ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match btree node it points to:	#453: The checker misses a btree-node backpointer moved off the position its node gives
