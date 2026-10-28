@@ -120,7 +120,7 @@ fn read_command() -> Cmd {
         )
         .subcommand(
             Cmd::new("read")
-                .visible_alias("cat")
+                .alias("cat")
                 .about("Read a regular file's bytes; refuse symlinks, naming their target")
                 .arg(Arg::new("path").value_name("PATH").required(true))
                 .arg(
