@@ -5,6 +5,8 @@ tools (`fs.bcachefs`, `fsck.bcachefs`), written clean-room: from prose
 documentation and black-box observation of images, never from the GPL
 implementation. MIT-licensed.
 
+Published on crates.io as `rust-fs-bcachefs`; the library name is `fs_bcachefs`.
+
 Reading is the supported use. Writing is being built behind the `write`
 cargo feature, off by default: every image it writes in the tests passes the
 reference checker and reads back through the reference implementation's
