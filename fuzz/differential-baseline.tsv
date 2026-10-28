@@ -130,3 +130,4 @@ ref-only	key-type	check_allocations...bucket # gen # data type user has wrong di
 # Measured in run 40708525651 (2026-10-28), a dispatch at seed 0 on #431's
 # branch: reference checker 1.39.7, 648 cases, fixtures of CI run
 # 40688425980. One new class, tracked by its own child of #228 (#449).
+ref-only	node	check_reconcile_work...backpointer reconcile phys should be none, is pending	#449: The checker misses a backpointer whose reconcile_phys field says pending when nothing waits on it
