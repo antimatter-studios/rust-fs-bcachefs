@@ -139,6 +139,18 @@ skipped. Symlinks need `--preserve=links`, which recreates their targets
 without following them and keeps hard links; `--preserve=times` sets the
 stored access and modification times.
 
+```sh
+fs.bcachefs disk.img import hello.txt /hello.txt
+fs.bcachefs disk.img import --replace --verify hello.txt /hello.txt
+```
+
+`import SOURCE PATH` streams a local file, or stdin with `-`, into a staged
+file beside PATH, committed through the journal in bounded runs, and
+publishes it with one rename; an existing PATH needs `--replace`, which the
+rename does in the same transaction, and `--verify` reads the staged file
+back through a fresh open of the image first. A failed import removes the
+staged file and leaves PATH as it was.
+
 `read` streams regular-file bytes to stdout. With `-o FILE`, it writes
 `FILE.partial` and renames that file to `FILE` after a successful read;
 an existing partial is refused. `cat` is an identical alias. Both refuse

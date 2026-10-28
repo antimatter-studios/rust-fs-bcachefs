@@ -27,6 +27,7 @@ while read -r verb; do
         stat|read) args=(/hello.txt) ;;
         export) args=(/hello.txt "$SANDBOX/export-offset") ;;
         write) args=(/hello.txt --from /dev/null) ;;
+        import) args=(/dev/null /offset-import) ;;
         mkdir|rm|rmdir) args=(/hello.txt) ;;
         mv|ln) args=(/hello.txt /other) ;;
         chmod) args=(600 /hello.txt) ;;

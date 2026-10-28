@@ -1886,3 +1886,173 @@ fn an_xattr_key_in_the_dirents_btree_is_refused_by_the_reference() {
     assert_ours_reports(&img, "invalid_bkey", &dirent.pos.to_string());
     std::fs::remove_file(&img).ok();
 }
+
+/// Apply whatever journal an import left (#439 publishes through it)
+/// before the reference mounts the image, as the continued-journal oracle
+/// does; the read-only checker has already judged the image as it was.
+#[cfg(feature = "cli")]
+fn replay(img: &Path) {
+    let (ok, text) = reference(&["fsck", "-y", img.to_str().unwrap()]);
+    assert!(ok, "the reference replay failed:\n{text}");
+}
+
+/// `fs.bcachefs import` (#439), as a process: the arguments after the
+/// image, and its exit status, stdout and stderr.
+#[cfg(feature = "cli")]
+fn cli_import(img: &Path, args: &[&std::ffi::OsStr]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .arg("fs")
+        .arg(img)
+        .arg("import")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// The SHA-256 of `bytes`, as lowercase hex.
+#[cfg(feature = "cli")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The staged names `fs.bcachefs import` left in `dir`, as the reference
+/// mount lists them.
+#[cfg(feature = "cli")]
+fn staged_names(mount: &Path, dir: &str) -> Vec<String> {
+    std::fs::read_dir(mount.join(dir))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".fs-bcachefs-import-"))
+        .collect()
+}
+
+/// A 64 MiB file and a one-byte file imported with `--verify` (#439) are
+/// read back by the reference mount with the bytes sent, the report's
+/// SHA-256 is the source's, and the reference checker passes the image.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_imports_are_read_by_the_reference() {
+    let img = scratch("aged.img", "cli-import");
+    let big = pattern(64 << 20, 31);
+    let one = vec![b'z'];
+    for (name, bytes) in [("big.bin", &big), ("one.bin", &one)] {
+        let source = img.with_extension(name);
+        std::fs::write(&source, bytes).unwrap();
+        let dest = format!("/many/{name}");
+        let out = cli_import(&img, &["--verify".as_ref(), source.as_ref(), dest.as_ref()]);
+        assert!(
+            out.status.success(),
+            "import {dest}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            report.contains(&format!("\"sha256\": \"{}\"", sha256_hex(bytes)))
+                || report.contains(&format!("\"sha256\":\"{}\"", sha256_hex(bytes))),
+            "import {dest}: the report does not carry the source's SHA-256: {report}"
+        );
+        assert!(
+            report.contains("\"verified\": true") || report.contains("\"verified\":true"),
+            "import {dest}: not verified: {report}"
+        );
+    }
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(
+        &img,
+        &[("many/big.bin", &big), ("many/one.bin", &one)]
+    ));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, "many"), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+}
+
+/// An import that cannot fit (#439), replacing a file, fails; the old file
+/// is what the reference mount reads, nothing staged is left, and the
+/// reference checker passes the image.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_import_out_of_space_keeps_the_old_file() {
+    let img = scratch("write-study/base.img", "cli-import-full");
+    let old = with_reference_mount(&img, |m| std::fs::read(m.join("d/existing")).unwrap());
+    let size = std::fs::metadata(&*img).unwrap().len() as usize;
+    let source = img.with_extension("too-big");
+    std::fs::write(&source, pattern(size + (8 << 20), 41)).unwrap();
+    let out = cli_import(
+        &img,
+        &[
+            "--replace".as_ref(),
+            source.as_ref(),
+            "/d/existing".as_ref(),
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "an import larger than the device succeeded"
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(&img, &[("d/existing", &old)]));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, "d"), Vec::<String>::new());
+    });
+}
+
+/// A replacing import killed between persist and publish (#439): with
+/// FS_BCACHEFS_IMPORT_HOLD_AFTER_PERSIST set the tool says so on stderr
+/// once the staged file is persisted and waits there, and is killed. The
+/// name still holds the old file, as the reference mount reads it, the
+/// reference checker passes the image, and the staged name the kill left
+/// behind is reported.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_import_killed_before_publish_keeps_the_old_file() {
+    use std::io::BufRead;
+
+    let img = scratch("write-study/base-bs4k.img", "cli-import-kill");
+    let old = with_reference_mount(&img, |m| std::fs::read(m.join("d/existing")).unwrap());
+    let source = img.with_extension("new");
+    std::fs::write(&source, pattern(8 << 20, 53)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .env("FS_BCACHEFS_IMPORT_HOLD_AFTER_PERSIST", "1")
+        .arg("fs")
+        .arg(&*img)
+        .args(["import", "--replace"])
+        .arg(&source)
+        .arg("/d/existing")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = Vec::new();
+    for line in std::io::BufReader::new(child.stderr.take().unwrap()).lines() {
+        let line = line.unwrap();
+        let held = line.contains("held after persist");
+        said.push(line);
+        if held {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let status = child.wait().unwrap();
+    assert!(
+        said.iter().any(|l| l.contains("held after persist")),
+        "the import never reached persist ({status}): {said:?}"
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(&img, &[("d/existing", &old)]));
+    with_reference_mount(&img, |m| {
+        let staged = staged_names(m, "d");
+        assert!(
+            staged.len() <= 1,
+            "more than one staged name after one killed import: {staged:?}"
+        );
+        eprintln!("killed between persist and publish: staged names left: {staged:?}");
+    });
+}
