@@ -13,6 +13,14 @@ name: differential
 # #261's digest-pinned fixtures and 80 cases starting at seed 1659440;
 # dispatches default to seed 0 unless another seed or replay is requested.
 #
+# The nightly and a dispatch left at its defaults judge the newest green main
+# run's fixtures, and read nothing fetched by number: a numbered artifact
+# expires, and when 11977252185 did (#386) the night was skipped behind it.
+# The pinned jobs and the steps bound to their bytes run only where those
+# bytes are judged: a pull request, or a dispatch naming fixtures run
+# 38741040375. tests/scripts/differential-nightly-has-no-pinned-input.sh
+# fails if that stops being so.
+#
 # DISCLOSURE (AGENTS.md, "A crash in the reference stays private"). The
 # only things this workflow publishes are the report's counts and the
 # classes that are this crate's to fix. Nothing of a case on which the
@@ -68,6 +76,7 @@ on:
       - fuzz/shared/**
       - tests/oracle_differential_default74.rs
       - tests/oracle_differential_snapshot_tree_subvolume.rs
+      - tests/scripts/differential-nightly-has-no-pinned-input.sh
       - scripts/pinned-snapshot-tree-subvolume.sh
       - scripts/pinned-default74-reference.sh
       - scripts/pinned-default74-read-controls.py
@@ -93,6 +102,7 @@ jobs:
   # fsck passes both images, but only the exact mutated file must return EIO.
   default74-read-controls:
     name: default-74 read evidence rejection controls
+    if: github.event_name == 'pull_request' || inputs.fixture_run == '38741040375'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -120,9 +130,11 @@ jobs:
   # Case default-74's expected checksums belong to one fixtures artifact, so
   # it is judged only over that artifact, fetched by run, id and digest and
   # refused on any mismatch. The run fails unless exactly that one test ran
-  # and passed. The artifact expires 2026-10-22; the fetch fails after that.
+  # and passed. The artifact expired on 2026-10-22, so the fetch fails until
+  # #386 gives these cases fixtures that are kept.
   pinned-default74:
     name: pinned default-74 (#219, fixtures sha256:9f112ded)
+    if: github.event_name == 'pull_request' || inputs.fixture_run == '38741040375'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -229,8 +241,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Not gated on the pinned jobs: they are skipped where their fixtures are
+  # not judged, and a failure of theirs fails the run on its own.
   differential:
     needs: [pinned-default74, default74-read-controls]
+    if: ${{ !cancelled() }}
     name: differential (this crate vs the reference checker, damaged images)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -242,7 +257,10 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      # Bound to the pinned fixtures' bytes, so only after the pinned job
+      # has fetched and proved them in this run.
       - name: Retained default-74 native read contract and rejection controls
+        if: needs.pinned-default74.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           DIFFERENTIAL_NATIVE74_ARCHIVE: ${{ runner.temp }}/default74-native.zip
@@ -255,6 +273,7 @@ jobs:
           python3 tests/default74_native_proof.py "$DIFFERENTIAL_NATIVE74_ARCHIVE" "$RUNNER_TEMP/default74-fixtures.zip"
           echo "DIFFERENTIAL_NATIVE74_ARCHIVE=$DIFFERENTIAL_NATIVE74_ARCHIVE" >> "$GITHUB_ENV"
       - name: Fetch the same-run independently graded physical-image read proof
+        if: needs.pinned-default74.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: default74-reference
@@ -335,7 +354,7 @@ jobs:
       # day's number puts it, so no two nights judge the same cases.
       - name: chore fuzz:differential
         env:
-          DIFFERENTIAL_READ_EVIDENCE: ${{ runner.temp }}/native-read-proof
+          DIFFERENTIAL_READ_EVIDENCE: ${{ needs.pinned-default74.result == 'success' && format('{0}/native-read-proof', runner.temp) || '' }}
           CASES: ${{ inputs.replay && env.CASES || inputs.cases || '80' }}
           FIRST_SEED: ${{ inputs.replay && env.FIRST_SEED || inputs.first_seed || (github.event_name == 'pull_request' && '1659440') || '' }}
           DIFFERENTIAL_KEEP: ${{ inputs.replay && env.DIFFERENTIAL_KEEP || inputs.keep }}
