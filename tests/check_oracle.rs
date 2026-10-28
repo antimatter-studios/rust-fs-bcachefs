@@ -1976,3 +1976,357 @@ fn both_checkers_reject_a_subvolume_children_entry_under_no_subvolume() {
 fn both_checkers_reject_a_subvolume_children_entry_naming_no_subvolume() {
     both_checkers_reject_a_moved_subvolume_children_entry((1, 2), (1, 4));
 }
+
+/// One accounting key of `default.img`, the first of `kind` (the top byte
+/// of its position: 0 nr_inodes, 2 replicas, 3 dev_data_type), changed by
+/// `change` and committed, a `deleted` key at the old position when the
+/// position moved (#219). With `refused`, the reference must delete it on
+/// read with that reason and this checker report `ours`; without, both
+/// must call the image clean.
+#[cfg(feature = "write")]
+fn both_checkers_judge_a_changed_accounting_key(
+    name: &str,
+    kind: u64,
+    change: impl FnOnce(&mut fs_bcachefs::bkey::Bkey),
+    refused: Option<(&str, &str)>,
+) {
+    use fs_bcachefs::bkey::{key_type, Bkey};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const ACCOUNTING: u8 = 20;
+    const KEY_ACCOUNTING: u8 = 34;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-accounting-key");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("accounting-{name}.img"));
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let k = btree::walk(&dev, &sb, ACCOUNTING)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == KEY_ACCOUNTING && k.pos.inode >> 56 == kind)
+        .unwrap_or_else(|| panic!("default.img has no accounting key of kind {kind}"));
+    drop(dev);
+    let mut changed = k.clone();
+    change(&mut changed);
+    let mut keys = vec![changed.clone()];
+    if changed.pos != k.pos {
+        keys.push(Bkey {
+            key_type: key_type::DELETED,
+            value: Vec::new(),
+            ..k
+        });
+        keys.sort_by_key(|k| k.pos);
+    }
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(ACCOUNTING, keys).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    match refused {
+        Some((reason, kind)) => {
+            assert!(
+                bad && text.contains("invalid bkey in btree_node btree=accounting")
+                    && text.contains(reason),
+                "{text}"
+            );
+            assert!(
+                ours.problems.iter().any(|p| p.kind == kind),
+                "the accounting key changed to {} ({name}) was not reported as {kind}: {:?}\n{text}",
+                changed.pos,
+                ours.problems
+            );
+        }
+        None => {
+            assert!(!bad, "{text}");
+            assert!(ours.clean(), "{name}: {:?}", ours.problems);
+        }
+    }
+}
+
+/// `nr_inodes` is the kind byte alone: a snapshot after it is junk.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_nr_inodes_key_with_a_snapshot() {
+    both_checkers_judge_a_changed_accounting_key(
+        "nr-inodes-snapshot",
+        0,
+        |k| k.pos.snapshot = 1,
+        Some((
+            "junk at end of accounting key",
+            "accounting_key_junk_at_end",
+        )),
+    );
+}
+
+/// So is an offset.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_nr_inodes_key_with_an_offset() {
+    both_checkers_judge_a_changed_accounting_key(
+        "nr-inodes-offset",
+        0,
+        |k| k.pos.offset = 1,
+        Some((
+            "junk at end of accounting key",
+            "accounting_key_junk_at_end",
+        )),
+    );
+}
+
+/// A `replicas btree: 1/1 [0]` entry is `[kind, data type, nr_devs,
+/// nr_required, dev]`: a byte after its one device is junk.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_with_a_byte_past_its_devices() {
+    both_checkers_judge_a_changed_accounting_key(
+        "replicas-junk",
+        2,
+        |k| k.pos.inode |= 1 << 16,
+        Some((
+            "junk at end of accounting key",
+            "accounting_key_junk_at_end",
+        )),
+    );
+}
+
+/// `dev_data_type` is `[kind, dev, data type]`: a byte after it is junk.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_dev_data_type_key_with_a_byte_past_its_data_type() {
+    both_checkers_judge_a_changed_accounting_key(
+        "dev-data-type-junk",
+        3,
+        |k| k.pos.inode |= 1 << 32,
+        Some((
+            "junk at end of accounting key",
+            "accounting_key_junk_at_end",
+        )),
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_with_no_devices() {
+    both_checkers_judge_a_changed_accounting_key(
+        "replicas-nr-devs-0",
+        2,
+        |k| k.pos.inode &= !(0xff << 40),
+        Some((
+            "accounting key replicas entry with nr_devs=0",
+            "accounting_replicas_bad",
+        )),
+    );
+}
+
+/// `replicas btree: 2/1 [0]`: two copies required of one device.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_requiring_more_than_its_devices() {
+    both_checkers_judge_a_changed_accounting_key(
+        "replicas-nr-required",
+        2,
+        |k| k.pos.inode = (k.pos.inode & !(0xff << 32)) | (2 << 32),
+        Some((
+            "accounting key replicas entry with bad nr_required",
+            "accounting_replicas_bad",
+        )),
+    );
+}
+
+/// `replicas btree: 1/2 [0 0]`: the same device twice.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_with_a_repeated_device() {
+    both_checkers_judge_a_changed_accounting_key(
+        "replicas-unsorted",
+        2,
+        |k| k.pos.inode = (k.pos.inode & !(0xff << 40)) | (2 << 40),
+        Some((
+            "accounting key replicas entry with unsorted devs",
+            "accounting_replicas_bad",
+        )),
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_nr_inodes_key_with_no_counter() {
+    both_checkers_judge_a_changed_accounting_key(
+        "nr-inodes-empty",
+        0,
+        |k| k.value.clear(),
+        Some(("bad val size (0 < 8)", "accounting_key_counters_bad")),
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_nr_inodes_key_with_four_counters() {
+    both_checkers_judge_a_changed_accounting_key(
+        "nr-inodes-4",
+        0,
+        |k| k.value.resize(32, 0),
+        Some((
+            "accounting key with 4 counters, should be 1",
+            "accounting_key_counters_bad",
+        )),
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_dev_data_type_key_with_five_counters() {
+    both_checkers_judge_a_changed_accounting_key(
+        "dev-data-type-5",
+        3,
+        |k| k.value.resize(40, 0),
+        Some((
+            "accounting key with 5 counters, should be 3",
+            "accounting_key_counters_bad",
+        )),
+    );
+}
+
+/// The reference accepts `nr_inodes` with three counters and
+/// `dev_data_type` with one: fewer than four is not judged a fault.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_accounting_keys_with_up_to_three_counters() {
+    both_checkers_judge_a_changed_accounting_key("nr-inodes-3", 0, |k| k.value.resize(24, 0), None);
+    both_checkers_judge_a_changed_accounting_key(
+        "dev-data-type-1",
+        3,
+        |k| k.value.truncate(8),
+        None,
+    );
+}
+
+/// The last backpointer of `set` whose data type (value byte 2) is
+/// `data_type` (3 btree, 4 user), changed by `change` and committed, a
+/// `deleted` key at the old position when the position moved (#219). With
+/// `refused`, the reference must delete it on read as an invalid
+/// backpointers key with that reason and this checker report `ours` for
+/// it; without, both must call the image clean.
+#[cfg(feature = "write")]
+fn both_checkers_judge_a_changed_backpointer_key(
+    set: &str,
+    data_type: u8,
+    change: impl FnOnce(&mut fs_bcachefs::bkey::Bkey),
+    refused: Option<(&str, &str)>,
+) {
+    use fs_bcachefs::bkey::{key_type, Bkey};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BACKPOINTERS: u8 = 13;
+    const KEY_BACKPOINTER: u8 = 28;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-backpointer-key");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("backpointer-{set}-{data_type}.img"));
+    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let k = btree::walk(&dev, &sb, BACKPOINTERS)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|k| k.key_type == KEY_BACKPOINTER && k.value.get(2) == Some(&data_type))
+        .unwrap_or_else(|| panic!("{set}.img has no backpointer of data type {data_type}"));
+    drop(dev);
+    let mut changed = k.clone();
+    change(&mut changed);
+    let mut keys = vec![changed.clone()];
+    if changed.pos != k.pos {
+        keys.push(Bkey {
+            key_type: key_type::DELETED,
+            value: Vec::new(),
+            ..k
+        });
+        keys.sort_by_key(|k| k.pos);
+    }
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(BACKPOINTERS, keys).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    match refused {
+        Some((reason, kind)) => {
+            assert!(
+                bad && text.contains("invalid bkey in btree_node btree=backpointers")
+                    && text.contains(reason),
+                "{text}"
+            );
+            assert!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == kind && p.detail.contains(&changed.pos.to_string())),
+                "the backpointer changed to {} ({set}) was not reported as {kind}: {:?}\n{text}",
+                changed.pos,
+                ours.problems
+            );
+        }
+        None => {
+            assert!(!bad, "{text}");
+            assert!(ours.clean(), "{set}: {:?}", ours.problems);
+        }
+    }
+}
+
+/// Backpointers are not snapshotted: the reference deletes one at
+/// snapshot 1 as "nonzero snapshot", for user data and for a btree node.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_at_a_snapshot() {
+    for (set, data_type) in [("default", 4), ("kernel", 3)] {
+        both_checkers_judge_a_changed_backpointer_key(
+            set,
+            data_type,
+            |k| k.pos.snapshot = 1,
+            Some(("nonzero snapshot", "bkey_snapshot_nonzero")),
+        );
+    }
+}
+
+/// A backpointer's level (value byte 1) of 5 is "backpointer level bad:
+/// 5 >= 4"; the reference accepted 4 in the same probe.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_level_past_four() {
+    for (set, data_type) in [("default", 4), ("kernel", 3)] {
+        both_checkers_judge_a_changed_backpointer_key(
+            set,
+            data_type,
+            |k| k.value[1] = 5,
+            Some(("backpointer level bad: 5 >= 4", "backpointer_level_bad")),
+        );
+    }
+}
+
+/// A btree node's backpointer at level 4 is accepted by both.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_btree_node_backpointer_at_level_four() {
+    both_checkers_judge_a_changed_backpointer_key("kernel", 3, |k| k.value[1] = 4, None);
+}

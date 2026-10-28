@@ -1750,6 +1750,51 @@ The same report shows four more refusals, each after one change:
 The inode node case of the same report (a re-stamped node, `default.img`
 seed 44) is still open: the report cuts off the reference's reason.
 
+### An accounting key's own fields (S3, #219)
+
+The differential baseline's three `node` classes of #219 had the reference
+checker refuse an `nr_inodes`, a `replicas` and a `dev_data_type`
+accounting key on read ("invalid bkey in btree_node btree=accounting"),
+with the reason cut off by the report's signature. A guest probe on
+2026-10-27 changed one field of the first key of each kind on
+`default.img` and on `kernel.img`, committed it through the writer (a
+`deleted` key at the old position when the position moved) and read
+`bcachefs-ref fsck -n`. Both fixtures answered alike:
+
+- `nr_inodes` (`[kind]`) at snapshot 1, at offset 1 or `1 << 63`, or with
+  inode `0xff` or `1 << 48` set; `replicas btree: 1/1 [0]` (`[kind, data
+  type, nr_devs, nr_required, devs]`) at snapshot 1, at offset 1, or with
+  inode `0xff` or `1 << 16` (the byte after its one device) set; and
+  `dev_data_type` (`[kind, dev, data type]`) at snapshot 1, at offset 1,
+  or with inode `0xff` or `1 << 32` (the byte after its data type) set:
+  each "junk at end of accounting key" (`accounting_key_junk_at_end`).
+  The position is read as the byte string inode, offset, snapshot, each
+  big-endian, and any nonzero byte after the kind's fields is reported.
+- `replicas`: nr_devs 0 (`1/0 []`) was "accounting key replicas entry
+  with nr_devs=0"; nr_required above nr_devs (`2/1 [0]`, `5/1 [0]`) was
+  "bad nr_required"; two devices `[0 0]` was "unsorted devs" (all
+  `accounting_replicas_bad`). The checker reports devices that are not in
+  strictly increasing order. nr_required 0 was refused differently
+  ("accounting not marked in superblock replicas", at accounting_read),
+  as were devices 1 and 254 ("insufficient devices online") and `1/2
+  [0 1]` ("accounting entry points to invalid device 1"); none of those is
+  judged by the key's own fields here.
+- Values: none on `nr_inodes` or `replicas` was "bad val size (0 < 8)";
+  four counters on each of the three kinds was "accounting key with 4
+  counters, should be N" (N 1, 1 and 3), five on `dev_data_type` "with 5
+  counters, should be 3" (`accounting_key_counters_bad`). Three counters
+  on `nr_inodes` and `replicas` and one on `dev_data_type` were accepted,
+  so the checker reports more than three counters, or none on the two
+  kinds where none was seen refused. An empty `dev_data_type` was not
+  tried and is not judged.
+- `dev_data_type` naming device 5 or 254 was "accounting entry points to
+  invalid device" at accounting_read, and data type 255 or 20 was refused
+  later in the run; this checker already reports those as an accounting
+  mismatch.
+
+No other kind of accounting key was changed this way, and none of these
+rules is applied to one.
+
 ### subvolume_children entries and their parent (S3, #219, #382)
 
 Our own walker reads two `set` keys in `kernel.img`'s subvolume_children
@@ -1884,6 +1929,41 @@ rather than leave the bound assumed. `oracle_check_key_positions.rs`
 repeats the observed U64_MAX mutation on `kernel.img`; the unit regression
 keeps offsets 1 and U32_MAX accepted and confines the rule to this
 btree/key-type pair.
+
+### A backpointer key's snapshot and level (S3, #219)
+
+The differential baseline's `node` class "invalid bkey in btree_node
+btree=backpointers ... type backpointer ... : bucket=..." (replayed as
+`kernel-53`, first described as a backpointer with a nonzero snapshot) was
+pinned down by a black-box probe in the harness guest on 2026-10-27
+(reference checker 1.39.7). The probe took the last backpointer of
+`default.img` (`0:1444413440:0`, user data, value bytes 0..3 `00 00 04 00`)
+and of `kernel.img` (`0:1614807040:0`, a btree node of reconcile_work at
+level 1, bytes `12 01 03 00`), changed one field, committed it with the
+writer's raw `insert` (a `deleted` key at the old position when the
+position moved) and read the copy with `bcachefs-ref fsck -n`. Both
+unchanged controls were clean to both checkers.
+
+Refused on read, with the key printed as `bucket=... btree=... level=...
+data_type=... suboffset=... len=... gen=... pos=...`, on both fixtures:
+
+| change | the reference's reason | this crate before |
+|---|---|---|
+| snapshot 1, and U32_MAX | "nonzero snapshot, deleting" (`bkey_snapshot_nonzero`) | clean |
+| size 1 | "size != 0, deleting" (`bkey_size_nonzero`) | already `bkey_size_nonzero` |
+| level (value byte 1) 5, and 255 | "backpointer level bad: 5 >= 4, deleting" (`backpointer_level_bad`) | clean on the btree node; only the value mismatch on user data |
+
+Levels 3 and 4 were accepted on both fixtures, although the reason line
+reads ">= 4": the checker judges a level above 4, which is every value
+observed, and `check_oracle.rs` keeps level 4 on a btree node accepted by
+both. A value 8 bytes short is refused under another reason, "(value too
+small: 24 < 32)" / "bad val size", outside this class. These cases were
+accepted by the reference, or refused by a later pass rather than as an
+invalid key, and are not judged here: device 1, a bucket past the device,
+offset U64_MAX, sector 1, a sector inside bucket 0, a nonzero low 16 bits
+of the offset, 8 trailing value bytes, btree id 200, data type 0 or 99,
+length 0 or 0xffffff, and value byte 3 at 0xff. This is black-box output
+only; no reference source was read.
 
 ### The key types a btree holds (S3, #163)
 

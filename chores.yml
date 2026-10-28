@@ -274,7 +274,13 @@ tasks:
       # Measured 2026-10-27 on fix/219-subvol-children: one unit and three
       # live-reference subvolume_children cases above the layers below, 453
       # executed (before #416's and #417's own unit cases were on its base).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 453'
+      # Measured 2026-10-27 on fix/219-accounting-keys: 467 executed, the
+      # two unit cases of #416 and #417 now on its base, and one unit and
+      # eleven live-reference accounting key cases above the 453.
+      # Measured 2026-10-27 on fix/219-backpointer-keys: 470 executed, one
+      # unit and three live-reference backpointer key cases more (before
+      # #421's own unit case was on its base).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 470'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;

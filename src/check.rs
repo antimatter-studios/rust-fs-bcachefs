@@ -2040,8 +2040,8 @@ fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
 /// a snapshot on a key of a btree that is not snapshotted ("nonzero
 /// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot,
 /// snapshot_tree or inode allocation cursor at a position it cannot have,
-/// an accounting key holding more than its kind and btree, and an xattr
-/// whose lengths run past its value. Each pair of btree and key type below
+/// an accounting key holding more than its kind and btree, a backpointer
+/// whose level is above 4, and an xattr whose lengths run past its value. Each pair of btree and key type below
 /// is one differential run 38579070302, nightly-seed run 39018152705 or
 /// nightly runs 38878947701 and 39756419740 saw the reference refuse; a pair
 /// nobody observed is not judged (docs/clean-room.md).
@@ -2077,6 +2077,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (LOGGED_OPS, KEY_INODE_ALLOC_CURSOR),
         // Nightly run 38878947701 (#219).
         (SNAPSHOT_TREES, KEY_SNAPSHOT_TREE),
+        // Differential replay kernel-53 and the guest probe of 2026-10-27
+        // (#219).
+        (BACKPOINTERS, KEY_BACKPOINTER),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -2093,6 +2096,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 k.pos, k.pos.snapshot
             ),
         );
+    }
+    if (id, k.key_type) == (ACCOUNTING, KEY_ACCOUNTING) {
+        check_accounting_key(&name, k, r);
     }
     let v = &k.value;
     match (id, k.key_type) {
@@ -2151,6 +2157,14 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 ),
             )
         }
+        // A backpointer's level is its value's byte 1. The guest probe of
+        // 2026-10-27 saw the reference refuse 5 and 255 as "backpointer level
+        // bad: 5 >= 4" and accept 3 and 4, on user data and on a btree node
+        // (#219): above 4 is judged, whatever the wording.
+        (BACKPOINTERS, KEY_BACKPOINTER) if v.get(1).is_some_and(|&level| level > 4) => r.add(
+            "backpointer_level_bad",
+            format!("btree {name}: backpointer {} is at level {}", k.pos, v[1]),
+        ),
         // An xattr's header gives its name's and its value's lengths
         // (src/xattr.rs); together they must fit the key's value.
         (btree_id::XATTRS, key_type::XATTR)
@@ -2206,6 +2220,79 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: key {} is a snapshot", k.pos),
         ),
         _ => {}
+    }
+}
+
+/// The kinds of accounting key whose own fields the reference was seen to
+/// judge on read (#219): `nr_inodes`, `replicas` and `dev_data_type`.
+const ACCT_NR_INODES: u64 = 0;
+const ACCT_REPLICAS: u64 = 2;
+
+/// What the reference refuses in an `nr_inodes`, `replicas` or
+/// `dev_data_type` accounting key, each seen one field at a time on
+/// default.img and kernel.img (docs/clean-room.md, "An accounting key's
+/// own fields"): a nonzero byte of the position after the kind's fields
+/// ("junk at end of accounting key"), a replicas entry with no devices,
+/// with more copies required than devices or with devices not in
+/// increasing order, no counter at all (`nr_inodes` and `replicas`), or
+/// more than three counters. The `btree` kind's junk is judged above.
+fn check_accounting_key(name: &str, k: &Bkey, r: &mut Report) {
+    let kind = k.pos.inode >> 56;
+    if ![ACCT_NR_INODES, ACCT_REPLICAS, ACCT_DEV_DATA_TYPE].contains(&kind) {
+        return;
+    }
+    // The position as the byte string it encodes: inode, offset and
+    // snapshot, each big-endian.
+    let mut bytes = [0u8; 20];
+    bytes[..8].copy_from_slice(&k.pos.inode.to_be_bytes());
+    bytes[8..16].copy_from_slice(&k.pos.offset.to_be_bytes());
+    bytes[16..].copy_from_slice(&k.pos.snapshot.to_be_bytes());
+    let fields = match kind {
+        ACCT_NR_INODES => 1,
+        // Kind, data type, nr_devs, nr_required, then the devices.
+        ACCT_REPLICAS => (4 + usize::from(bytes[2])).min(bytes.len()),
+        // Kind, device, data type.
+        _ => 3,
+    };
+    if bytes[fields..].iter().any(|&b| b != 0) {
+        r.add(
+            "accounting_key_junk_at_end",
+            format!(
+                "btree {name}: accounting key {} holds more than its fields",
+                k.pos
+            ),
+        );
+    }
+    if kind == ACCT_REPLICAS {
+        let (nr_devs, nr_required) = (bytes[2], bytes[3]);
+        let devs = &bytes[4..fields];
+        let bad = if nr_devs == 0 {
+            Some("no devices".to_string())
+        } else if nr_required > nr_devs {
+            Some(format!(
+                "{nr_required} copies required of {nr_devs} devices"
+            ))
+        } else if devs.windows(2).any(|w| w[0] >= w[1]) {
+            Some(format!("devices {devs:?} not in increasing order"))
+        } else {
+            None
+        };
+        if let Some(why) = bad {
+            r.add(
+                "accounting_replicas_bad",
+                format!("btree {name}: replicas accounting key {}: {why}", k.pos),
+            );
+        }
+    }
+    let counters = k.value.len() / 8;
+    if counters > 3 || (counters == 0 && kind != ACCT_DEV_DATA_TYPE) {
+        r.add(
+            "accounting_key_counters_bad",
+            format!(
+                "btree {name}: accounting key {} has {counters} counters",
+                k.pos
+            ),
+        );
     }
 }
 
@@ -2514,6 +2601,61 @@ mod tests {
         let mut r = Report::default();
         snapshot_links(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new(), &mut r);
         assert!(r.problems.is_empty());
+    }
+
+    #[test]
+    fn accounting_keys_the_reference_refuses_are_named() {
+        // The guest probes of #219 on default.img: each change below was
+        // refused, and the unchanged keys and the three-counter and
+        // one-counter values were accepted.
+        let acct = |inode: u64, offset: u64, snapshot: u32, counters: usize| {
+            let mut k = key(KEY_ACCOUNTING, offset, vec![0; counters * 8]);
+            k.pos.inode = inode;
+            k.pos.snapshot = snapshot;
+            let mut report = Report::default();
+            check_key_fields(ACCOUNTING, &k, &mut report);
+            report.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        let nr_inodes = 0;
+        let replicas = 0x0203_0101_0000_0000;
+        let dev_data_type = 0x0300_0000_0000_0000;
+        for clean in [
+            acct(nr_inodes, 0, 0, 1),
+            acct(nr_inodes, 0, 0, 3),
+            acct(replicas, 0, 0, 1),
+            acct(0x0203_0201_0001_0000, 0, 0, 1), // 1/2 [0 1]
+            acct(dev_data_type, 0, 0, 3),
+            acct(dev_data_type, 0, 0, 1),
+            acct(0x0305_0900_0000_0000, 0, 0, 3),
+        ] {
+            assert!(clean.is_empty(), "{clean:?}");
+        }
+        let junk = ["accounting_key_junk_at_end"];
+        assert_eq!(acct(nr_inodes, 0, 1, 1), junk);
+        assert_eq!(acct(nr_inodes, 1, 0, 1), junk);
+        assert_eq!(acct(nr_inodes, 1 << 63, 0, 1), junk);
+        assert_eq!(acct(nr_inodes | 0xff, 0, 0, 1), junk);
+        assert_eq!(acct(nr_inodes | 1 << 48, 0, 0, 1), junk);
+        assert_eq!(acct(replicas, 0, 1, 1), junk);
+        assert_eq!(acct(replicas, 1, 0, 1), junk);
+        assert_eq!(acct(replicas | 0xff, 0, 0, 1), junk);
+        assert_eq!(acct(replicas | 1 << 16, 0, 0, 1), junk);
+        assert_eq!(acct(dev_data_type, 0, 1, 3), junk);
+        assert_eq!(acct(dev_data_type, 1, 0, 3), junk);
+        assert_eq!(acct(dev_data_type | 0xff, 0, 0, 3), junk);
+        assert_eq!(acct(dev_data_type | 1 << 32, 0, 0, 3), junk);
+        let bad = ["accounting_replicas_bad"];
+        assert_eq!(acct(0x0203_0001_0000_0000, 0, 0, 1), bad); // 1/0 []
+        assert_eq!(acct(0x0203_0102_0000_0000, 0, 0, 1), bad); // 2/1 [0]
+        assert_eq!(acct(0x0203_0105_0000_0000, 0, 0, 1), bad); // 5/1 [0]
+        assert_eq!(acct(0x0203_0201_0000_0000, 0, 0, 1), bad); // 1/2 [0 0]
+        let counters = ["accounting_key_counters_bad"];
+        assert_eq!(acct(nr_inodes, 0, 0, 0), counters);
+        assert_eq!(acct(nr_inodes, 0, 0, 4), counters);
+        assert_eq!(acct(replicas, 0, 0, 0), counters);
+        assert_eq!(acct(replicas, 0, 0, 4), counters);
+        assert_eq!(acct(dev_data_type, 0, 0, 4), counters);
+        assert_eq!(acct(dev_data_type, 0, 0, 5), counters);
     }
 
     #[test]
@@ -3040,6 +3182,40 @@ mod tests {
                 .any(|p| p.kind == "bkey_invalid_type_for_btree"),
             "{unrelated:?}"
         );
+    }
+
+    #[test]
+    fn a_backpointer_at_a_snapshot_or_past_level_four_is_named() {
+        // The guest probe of 2026-10-27 (#219): the reference deleted a
+        // backpointer at snapshot 1 or U32_MAX as "nonzero snapshot", and
+        // one at level 5 or 255 as "backpointer level bad", accepting 3 and 4.
+        let mut value = vec![0; 32];
+        value[2] = 4;
+        let k = key(KEY_BACKPOINTER, 1444413440, value);
+        for level in [0, 3, 4] {
+            let mut k = k.clone();
+            k.value[1] = level;
+            let mut clean = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut clean);
+            assert!(clean.clean(), "level {level}: {clean:?}");
+        }
+        for level in [5, 255] {
+            let mut k = k.clone();
+            k.value[1] = level;
+            let mut report = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "backpointer_level_bad");
+            assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+        }
+        for snapshot in [1, u32::MAX] {
+            let mut k = k.clone();
+            k.pos.snapshot = snapshot;
+            let mut report = Report::default();
+            check_key_fields(BACKPOINTERS, &k, &mut report);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+        }
     }
 
     #[test]
