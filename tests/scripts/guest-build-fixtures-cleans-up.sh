@@ -80,6 +80,9 @@ elif name == 'bcachefs-ref':
     elif op == 'fsck':
         if mode == 'check-fail': sys.exit(33)
         if '-y' in args and args[-1].endswith('/aged.img'): (case / 'replayed').touch()
+    elif op == 'list' and len(args) > 2 and args[2] in ('reconcile_work', 'reconcile_work_phys'):
+        # The supervisor refuses a reconcile.img whose lister shows no set key.
+        print('u64s 5 type set 4096:128:U32_MAX len 0 ver 0')
     else: print('stand-in reference output')
 elif name == 'mountpoint':
     mounted = state.exists() and json.loads(state.read_text())['mount'] == args[-1]

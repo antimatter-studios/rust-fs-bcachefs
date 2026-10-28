@@ -1751,7 +1751,9 @@ fn the_snapshot_cases_need_the_write_feature() {
 /// extent with a reconcile entry has a key at its own position in
 /// reconcile_work and one at its backpointer's position in
 /// reconcile_work_phys; the reference reports a key in either with no
-/// such extent.
+/// such extent. The keys come from `reconcile.img`, written with reconcile
+/// off so its extents are still waiting on background work (#420): on
+/// kernel.img the module could finish that work before it unmounted.
 #[cfg(feature = "write")]
 fn both_checkers_reject_a_stray_reconcile_key(
     btree: u8,
@@ -1769,7 +1771,7 @@ fn both_checkers_reject_a_stray_reconcile_key(
     let dir = ScratchDir::new(&format!("check-reconcile-{kind}"));
     assert_seen_by_reference(&dir);
     let img = dir.into_image("reconcile.img");
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    std::fs::copy(fixture("reconcile.img"), &img).unwrap();
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
