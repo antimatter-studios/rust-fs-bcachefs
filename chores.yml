@@ -140,7 +140,8 @@ tasks:
       # runs here and fails in minutes. Budget copied from the unit row until
       # a run measures it.
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-cli-export 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --features cli --test cli_export_tree_args -- --quiet'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-cli-export 2'
+      # #442 adds the --preserve=xattrs parse test: three tests, measured.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-cli-export 3'
       # The tools' own unit tests (src/cli): how a library error becomes the
       # CLI contract's error, kind included. They build `cli` and read no
       # image, so they run here. Budget copied from the unit row until a run
@@ -329,12 +330,17 @@ tasks:
       # at their 168 + 11 + 17 success counts, above the existing budget.
       # #342 adds test-export-tree.sh: three more fixed lines, 94 bytes at
       # its 49 checks ("== test-export-tree", its result, its verdict).
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 52 2100 -- scripts/test-cli.sh'
+      # #442 adds test-export-xattrs.sh: six lines, 146 bytes on a host that
+      # refuses trusted.* (its header, two manifest checks' jq answers, the
+      # probed namespace, its result and its verdict), 57 of the 58 budgeted.
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 58 2246 -- scripts/test-cli.sh'
       # #341 adds 168 export, 11 documentation and 17 kernel export checks.
       # #342 adds 49 recursive export checks.
       # #436 adds test-help-examples.sh: 79 checks (three setup, four per
       # verb over 19 verbs) and three log lines, 51 of the 52 budgeted.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7853'
+      # #442 adds 18 attribute checks where the host stores trusted.* (macOS,
+      # measured) and 20 where it refuses them; the floor takes the lower.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7871'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'

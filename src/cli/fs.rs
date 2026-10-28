@@ -96,13 +96,15 @@ fn read_command() -> Cmd {
         .subcommand(
             Cmd::new("export")
                 .about("Copy a regular file, or with --recursive a directory tree")
-                .args(transfer::export_args_with_times())
+                .args(transfer::export_args_with_xattrs())
                 .after_help(
                     "Examples:\n  fs.bcachefs disk.img export /hello.txt hello.txt\n  \
                      fs.bcachefs disk.img export --replace /big/random.bin random.bin\n  \
                      fs.bcachefs disk.img export /hello.txt -\n  \
                      fs.bcachefs disk.img export --recursive /etc etc\n  \
-                     fs.bcachefs disk.img export --recursive --preserve=links,times /etc etc\n\n\
+                     fs.bcachefs disk.img export --recursive --preserve=links,times /etc etc\n  \
+                     fs.bcachefs disk.img export --recursive --preserve=xattrs /home home\n  \
+                     fs.bcachefs disk.img export --preserve=xattrs /hello.txt hello.txt\n\n\
                      Files are copied in fixed chunks. A local destination is published only \
                      when complete; an existing name is refused unless --replace is given. \
                      The report includes the byte count and SHA-256; DEST - writes only raw \
@@ -115,7 +117,12 @@ fn read_command() -> Cmd {
                      --preserve=links, which recreates their targets without following them \
                      and copies each regular inode once. --preserve=times sets the stored \
                      access and modification times. Symlink times are not set. --verify reads \
-                     each staged file back before publication.",
+                     each staged file back before publication.\n\n\
+                     --preserve=xattrs carries each file's and directory's extended attributes, \
+                     name and value, and needs a local DEST; a single file goes through the \
+                     tree transfer and gets its report. An attribute the host cannot hold, \
+                     such as trusted.* without privilege, refuses its item by name after the \
+                     contents are published, and the export exits nonzero; nothing is dropped.",
                 ),
         )
         .subcommand(
@@ -227,10 +234,13 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
         Some(("export", sub)) => {
             let request = transfer::ExportRequest::from_matches(sub)?;
             let tree = transfer::TreeOptions::from_matches(sub)?;
+            let xattrs = transfer::XattrOptions::from_matches(sub)?;
             let fs = open(dev)?;
-            if tree.recursive {
+            // Attributes need a published host file to land on, which only
+            // the tree transfer gives, a single file included.
+            if tree.recursive || xattrs.preserve_xattrs {
                 let image = m.get_one::<OsString>("target").expect("required");
-                transfer::export_tree_with_times(
+                transfer::export_tree_with_xattrs(
                     &request,
                     &mut TreeExport {
                         fs: &fs,
@@ -241,6 +251,7 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
                     tree,
                     transfer::LinkOptions::from_matches(sub)?,
                     transfer::TimeOptions::from_matches(sub)?,
+                    xattrs,
                 )
             } else {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
@@ -473,8 +484,8 @@ fn system_time(sb: &Superblock, stored: u64) -> Option<std::time::SystemTime> {
     base.checked_add(std::time::Duration::from_nanos(ns))
 }
 
-/// bcachefs supplies lookups, listings, symlink targets, times and
-/// positioned reads. Core owns traversal, the depth bound, safe names,
+/// bcachefs supplies lookups, listings, symlink targets, times, extended
+/// attributes and positioned reads. Core owns traversal, the depth bound, safe names,
 /// destination merging, publication and the per-item report (#342).
 struct TreeExport<'a> {
     fs: &'a Filesystem<Device>,
@@ -555,6 +566,31 @@ impl transfer::TreeSource for TreeExport<'_> {
     fn metadata(&mut self, path: &Path) -> Result<transfer::TreeMetadata, CliError> {
         let n = self.resolve(path)?;
         self.metadata_for(n, path)
+    }
+
+    /// Every attribute the item's snapshot sees, its name spelled with its
+    /// namespace prefix. A namespace this driver does not decode fails the
+    /// read rather than being left out.
+    fn extended_attributes(
+        &mut self,
+        path: &Path,
+    ) -> Result<Vec<transfer::ExtendedAttribute>, CliError> {
+        let n = self.resolve(path)?;
+        Ok(self
+            .fs
+            .xattrs_at(n)
+            .map_err(|e| at(path, e))?
+            .into_iter()
+            .map(|x| transfer::ExtendedAttribute {
+                name: OsString::from_vec(x.name),
+                value: x.value,
+            })
+            .collect())
+    }
+
+    /// bcachefs has no named streams; it stores only extended attributes.
+    fn named_streams(&mut self, _path: &Path) -> Result<Vec<transfer::NamedStream>, CliError> {
+        Ok(Vec::new())
     }
 
     fn read_dir(&mut self, path: &Path) -> Result<Vec<transfer::TreeEntry>, CliError> {

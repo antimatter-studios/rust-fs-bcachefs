@@ -5,7 +5,9 @@
 //! 2, and nothing is written at DEST. The help shows the recursive form.
 //!
 //! What the exported trees hold, against the reference implementation's
-//! own record, is tests/cli/test-export-tree.sh.
+//! own record, is tests/cli/test-export-tree.sh; what `--preserve=xattrs`
+//! carries (#442), against the reference mount's listing, is
+//! tests/cli/test-export-xattrs.sh.
 //!
 //! No tool, no fixture, no VM: the unit tier, built with `--features cli`.
 
@@ -58,6 +60,36 @@ fn export_takes_the_shared_tree_options_before_the_image_is_read() {
 }
 
 #[test]
+fn export_takes_preserve_xattrs_before_the_image_is_read() {
+    let dir = ScratchDir::new("export-xattrs-options");
+    let img = dir.join("not-an-image.img");
+    std::fs::write(&img, vec![0u8; 1 << 20]).unwrap();
+    let dest = dir.join("dest");
+    for flags in [
+        &["--recursive", "--preserve=xattrs"][..],
+        &["--recursive", "--preserve=links,times,xattrs"],
+        &["--recursive", "--preserve", "links", "--preserve", "xattrs"],
+        &["--preserve=xattrs"],
+    ] {
+        let out = fs_bcachefs()
+            .arg(&img)
+            .arg("export")
+            .args(flags)
+            .arg("/xattr/one.txt")
+            .arg(&dest)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!dest.exists(), "{flags:?} wrote {}", dest.display());
+    }
+}
+
+#[test]
 fn export_help_shows_the_recursive_form() {
     let out = fs_bcachefs()
         .args(["disk.img", "export", "--help"])
@@ -72,6 +104,7 @@ fn export_help_shows_the_recursive_form() {
         "--verify",
         "export --recursive /etc etc",
         "export --recursive --preserve=links,times /etc etc",
+        "export --recursive --preserve=xattrs ",
     ] {
         assert!(help.contains(words), "export --help omits {words}:\n{help}");
     }
