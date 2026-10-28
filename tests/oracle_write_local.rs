@@ -1451,7 +1451,8 @@ fn reflinked_files_are_freed_one_reference_at_a_time() {
 /// big/random.bin copies the clone's data out of the shared extents, and
 /// leaves the original reading as it did, the shared data one reference
 /// fewer and this checker clean; a byte written into the original then
-/// drops the last reference, and the shared data goes.
+/// drops the last reference to the shared data under it, and that goes;
+/// cutting both files to nothing frees the rest.
 #[test]
 fn a_reflinked_file_is_written_by_copying_its_data_out_of_the_shared_extents() {
     use fs_bcachefs::btree::{self, btree_id};
@@ -1519,6 +1520,21 @@ fn a_reflinked_file_is_written_by_copying_its_data_out_of_the_shared_extents() {
         "a write into the original changed the clone"
     );
     drop(fs);
+    // A write rewrites only the pointers it overlaps (#366): the shared
+    // data under them, which neither file references now, is freed, and the
+    // rest, which both still do, is kept.
+    let left = indirect(&img);
+    assert!(
+        left < shared,
+        "shared data no file references is kept: {left} of {shared} indirect extents"
+    );
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    for ino in [clone, original] {
+        w.truncate(ino, 0)
+            .unwrap_or_else(|e| panic!("cutting inode {ino} to nothing: {e}"));
+    }
+    drop(w);
+    clean(&img, "cutting both files to nothing");
     assert_eq!(indirect(&img), 0, "shared data no file references is kept");
 }
 

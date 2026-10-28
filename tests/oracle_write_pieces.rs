@@ -5,9 +5,10 @@
 //! sectors in its bucket, not its region's (bucket 105 holds pieces of 111
 //! and 120 sectors of one 256-sector region and counts 231), and keeps its
 //! backpointer at the region's sector << 16 plus the piece's offset in it.
-//! Rewriting the file frees every piece: each bucket loses the pieces' live
-//! sectors, a bucket left with none is emptied, their backpointers go, and
-//! this checker stays clean.
+//! A write into it rewrites the pieces it overlaps (#366), and the file
+//! reads as written; cutting the file to nothing then frees every piece:
+//! each bucket loses the pieces' live sectors, a bucket left with none is
+//! emptied, their backpointers go, and this checker stays clean.
 #![cfg(feature = "write")]
 
 mod common;
@@ -120,6 +121,13 @@ fn a_file_held_by_pieces_of_checksummed_regions_is_rewritten() {
         .read(ino)
         .unwrap();
     assert!(got == want, "/over/middle.bin does not read as written");
+    let report = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(report.clean(), "{:?}", report.problems);
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.truncate(ino, 0)
+        .unwrap_or_else(|e| panic!("cutting /over/middle.bin to nothing: {e}"));
+    drop(w);
     let report = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(report.clean(), "{:?}", report.problems);
     let after = buckets(&img);

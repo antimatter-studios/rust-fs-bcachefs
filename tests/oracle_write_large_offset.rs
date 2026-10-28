@@ -1,10 +1,13 @@
 //! A write or truncate at a large offset must not take down the process
-//! (#156). The writer rewrites a file whole, so it held the whole new size
-//! in memory before anything checked that it could: `truncate` to 1 TiB, or
-//! a one-byte `write_at` at 1 TiB, asked for a terabyte of zeros, and the
-//! allocation failure aborted the process, which neither the caller nor the
-//! C ABI's guard can catch. Each case runs in a child process, on a copy of
-//! `default` (64 MiB), and must come back refused, the file unchanged.
+//! (#156), and is written sparsely (#366). The writer once rewrote a file
+//! whole, so it held the whole new size in memory before anything checked
+//! that it could: `truncate` to 1 TiB, or a one-byte `write_at` at 1 TiB,
+//! asked for a terabyte of zeros, and the allocation failure aborted the
+//! process, which neither the caller nor the C ABI's guard can catch; then
+//! it refused a size past the device's. A write touches only the extents it
+//! overlaps now, so each case runs in a child process, on a copy of
+//! `default` (64 MiB), and must come back accepted, the file its old bytes,
+//! a hole, and the write.
 #![cfg(feature = "write")]
 
 mod common;
@@ -59,35 +62,45 @@ fn child(test: &str, op: impl Fn(&mut Writer<FileDevice>, u64) -> fs_bcachefs::R
     match got {
         Err(e) if fs.read(ino).unwrap() == b"small\n" => println!("CHILD-REFUSED {e}"),
         Err(e) => println!("CHILD-REFUSED-BUT-CHANGED {e}"),
-        Ok(()) => println!("CHILD-ACCEPTED"),
+        Ok(()) => {
+            let size = fs.inode(ino).unwrap().size;
+            let head = fs.read_range(ino, 0, 6).unwrap();
+            let tail = fs.read_range(ino, size.saturating_sub(4), 4).unwrap();
+            println!("CHILD-ACCEPTED size={size} head={head:?} tail={tail:?}")
+        }
     }
 }
 
-fn assert_refused(name: &str, what: &str) {
+fn assert_sparse(name: &str, what: &str, size: u64, tail: &[u8]) {
     let (status, text) = in_child(name);
+    let want = format!(
+        "CHILD-ACCEPTED size={size} head={:?} tail={tail:?}",
+        b"small\n".to_vec()
+    );
     assert!(
-        status.success() && text.contains("CHILD-REFUSED "),
-        "{what} on a 64 MiB filesystem was not refused with the file left as it was \
-         (status {status:?}; an abort is SIGABRT, a kill SIGKILL):\n{text}"
+        status.success() && text.contains(&want),
+        "{what} on a 64 MiB filesystem was not written sparsely, the file its old bytes, a \
+         hole and the write (want {want}; status {status:?}; an abort is SIGABRT, a kill \
+         SIGKILL):\n{text}"
     );
 }
 
 #[test]
-fn a_truncate_to_1_tib_is_refused_without_aborting() {
-    let name = "a_truncate_to_1_tib_is_refused_without_aborting";
+fn a_truncate_to_1_tib_is_sparse_without_aborting() {
+    let name = "a_truncate_to_1_tib_is_sparse_without_aborting";
     if is_child(name) {
         child("truncate", |w, ino| w.truncate(ino, TIB));
         return;
     }
-    assert_refused(name, "a truncate to 1 TiB");
+    assert_sparse(name, "a truncate to 1 TiB", TIB, &[0; 4]);
 }
 
 #[test]
-fn a_write_at_1_tib_is_refused_without_aborting() {
-    let name = "a_write_at_1_tib_is_refused_without_aborting";
+fn a_write_at_1_tib_is_sparse_without_aborting() {
+    let name = "a_write_at_1_tib_is_sparse_without_aborting";
     if is_child(name) {
         child("write-at", |w, ino| w.write_at(ino, TIB, b"x"));
         return;
     }
-    assert_refused(name, "a one-byte write at 1 TiB");
+    assert_sparse(name, "a one-byte write at 1 TiB", TIB + 1, b"\0\0\0x");
 }
