@@ -79,6 +79,11 @@ const SNAP_SKIPLIST: usize = 28;
 /// docs/clean-room.md).
 const SNAP_SUBVOL: usize = 16;
 const SNAP_FLAG_SUBVOL: u32 = 1 << 1;
+/// A subvolume's `fs_parent`, the high half of its value's third word
+/// (`creation_parent` is the low half), and the subvolume_children btree,
+/// a `set` key at `fs_parent:id` for each subvolume with a parent (S3).
+const SUBVOL_FS_PARENT: usize = 20;
+const SUBVOLUME_CHILDREN: u8 = 19;
 /// The bucket_gens btree, and its key type: 256 buckets' generations a
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
@@ -470,6 +475,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     };
     snapshot_links(&trees, &parents, &subvolumes, &mut r);
     snapshot_subvol_flags(&trees, &mut r);
+    subvolume_children(&trees, &mut r);
     // Each subvolume's snapshot, and the root directories it holds; with no
     // subvolumes btree, the root inode's snapshot alone.
     let mut views: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
@@ -1453,6 +1459,42 @@ fn snapshot_subvol_flags(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
                     if flagged { "set" } else { "clear" },
                 ),
             );
+        }
+    }
+}
+
+/// The subvolume_children btree (#219, #382): a `set` key at
+/// `parent:child` for each subvolume with a parent. The entry's parent is
+/// the child's `fs_parent`, the high half of the subvolume value's third
+/// word, not its `creation_parent` in the low half: kernel.img's snapshot
+/// `snap` (3), made from `sv` (2) inside subvolume 1, is at `1:3`, and the
+/// reference reports it moved to `2:3` as an "incorrect entry in
+/// subvolume_children btree" (S3, docs/clean-room.md).
+fn subvolume_children(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    let fs_parents: BTreeMap<u64, u32> = trees
+        .get(&SUBVOLUMES)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_SUBVOLUME && k.value.len() >= SUBVOL_FS_PARENT + 4)
+        .map(|k| (k.pos.offset, le32(&k.value, SUBVOL_FS_PARENT)))
+        .collect();
+    let entries = trees.get(&SUBVOLUME_CHILDREN).into_iter().flatten();
+    for k in entries.filter(|k| k.key_type == KEY_SET) {
+        let (parent, child) = (k.pos.inode, k.pos.offset);
+        match fs_parents.get(&child) {
+            Some(&p) if u64::from(p) == parent => {}
+            Some(&p) => r.add(
+                "subvol_children_entry_wrong",
+                format!(
+                    "subvolume_children entry {parent}:{child}: subvolume {child}'s parent is {p}"
+                ),
+            ),
+            None => r.add(
+                "subvol_children_entry_wrong",
+                format!(
+                    "subvolume_children entry {parent}:{child}: the subvolumes btree has no subvolume {child}"
+                ),
+            ),
         }
     }
 }
@@ -3146,5 +3188,44 @@ mod tests {
             wrong[0].detail
         );
         assert!(wrong[0].detail.contains("tree 1"), "{}", wrong[0].detail);
+    }
+
+    /// kernel.img's subvolumes: `sv` (2) and its snapshot `snap` (3), both
+    /// in subvolume 1, `snap` made from `sv` (#382).
+    #[test]
+    fn a_subvolume_children_entry_off_its_fs_parent_is_named() {
+        let subvolume = |id: u64, creation_parent: u32, fs_parent: u32| {
+            let mut v = vec![0u8; 48];
+            v[SUBVOL_FS_PARENT - 4..SUBVOL_FS_PARENT]
+                .copy_from_slice(&creation_parent.to_le_bytes());
+            v[SUBVOL_FS_PARENT..SUBVOL_FS_PARENT + 4].copy_from_slice(&fs_parent.to_le_bytes());
+            key(KEY_SUBVOLUME, id, v)
+        };
+        let entry = |parent: u64, child: u64| {
+            let mut k = key(KEY_SET, child, Vec::new());
+            k.pos.inode = parent;
+            k
+        };
+        let kinds = |entries: Vec<Bkey>| {
+            let subvolumes = vec![subvolume(1, 0, 0), subvolume(2, 0, 1), subvolume(3, 2, 1)];
+            let trees = BTreeMap::from([(SUBVOLUMES, subvolumes), (SUBVOLUME_CHILDREN, entries)]);
+            let mut r = Report::default();
+            subvolume_children(&trees, &mut r);
+            r.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        assert!(kinds(vec![entry(1, 2), entry(1, 3)]).is_empty());
+        // Under the creation_parent, under no subvolume, and naming none;
+        // a child id past U32_MAX is no subvolume either.
+        for (parent, child) in [(2, 3), (u64::MAX, 3), (1, 4), (1, (1 << 32) | 3)] {
+            assert_eq!(
+                kinds(vec![entry(parent, child)]),
+                ["subvol_children_entry_wrong"],
+                "{parent}:{child}"
+            );
+        }
+        // Only live entries are judged.
+        let mut gone = entry(2, 3);
+        gone.key_type = crate::bkey::key_type::DELETED;
+        assert!(kinds(vec![gone]).is_empty());
     }
 }
