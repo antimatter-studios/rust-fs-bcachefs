@@ -10,6 +10,14 @@
 # choice walks a bounded window of green main runs, newest first, and takes the
 # first one still holding an unexpired artifact named "fixtures". Running out of
 # candidates fails, naming the window; it never falls back to no fixtures.
+#
+# Main merges through the merge queue, so a push to main does not rebuild the
+# fixtures: the merge_group run that tested the commit did, and main was
+# fast-forwarded to that run's head commit. A main run without fixtures of its
+# own therefore defers to a green merge_group run at the same commit. Pairing by
+# commit is what proves the fixtures reached main: a queue run for a commit no
+# green main run carries (a group that was ejected, or not yet landed) is never
+# a candidate.
 # GH overrides the gh binary, so the controls can feed it a fake catalog.
 set -euo pipefail
 repo="$1"; run="${2:-}"; want="${3:-}"
@@ -28,12 +36,18 @@ if [ -n "$run" ]; then
   echo "$run $artifact"; exit 0
 fi
 
-candidates="$("$gh" run list --repo "$repo" --workflow ci.yml --branch main --status success \
-  --limit "$window" --json databaseId --jq '.[].databaseId')"
-for candidate in $candidates; do
-  artifact="$(artifact_of "$candidate")"
-  if [ -n "$artifact" ]; then echo "$candidate $artifact"; exit 0; fi
-  echo "run $candidate has no unexpired fixtures artifact; not a fixture producer" >&2
-done
-echo "none of the last $window green main CI runs holds an unexpired fixtures artifact" >&2
+candidates="$("$gh" run list --repo "$repo" --workflow ci.yml --branch main --event push --status success \
+  --limit "$window" --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')"
+while read -r candidate commit; do
+  [ -n "$candidate" ] || continue
+  queued="$("$gh" run list --repo "$repo" --workflow ci.yml --event merge_group --commit "$commit" \
+    --status success --json databaseId --jq '.[].databaseId')"
+  for producer in "$candidate" $queued; do
+    artifact="$(artifact_of "$producer")"
+    if [ -n "$artifact" ]; then echo "$producer $artifact"; exit 0; fi
+  done
+  queued="${queued//$'\n'/ }"
+  echo "run $candidate (commit $commit) and its merge-queue runs ${queued:-(none)} hold no unexpired fixtures artifact" >&2
+done <<<"$candidates"
+echo "none of the last $window green main CI runs, nor the merge-queue runs that tested their commits, holds an unexpired fixtures artifact" >&2
 exit 1
