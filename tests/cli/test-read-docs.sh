@@ -20,6 +20,7 @@ rust-fs-bcachefs generate completions "$SANDBOX/share" >"$SANDBOX/out" 2>"$SANDB
 check "completion generation succeeds" test $? -eq 0
 for completion in zsh/site-functions/_fs.bcachefs bash-completion/completions/fs.bcachefs fish/vendor_completions.d/fs.bcachefs.fish; do
     check "$completion offers read" grep -qw read "$SANDBOX/share/$completion"
+    check "$completion retains cat" grep -qw cat "$SANDBOX/share/$completion"
 done
 
 finish

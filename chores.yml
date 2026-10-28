@@ -350,7 +350,9 @@ tasks:
       # measured) and 20 where it refuses them; the floor takes the lower.
       # #439 adds 26 import checks, and for the import verb it adds to the
       # table four help-example and 21 offset checks.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7922'
+      # #437 adds three checks to test-read-docs.sh (cat in each generated
+      # completion file) and no file, so no log line.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7925'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
