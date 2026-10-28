@@ -959,6 +959,12 @@ rm -f "$out/encrypted-passphrase.mounted.json"
         bcachefs-ref unlock -k "$k" -f "$out/encrypted-passphrase.passphrase" "$img" < /dev/null ||
             echo "unlock -k $k: exit $?"
     done
+    # The passphrase key the unlock derived, as the kernel keyring holds it
+    # (S1 9.1.4.2: a user key described bcachefs:<UUID>), so the key
+    # derivation and the sealing of the master key can be learned apart
+    # (#326). Its record says why when there is no key to print.
+    python3 /repo/scripts/guest-keyring.py > "$out/encrypted-passphrase.keyring.txt" 2>&1 ||
+        echo "keyring: exit $?" >> "$out/encrypted-passphrase.keyring.txt"
     if fuse_mount "$img" ro,noatime "$work/fuse-encrypted-passphrase.log"; then
         manifest "$ROOT$mnt" "$out/encrypted-passphrase.mounted.json" live
         fuse_kill
