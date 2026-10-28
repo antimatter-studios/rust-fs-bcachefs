@@ -137,7 +137,7 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
     )
 }
 
-fn failed(e: fs_bcachefs::Error) -> CliError {
+pub(super) fn failed(e: fs_bcachefs::Error) -> CliError {
     match e {
         fs_bcachefs::Error::Unsupported(m) => CliError::not_implemented(m),
         e => CliError::failed(e.to_string()),
@@ -193,7 +193,7 @@ fn writer(dev: Device, journal: bool) -> Result<Writer<Device>, CliError> {
 /// Resolve and validate through the library's reader before any writable
 /// handle is opened. Only a missing final entry is a create; unsupported
 /// paths and damaged metadata must retain their own errors.
-fn write_path(
+pub(super) fn write_path(
     target: &Target<'_>,
     p: &str,
     journal: bool,

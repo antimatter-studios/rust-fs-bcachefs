@@ -84,6 +84,8 @@ pub fn plant(img: &Path, case: &str) -> String {
             .expect("the fixture has a freespace run starting at a bucket with no alloc key")
             .clone()
     };
+    // A bucket that must still have no alloc key once the plant is written.
+    let mut empty = None;
     let (writes, want): (Vec<(u8, Bkey)>, String) = match case {
         // A run grown by one bucket, onto a bucket in use.
         "set" => {
@@ -172,13 +174,23 @@ pub fn plant(img: &Path, case: &str) -> String {
             let want = format!("freespace run {} ", moved.pos);
             (vec![(FREESPACE, moved)], want)
         }
-        // A copy of a backpointer in a bucket with no alloc key.
+        // A copy of a backpointer in a bucket with no alloc key: the
+        // highest free one, as the writer takes buckets for the nodes this
+        // insert rewrites lowest first. The lowest would be given an alloc
+        // key by the plant itself (merge-queue run 40766030184, where
+        // default.img's lowest run started at bucket 341).
         "backpointer" => {
             let bp = walk(BACKPOINTERS)
                 .into_iter()
                 .find(|k| k.key_type == BACKPOINTER && k.pos.inode == 0)
                 .expect("the fixture has a backpointer");
-            let s = start(&fresh());
+            let s = runs
+                .iter()
+                .rev()
+                .map(|k| k.pos.offset - 1)
+                .find(|b| !alloc.contains_key(b))
+                .expect("the fixture has a free bucket with no alloc key");
+            empty = Some(s);
             let moved = Bkey {
                 pos: Bpos {
                     offset: (s * u64::from(member.bucket_size)) << 16,
@@ -195,6 +207,18 @@ pub fn plant(img: &Path, case: &str) -> String {
     let mut w = Writer::open(FileDevice::open_rw(img).unwrap()).unwrap();
     for (id, k) in writes {
         w.insert(id, vec![k]).unwrap();
+    }
+    drop(w);
+    if let Some(b) = empty {
+        let dev = FileDevice::open(img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        assert!(
+            !btree::walk(&dev, &sb, ALLOC)
+                .unwrap()
+                .iter()
+                .any(|k| k.pos.inode == 0 && k.pos.offset == b),
+            "{case}: the plant's own writes gave bucket {b} an alloc key"
+        );
     }
     want
 }

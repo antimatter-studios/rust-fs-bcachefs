@@ -126,6 +126,23 @@ fn read_command() -> Cmd {
                 ),
         )
         .subcommand(
+            Cmd::new("import")
+                .about("Stream a local file or stdin into the image, published only when complete")
+                .args(transfer::import_args_with_verify())
+                .after_help(
+                    "Examples:\n  fs.bcachefs disk.img import hello.txt /hello.txt\n  \
+                     cat big.bin | fs.bcachefs disk.img import - /big.bin\n  \
+                     fs.bcachefs disk.img import --replace --verify hello.txt /hello.txt\n\n\
+                     The bytes go to a staged file beside PATH in bounded runs, committed \
+                     through the journal, and are published by one rename. An existing PATH \
+                     is refused unless --replace is given; the rename replaces it in the \
+                     same transaction, so the old file is never deleted first. --verify \
+                     reads the staged file back through a fresh open of the image and \
+                     publishes only when its length and SHA-256 match. A failed import \
+                     removes the staged file and leaves PATH as it was.",
+                ),
+        )
+        .subcommand(
             Cmd::new("read")
                 .visible_alias("cat")
                 .about("Read a regular file's bytes; refuse symlinks, naming their target")
@@ -256,6 +273,10 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
             } else {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
             }
+        }
+        Some(("import", sub)) => {
+            let image = m.get_one::<OsString>("target").expect("required");
+            super::import::run(&target, image, sub)
         }
         Some(("read", sub)) => {
             let fs = open(dev)?;

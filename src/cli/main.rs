@@ -7,6 +7,7 @@ mod device;
 mod fs;
 mod fs_write;
 mod fsck;
+mod import;
 
 use fs_core::cli;
 use std::process::ExitCode;
