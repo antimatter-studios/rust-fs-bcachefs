@@ -285,6 +285,30 @@ pub fn btree_node_nonce(offset: usize, seq: u64, journal_seq: u64) -> Result<Non
     ])
 }
 
+/// Word 3 of a journal entry's nonce: the domain separator of the
+/// journal. OBSERVED: the only one of the sixteen top-nibble values (and of
+/// every single-bit value) whose keystream turns the stored `last_seq` of
+/// `encrypted-unclean.img`'s entries into the one the reference journal
+/// lister prints.
+pub const NONCE_JOURNAL: u32 = 0x3000_0000;
+
+/// The nonce of the journal entry (`jset`) whose sequence number is `seq`:
+/// word 0 zero (the block counter from the entry's byte 44), word 1 the
+/// sequence number, word 2 zero, word 3 [`NONCE_JOURNAL`]. OBSERVED on all 25 entries
+/// the reference journal lister lists of `encrypted-unclean.img`, whose
+/// sequence numbers run from 34 to 58: how one of 2^32 or more enters the
+/// nonce has not been seen, so such an entry is refused rather than given
+/// a guessed nonce.
+pub fn journal_nonce(seq: u64) -> Result<Nonce> {
+    let seq = u32::try_from(seq).map_err(|_| {
+        Error::Unsupported(format!(
+            "an encrypted journal entry with sequence number {seq:#x}: how one of 2^32 or more \
+             enters its nonce has not been observed"
+        ))
+    })?;
+    Ok([0, seq, 0, NONCE_JOURNAL])
+}
+
 /// The nonce of a data extent whose crc entry is `crc`, in a key whose
 /// version is `version_hi:version_lo`. OBSERVED on all 441 extents of
 /// `encrypted.img`: the version (1 to 0x1b9, its high 64 bits zero) is word
@@ -537,6 +561,13 @@ mod tests {
             btree_node_nonce(0, 1, 1 << 28),
             Err(Error::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn a_journal_nonce_is_its_seq_under_the_journal_domain() {
+        assert_eq!(journal_nonce(48).unwrap(), [0, 48, 0, 0x3000_0000]);
+        assert!(journal_nonce(u64::from(u32::MAX)).is_ok());
+        assert!(matches!(journal_nonce(1 << 32), Err(Error::Unsupported(_))));
     }
 
     /// The master key of `encrypted.img`, from its crypt field (the fixtures
