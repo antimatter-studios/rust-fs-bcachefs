@@ -334,7 +334,9 @@ tasks:
       # #342 adds 49 recursive export checks.
       # #436 adds test-help-examples.sh: 79 checks (three setup, four per
       # verb over 19 verbs) and three log lines, 51 of the 52 budgeted.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7853'
+      # #437 adds three checks to test-read-docs.sh (cat in each generated
+      # completion file) and no file, so no log line.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 7856'
 
   test:
     desc: 'Unit, scripts, then oracle, exactly as CI runs them'
