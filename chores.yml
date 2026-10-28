@@ -184,7 +184,8 @@ tasks:
       # #335 adds the wide_macs image's every-file read.
       # #358 adds the encrypted-compressed key-version comparison.
       # #376 adds three inode allocation cursor oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 245'
+      # #338 adds four encrypted journal entry oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 249'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
