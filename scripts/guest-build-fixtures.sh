@@ -606,6 +606,53 @@ bcachefs-ref list -b extents -m nodes-ondisk "$img" >"$out/poison.extents.ondisk
 bcachefs-ref fsck -n "$img" >"$out/poison.fsck.txt" 2>&1 || true
 cp --sparse=always "$ROOT$img" "$out/poison.img"
 
+# EXTENTS WAITING ON BACKGROUND WORK (#420). An extent with a reconcile
+# entry has a set key at its own position in reconcile_work and one at its
+# backpointer's position in reconcile_work_phys; the reconcile_work checker
+# cases (tests/check_oracle.rs) damage a copy of an image that holds them.
+# kernel.img held them only when the module had not finished that work
+# before it unmounted, which varied from build to build. Here background
+# compression gives every extent work, and reconcile is off both while the
+# files are written through the mount and while the checker replays the
+# journal, so the work is never done. A build whose image still holds no key
+# in either btree fails here, by name.
+step "reconcile (background compression, written with reconcile off)"
+img="$age_dir/reconcile.img"
+rm -f "$ROOT$img"
+truncate -s 64M "$ROOT$img"
+bcachefs-ref format -q --background_compression=lz4 "$img" >"$out/reconcile.format.txt" 2>&1
+fuse_mount "$img" rw,noatime,reconcile_enabled=0 "$work/fuse-reconcile.log"
+python3 - "$ROOT$mnt" <<'PY'
+import os, sys
+m = sys.argv[1]
+for i in range(4):
+    with open(os.path.join(m, "file%d" % i), "wb") as f:
+        f.write(b"".join(b"%08d a line that waits to be compressed\n" % j for j in range(4000)))
+PY
+sync
+fuse_kill
+bcachefs-ref fsck -y -o reconcile_enabled=0 "$img" >"$out/reconcile.replay.txt" 2>&1 || {
+    echo "the reference checker could not replay reconcile:" >&2
+    tail -n 30 "$out/reconcile.replay.txt" >&2
+    exit 1
+}
+for b in extents reconcile_work reconcile_work_phys; do
+    bcachefs-ref list -b "$b" "$img" >"$out/reconcile.$b.txt" 2>&1
+done
+for b in reconcile_work reconcile_work_phys; do
+    grep -q '^u64s [0-9]* type set ' "$out/reconcile.$b.txt" || {
+        echo "reconcile: the reference lister shows no $b key, so no extent is waiting on background work:" >&2
+        tail -n 30 "$out/reconcile.$b.txt" >&2
+        exit 1
+    }
+done
+if ! bcachefs-ref fsck -n "$img" >"$out/reconcile.fsck.txt" 2>&1; then
+    echo "the reference checker did not pass reconcile:" >&2
+    tail -n 30 "$out/reconcile.fsck.txt" >&2
+    exit 1
+fi
+cp --sparse=always "$ROOT$img" "$out/reconcile.img"
+
 # Stripe pointers link an extent to an erasure-coding stripe (S1 9.1.3.3),
 # which takes several devices; a reader of one device never meets one.
 # Tried once on three devices so the lister shows whether, and how, the
