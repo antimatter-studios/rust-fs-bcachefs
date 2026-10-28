@@ -1965,6 +1965,46 @@ of the offset, 8 trailing value bytes, btree id 200, data type 0 or 99,
 length 0 or 0xffffff, and value byte 3 at 0xff. This is black-box output
 only; no reference source was read.
 
+### An inode key's hash type and fields_start (S3, #219)
+
+The differential baseline's `node` class "check_allocations...invalid bkey
+in btree_node btree=inodes ... type inode_v3 ..." had the reference checker
+delete an inode key on read, with the reason cut off by the report's
+signature. A guest probe on 2026-10-28 (reference checker 1.39.7) took the
+inode_v3 key of `/many/file-0200.txt` (112-byte value) and of the root
+(88 bytes) in `default.img`, and the root of `kernel.img` (96 bytes),
+changed one field at a time, committed it with the writer's raw `insert`
+(a `deleted` key at the old position when the position moved) and read the
+copy with `bcachefs-ref fsck -n`. Every unchanged control was clean to both
+checkers.
+
+The third value word (`InodeV3Raw::flags`) of every fixture inode holds
+hash type 3 in bits 20..24 and 3 in bits 32..36. Two rules on it were
+refused on read while this checker called the image clean:
+
+- A string hash type of every value from 4 to 15 was "invalid str hash
+  type (N >= 4), deleting" on all three inodes, the lister printing
+  `hash_type=(unknown str_hash_type N)` (`inode_str_hash_invalid`). Hash
+  types 0, 1 and 2 were not refused on the key: the file was clean to both
+  at each, and the roots were refused by later passes only.
+- Bits 32..36 are read as fields_start at twice their value: n there
+  printed "invalid fields_start (got 2n, min 6 max M), deleting", where M
+  is the value's length in u64s (14, 11 and 12) (`inode_fields_start_bad`).
+  Every value of n from 0 to 15 was tried on each inode; those with 2n
+  from 6 to M were accepted, M itself included (n 7 on the file, n 6 on
+  `kernel.img`'s root), and all others refused. Bit 31 was not varied, so
+  whether it belongs to fields_start is an open question; the checker reads
+  bits 32..36 only.
+
+Refused under reasons this checker already reports with other kinds, and
+not judged by these rules: offset 0 ("fs inode in blockdev range"),
+snapshot 0 ("snapshot == 0"), and a value under 48 bytes ("bad val size
+(40 < 48)", "(0 < 48)"), which the inode decoder names. Accepted on the key
+by the reference: bi_flags bits 15, 17 and 19, mode bits above 52, a
+nonzero version word, and 8 zero bytes after the value; mode type bits
+were refused by later passes, not as an invalid key. This is black-box
+output only; no reference source was read.
+
 ### The key types a btree holds (S3, #163)
 
 `tests/check_oracle_key_types.rs` plants a key of every type into a copy

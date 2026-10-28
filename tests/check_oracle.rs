@@ -2330,3 +2330,159 @@ fn both_checkers_reject_a_backpointer_level_past_four() {
 fn both_checkers_accept_a_btree_node_backpointer_at_level_four() {
     both_checkers_judge_a_changed_backpointer_key("kernel", 3, |k| k.value[1] = 4, None);
 }
+
+/// The inode_v3 key of `path` in `set.img`, its third value word changed
+/// by `change` and committed in place (#219). With `refused`, the
+/// reference must delete it on read as an invalid inodes key with that
+/// reason and this checker report `ours` for it; without, both must call
+/// the image clean.
+#[cfg(feature = "write")]
+fn both_checkers_judge_a_changed_inode_key(
+    set: &str,
+    path: &str,
+    change: impl FnOnce(u64) -> u64,
+    refused: Option<(&str, &str)>,
+) {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+    use fs_bcachefs::Filesystem;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-inode-key");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("inode-{set}.img"));
+    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let ino = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup(path)
+        .unwrap();
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, btree_id::INODES)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == key_type::INODE_V3 && k.pos.inode == 0 && k.pos.offset == ino)
+        .unwrap_or_else(|| panic!("{set}.img has no inode_v3 key for {path}"));
+    drop(dev);
+    let word = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+    k.value[16..24].copy_from_slice(&change(word).to_le_bytes());
+    let pos = k.pos;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(btree_id::INODES, vec![k]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    match refused {
+        Some((reason, kind)) => {
+            assert!(
+                bad && text.contains("invalid bkey in btree_node btree=inodes")
+                    && text.contains(reason),
+                "{text}"
+            );
+            assert!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == kind && p.detail.contains(&pos.to_string())),
+                "the inode {pos} of {path} ({set}) was not reported as {kind}: {:?}\n{text}",
+                ours.problems
+            );
+        }
+        None => {
+            assert!(!bad, "{text}");
+            assert!(ours.clean(), "{set} {path}: {:?}", ours.problems);
+        }
+    }
+}
+
+/// The string hash type is bits 20..24 of the word: 3 (siphash) in every
+/// fixture, 4 and above "invalid str hash type (N >= 4)".
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_inode_with_an_unknown_str_hash_type() {
+    for (set, path, hash) in [
+        ("default", "/many/file-0200.txt", 4),
+        ("default", "/", 15),
+        ("kernel", "/", 8),
+    ] {
+        both_checkers_judge_a_changed_inode_key(
+            set,
+            path,
+            |w| (w & !(0xf << 20)) | (hash << 20),
+            Some((
+                &format!("invalid str hash type ({hash} >= 4), deleting"),
+                "inode_str_hash_invalid",
+            )),
+        );
+    }
+}
+
+/// The reference accepts a regular file whose hash type is 0: only 4 and
+/// above are refused on the key itself.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_file_inode_with_hash_type_zero() {
+    both_checkers_judge_a_changed_inode_key(
+        "default",
+        "/many/file-0200.txt",
+        |w| w & !(0xf << 20),
+        None,
+    );
+}
+
+/// Bits 32..36 of the word, 3 in every fixture, are read as fields_start,
+/// twice their value: below 6, or past the value's length in u64s (14 for
+/// this file, 11 for default's root, 12 for kernel's), is "invalid
+/// fields_start (got N, min 6 max M)".
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_inode_with_fields_start_out_of_range() {
+    for (set, path, nibble, max) in [
+        ("default", "/many/file-0200.txt", 2u64, 14),
+        ("default", "/many/file-0200.txt", 8, 14),
+        ("default", "/", 6, 11),
+        ("kernel", "/", 0, 12),
+        ("kernel", "/", 15, 12),
+    ] {
+        both_checkers_judge_a_changed_inode_key(
+            set,
+            path,
+            |w| (w & !(0xf << 32)) | (nibble << 32),
+            Some((
+                &format!(
+                    "invalid fields_start (got {}, min 6 max {max}), deleting",
+                    2 * nibble
+                ),
+                "inode_fields_start_bad",
+            )),
+        );
+    }
+}
+
+/// fields_start equal to the value's length is accepted: 14 on this file
+/// (112 bytes), 12 on kernel's root (96 bytes).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_an_inode_with_fields_start_at_its_value_length() {
+    both_checkers_judge_a_changed_inode_key(
+        "default",
+        "/many/file-0200.txt",
+        |w| (w & !(0xf << 32)) | (7 << 32),
+        None,
+    );
+    both_checkers_judge_a_changed_inode_key(
+        "kernel",
+        "/",
+        |w| (w & !(0xf << 32)) | (6 << 32),
+        None,
+    );
+}

@@ -280,7 +280,10 @@ tasks:
       # Measured 2026-10-27 on fix/219-backpointer-keys: 470 executed, one
       # unit and three live-reference backpointer key cases more (before
       # #421's own unit case was on its base).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 470'
+      # Measured 2026-10-28 on fix/219-inode-keys: 476 executed, #421's
+      # unit case now on its base, and one unit and four live-reference
+      # inode key cases above the 470.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 476'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;

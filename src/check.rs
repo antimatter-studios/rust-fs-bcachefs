@@ -2041,7 +2041,8 @@ fn check_key_device(id: u8, k: &Bkey, dev: u64, r: &mut Report) {
 /// snapshot", `bkey_snapshot_nonzero`), an inode, subvolume, snapshot,
 /// snapshot_tree or inode allocation cursor at a position it cannot have,
 /// an accounting key holding more than its kind and btree, a backpointer
-/// whose level is above 4, and an xattr whose lengths run past its value. Each pair of btree and key type below
+/// whose level is above 4, an inode whose hash type or fields_start is out
+/// of range, and an xattr whose lengths run past its value. Each pair of btree and key type below
 /// is one differential run 38579070302, nightly-seed run 39018152705 or
 /// nightly runs 38878947701 and 39756419740 saw the reference refuse; a pair
 /// nobody observed is not judged (docs/clean-room.md).
@@ -2099,6 +2100,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     }
     if (id, k.key_type) == (ACCOUNTING, KEY_ACCOUNTING) {
         check_accounting_key(&name, k, r);
+    }
+    if (id, k.key_type) == (btree_id::INODES, key_type::INODE_V3) {
+        check_inode_v3_word(&name, k, r);
     }
     let v = &k.value;
     match (id, k.key_type) {
@@ -2220,6 +2224,41 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: key {} is a snapshot", k.pos),
         ),
         _ => {}
+    }
+}
+
+/// What the reference refuses in an inode_v3 key's third value word, the
+/// one holding its flags, hash type, field count and mode (#219), each seen
+/// one value at a time on default.img's file and root and on kernel.img's
+/// root (docs/clean-room.md, "An inode key's hash type and fields_start"):
+/// a string hash type (bits 20..24) of 4 or more ("invalid str hash type"),
+/// and bits 32..36, read as fields_start at twice their value, below 6 or
+/// past the value's length in u64s ("invalid fields_start"). A value
+/// shorter than its 48-byte fixed part is named by the inode decoder.
+fn check_inode_v3_word(name: &str, k: &Bkey, r: &mut Report) {
+    // The reference refuses a value shorter than the 48-byte fixed part
+    // as "bad val size" before either rule; the decoder names that.
+    if k.value.len() < 48 {
+        return;
+    }
+    let word = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+    let hash = (word >> 20) & 0xf;
+    if hash >= 4 {
+        r.add(
+            "inode_str_hash_invalid",
+            format!("btree {name}: inode {} has string hash type {hash}", k.pos),
+        );
+    }
+    let fields_start = 2 * ((word >> 32) & 0xf);
+    let max = (k.value.len() / 8) as u64;
+    if !(6..=max).contains(&fields_start) {
+        r.add(
+            "inode_fields_start_bad",
+            format!(
+                "btree {name}: inode {} has fields_start {fields_start}, outside 6..={max}",
+                k.pos
+            ),
+        );
     }
 }
 
@@ -3182,6 +3221,50 @@ mod tests {
                 .any(|p| p.kind == "bkey_invalid_type_for_btree"),
             "{unrelated:?}"
         );
+    }
+
+    #[test]
+    fn an_inode_hash_type_or_fields_start_the_reference_refuses_is_named() {
+        // The guest probe of 2026-10-28 (#219) on default.img's
+        // /many/file-0200.txt: a 112-byte value whose third word is
+        // 0x81a4315300000 (hash type 3, bits 32..36 at 3).
+        let kinds = |word: u64, len: usize| {
+            let mut value = vec![0; len];
+            value[16..24].copy_from_slice(&word.to_le_bytes());
+            let mut k = key(key_type::INODE_V3, 2147483860, value);
+            k.pos.snapshot = u32::MAX;
+            let mut report = Report::default();
+            check_key_fields(btree_id::INODES, &k, &mut report);
+            report.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        let word = 0x81a4315300000u64;
+        let hash = |h: u64| (word & !(0xf << 20)) | (h << 20);
+        let start = |n: u64| (word & !(0xf << 32)) | (n << 32);
+        for clean in [
+            kinds(word, 112),
+            kinds(hash(0), 112),
+            kinds(hash(2), 112),
+            kinds(start(7), 112), // fields_start 14 of 14
+            kinds(start(6), 96),  // 12 of 12
+        ] {
+            assert!(clean.is_empty(), "{clean:?}");
+        }
+        for h in [4, 8, 15] {
+            assert_eq!(kinds(hash(h), 112), ["inode_str_hash_invalid"]);
+        }
+        for (n, len) in [(0, 112), (2, 112), (8, 112), (6, 88), (15, 96)] {
+            assert_eq!(
+                kinds(start(n), len),
+                ["inode_fields_start_bad"],
+                "{n} {len}"
+            );
+        }
+        // Shorter than the fixed part: left to the inode decoder.
+        let mut short = key(key_type::INODE_V3, 2147483860, vec![0; 40]);
+        short.pos.snapshot = u32::MAX;
+        let mut report = Report::default();
+        check_key_fields(btree_id::INODES, &short, &mut report);
+        assert!(report.problems.is_empty(), "{report:?}");
     }
 
     #[test]
