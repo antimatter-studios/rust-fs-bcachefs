@@ -28,13 +28,15 @@
 # #229 the same way.
 # #219's snapshot_tree at offset U64_MAX, from nightly run 38878947701, is
 # reported since the checker refuses a tree id past U32_MAX.
+# #219's last ten key-invariant classes were removed once main run
+# 40754536244 (seed 0, 80 cases a fixture, fixtures of CI run 40744795974)
+# no longer found any of them.
 # #220's three snapshot-link classes were removed by #224 once a run at
 # seed 0, 80 cases a fixture, no longer found them.
 # #163's forty allocation and key-type classes were removed by #454 once
 # main run 40754536244 (seed 0, 80 cases a fixture, fixtures of CI run
 # 40744795974) no longer found them; the three it still found are at the
 # end, each tracked by its own issue.
-ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=#: u#s # type inode_v# #:u#_max le	#219: metadata key invariants
 
 # Measured on main 91a47a2 in CI run 38698985871, reference checker 1.39.7.
 # Fixtures rebuilt by main run 38680345154 change the nodes reached by seed 0.
@@ -42,26 +44,17 @@ ref-only	node	check_allocations...invalid bkey in btree_node btree=inodes level=
 # Counts, fixture identities and unresolved ownership are recorded in
 # docs/clean-room.md, "Rebuilt-fixture differential control" (#227).
 ours-only	node	check:missing_backpointer	#230: unresolved backpointer disagreement; reference clean is not proof of validity
-ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : nr_inodes	#219: metadata key invariants
 ref-only	key-value	check_extents...extent type past end of inode #, i_size #	#221: inode metadata consistency
-ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : replicas 	#219: metadata key invariants
 
 # Measured at 3be1c2a in PR CI run 38718924048, reference checker 1.39.7.
 # The job takes fixtures from the newest green main run, so seeds reach other
 # nodes than run 38698985871 did: none of the eight lines above occurred, and
 # three further exact classes did (report SHA-256 8921a81d...cacb, #227).
-ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : dev_data_	#219: metadata key invariants
-ref-only	node	invalid bkey in btree_node btree=backpointers level=#: u#s # type backpointer # len # ver # : bucket	#219: metadata key invariants
 
 # Measured in nightly run 38878947701 (2026-10-16, reference checker 1.39.7),
 # 648 cases at that night's seeds: 33 classes the baseline did not hold,
 # each recorded against the issue that tracks its family (#228).
 ours-only	node	check:extent_data	not a defect: this crate verifies extent data checksums, which the reference checker does not read
-ref-only	key-inode	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume # len # ver # : root # sna	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#219: metadata key invariants
-ref-only	key-value	check_snapshots...snapshot node # has wrong subvol flag:	#219: metadata key invariants
-ref-only	key-snapshot	invalid bkey in btree_node btree=snapshot_trees level=#: u#s # type snapshot_tree # len # ver # : su	#219: metadata key invariants
-ref-only	key-size	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type set # len # ver #	#219: metadata key invariants
 
 # Measured on main 08c02dc in run 39018152705 (2026-10-17), reference
 # checker 1.39.7: 648 cases, first seed 1659440. Each new class has its
