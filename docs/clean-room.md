@@ -856,6 +856,27 @@ checker judged each attempt and named what was missing until nothing was.
   region's sector << 16 plus its offset (`26880 << 16 | 136`, `57344 <<
   16 | 16`), with the piece's live length. Only uncompressed regions'
   pieces appear in any fixture.
+- A small write into the middle of an extent cuts it (#447; S8, the
+  reference mount in the test VM, 2026-10-28, listed with the reference
+  lister): a 64 MiB image formatted with the `default` set's options, a
+  1 MiB file written through the mount (16 extents of 64 sectors, one per
+  64-sector bucket), then 10 bytes written at byte 540675, in sector 1056
+  of the extent `1024..1088` (bucket 110). Afterwards that extent is three
+  keys: `1024..1056`, `len 32`, its crc entry unchanged (`c_size 64 size
+  64 offset 0`, the same checksum) on the same pointer; `1056..1057`, a
+  new one-sector extent with a crc entry of its own, in a bucket of its
+  own (107); and `1057..1088`, `len 31`, the region's crc entry again with
+  `offset 33` on the same pointer. Each key is 7 u64s, version 0. Bucket
+  110 counts 63 dirty sectors (64 before), its fragmentation lru entry
+  moves to `(1 << 61) | (63 << 31) / 64`, and bucket 107 counts 1. The
+  backpointer at `110 * 64 << 16` now has length 32 and names `1056`, and
+  a second one at `(110 * 64 << 16) + 33` has suboffset 33, length 31 and
+  names `1088`. Accounting: the inode's counter goes from 32 extents,
+  2048 and 2048 sectors to 34, 2048 and 2048; the extents btree's from 32
+  keys and 1792 bytes to 34 and 1904, its sectors unchanged at 2048; the
+  user data type from 32 buckets and 0 unused sectors to 33 and 64. The
+  reference checker passes the image, and the mount reads the file back
+  as written.
 - A bucket holding several nodes (#109): on a filesystem whose nodes are
   smaller than its buckets the reference formatter fills a bucket with
   more than one node (`write-study/base-small-nodes.img`: 64-sector nodes

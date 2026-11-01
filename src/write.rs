@@ -1511,8 +1511,11 @@ impl<D: BlockDevice> Writer<D> {
     /// out as [`Writer::write_file`] would lay out the file (see
     /// [`data_layout`]), so what the reference would store for those bytes
     /// is what is stored. Every other extent keeps its key, its pointer
-    /// and its bucket. A part of an extent is not cut away: the extents a
-    /// window overlaps are rewritten whole.
+    /// and its bucket. An extent a window covers only part of is cut
+    /// (#447) when [`alloc::cuttable`] allows: its parts outside the windows
+    /// keep its data where it is, as pieces of its checksummed region, and
+    /// only the windows are written again. Any other extent a window
+    /// overlaps widens the window to the whole extent, and is rewritten.
     fn rewrite(&mut self, ino: u64, size: u64, write: Option<(u64, &[u8])>) -> Result<()> {
         let mut i = self.inode(ino)?;
         if i.raw.mode() & 0o170000 != 0o100000 {
@@ -1541,6 +1544,11 @@ impl<D: BlockDevice> Writer<D> {
                 k.pos.offset.saturating_mul(512),
             )
         };
+        // The extents a window cuts rather than widens to.
+        let cuttable = keys
+            .iter()
+            .map(|k| Ok(alloc::cuttable(k)?.is_some()))
+            .collect::<Result<Vec<bool>>>()?;
         let mut windows = Vec::new();
         let written = write.filter(|(_, data)| !data.is_empty());
         if let Some((at, data)) = written {
@@ -1552,12 +1560,12 @@ impl<D: BlockDevice> Writer<D> {
         } else if size > old_size && old_size % block != 0 {
             windows.push((down(old_size), up(old_size)?));
         }
-        // Each window widened to the whole extents it overlaps and to whole
-        // blocks, until neither moves it.
+        // Each window widened to the whole extents it overlaps that cannot
+        // be cut, and to whole blocks, until neither moves it.
         loop {
             let mut wider = merge_ranges(windows.clone());
             for w in &mut wider {
-                for k in &keys {
+                for (k, _) in keys.iter().zip(&cuttable).filter(|(_, c)| !**c) {
                     let (from, to) = span(k);
                     if from < w.1 && to > w.0 {
                         w.0 = w.0.min(from);
@@ -1577,6 +1585,32 @@ impl<D: BlockDevice> Writer<D> {
             windows.iter().any(|w| from < w.1 && to > w.0)
         };
         let (old, kept): (Vec<Bkey>, Vec<Bkey>) = keys.into_iter().partition(|k| inside(k));
+        // Of the extents the windows overlap, those they cover are freed;
+        // the others are cut down to the sectors outside every window.
+        let mut covered = Vec::new();
+        let mut cuts = Vec::new();
+        for k in &old {
+            let mut keep = Vec::new();
+            let mut at = k.start_offset();
+            for &(from, to) in &windows {
+                let (from, to) = (from / 512, to / 512);
+                if to <= at || from >= k.pos.offset {
+                    continue;
+                }
+                if from > at {
+                    keep.push((at, from));
+                }
+                at = at.max(to);
+            }
+            if at < k.pos.offset {
+                keep.push((at, k.pos.offset));
+            }
+            if keep.is_empty() {
+                covered.push(k.clone());
+            } else {
+                cuts.push((k.clone(), keep));
+            }
+        }
 
         // Each window's bytes up to the new size, the write laid over them,
         // and the blocks of it that hold something: those the old extents
@@ -1623,10 +1657,15 @@ impl<D: BlockDevice> Writer<D> {
         }
         let now = self.now();
         let mut t = Txn::default();
-        self.free_extents(ino, &old, &mut t)?;
+        self.free_and_cut(ino, &covered, &cuts, &mut t)?;
         let opts = data_options(&self.sb, &i.raw)?;
         let block_sectors = u64::from(self.sb.block_size).max(1);
         let mut sectors: u64 = kept.iter().map(|k| u64::from(k.size)).sum();
+        sectors += cuts
+            .iter()
+            .flat_map(|(_, keep)| keep)
+            .map(|(a, b)| b - a)
+            .sum::<u64>();
         for (at, bytes) in &pieces {
             let n = split(*at, bytes);
             if n > 0 {
