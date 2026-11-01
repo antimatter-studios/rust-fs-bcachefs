@@ -187,6 +187,40 @@ pub fn parse_entries(v: &[u8]) -> Result<Vec<ExtentEntry>> {
     Ok(entries(v)?.0)
 }
 
+/// `v`, an extent value whose first entry is a crc entry, with that
+/// entry's offset set to `offset` sectors: crc32 bits 16..22, crc64
+/// 21..29, crc128 30..42, where [`parse_entries`] reads them. How the
+/// reference cuts an extent it overwrote part of (docs/clean-room.md, "A
+/// small write into the middle of an extent cuts it"): every piece keeps
+/// the region's entry and pointer, and only the offset and the key's size
+/// and position change.
+pub fn with_crc_offset(v: &[u8], offset: u32) -> Result<Vec<u8>> {
+    if v.len() < 8 {
+        return Err(Error::Corrupt("an extent value with no entry".into()));
+    }
+    let w = le64(v, 0);
+    let (at, width) = match w.trailing_zeros() {
+        1 => (16, 7),
+        2 => (21, 9),
+        3 => (30, 13),
+        t => {
+            return Err(Error::Unsupported(format!(
+                "extent entry type {t} ({}) has no crc offset to set",
+                entry_kind_name(t)
+            )))
+        }
+    };
+    if u64::from(offset) >= 1 << width {
+        return Err(Error::Unsupported(format!(
+            "a crc offset of {offset} sectors does not fit the entry's {width} bits"
+        )));
+    }
+    let mask = ((1u64 << width) - 1) << at;
+    let mut out = v.to_vec();
+    out[..8].copy_from_slice(&((w & !mask) | u64::from(offset) << at).to_le_bytes());
+    Ok(out)
+}
+
 /// Whether an extent value carries a reconcile entry: background work is
 /// pending for it, and the reconcile_work btrees hold a key for it.
 pub fn reconciling(v: &[u8]) -> Result<bool> {
@@ -375,6 +409,34 @@ impl DataExtent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crc_offset_is_set_where_the_reference_keeps_it() {
+        // The `crc128-overwrite` image's two pieces of one region differ
+        // only in the offset, 0 before the overwrite and 16 after it.
+        let before = 0x0500_0000_07fe_3ff8u64;
+        let after = 0x0500_0004_07fe_3ff8u64;
+        let mut v = before.to_le_bytes().to_vec();
+        v.extend_from_slice(&0x0f1c_6c44u64.to_le_bytes());
+        v.extend_from_slice(&[0; 8]);
+        let cut = with_crc_offset(&v, 16).unwrap();
+        assert_eq!(cut[..8], after.to_le_bytes());
+        assert_eq!(cut[8..], v[8..]);
+        // The reference's cut crc32 piece (docs/clean-room.md, #447):
+        // `c_size 64 size 64 offset 33 ... csum crc32c 0:5f2f0164`.
+        let w: u64 = 0x5f2f_0164_0500_7efe;
+        let cut = with_crc_offset(&w.to_le_bytes(), 33).unwrap();
+        let ExtentEntry::Crc(c) = parse_entries(&cut).unwrap()[0] else {
+            panic!("not a crc entry")
+        };
+        assert_eq!(
+            (c.offset, c.compressed_size, c.uncompressed_size, c.csum_lo),
+            (33, 64, 64, 0x5f2f_0164)
+        );
+        // An offset the entry cannot hold, and an entry with no offset.
+        assert!(with_crc_offset(&w.to_le_bytes(), 128).is_err());
+        assert!(with_crc_offset(&1u64.to_le_bytes(), 1).is_err());
+    }
 
     #[test]
     fn a_crc32_entry_decodes_as_the_lister_printed_it() {

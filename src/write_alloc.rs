@@ -421,28 +421,9 @@ impl<D: BlockDevice> Writer<D> {
             }
             t.count(super::btree_counter_pos(ids::EXTENTS), 3, 2, c_size as i64);
 
-            // The backpointer: at the data's device sector << 16, naming
-            // the extent (S8: btree, level, data type, bucket_len, pos).
-            let mut bp = Vec::with_capacity(32);
-            bp.extend_from_slice(&[ids::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0]);
-            bp.extend_from_slice(&(c_size as u32).to_le_bytes());
-            bp.extend_from_slice(&extent.pos.snapshot.to_le_bytes());
-            bp.extend_from_slice(&extent.pos.offset.to_le_bytes());
-            bp.extend_from_slice(&extent.pos.inode.to_le_bytes());
             t.put_uncounted(
                 aids::BACKPOINTERS,
-                Bkey {
-                    key_type: aids::BACKPOINTER,
-                    size: 0,
-                    version_hi: 0,
-                    version_lo: 0,
-                    pos: Bpos {
-                        inode: 0,
-                        offset: p.dev_sector << 16,
-                        snapshot: 0,
-                    },
-                    value: bp,
-                },
+                backpointer(p.dev_sector, 0, c_size as u32, &extent),
             );
         }
 
@@ -528,6 +509,62 @@ impl<D: BlockDevice> Writer<D> {
         t.count(inum, 3, 2, d);
         Ok(sectors)
     }
+}
+
+/// The backpointer of data extent `extent`, `offset` sectors into the
+/// region at device sector `region`, `len` sectors of it on the device
+/// (S8): at `region << 16` plus `offset`, naming the extent's btree,
+/// level, data type, that length and the extent's position.
+fn backpointer(region: u64, offset: u64, len: u32, extent: &Bkey) -> Bkey {
+    let mut bp = Vec::with_capacity(32);
+    bp.extend_from_slice(&[ids::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0]);
+    bp.extend_from_slice(&len.to_le_bytes());
+    bp.extend_from_slice(&extent.pos.snapshot.to_le_bytes());
+    bp.extend_from_slice(&extent.pos.offset.to_le_bytes());
+    bp.extend_from_slice(&extent.pos.inode.to_le_bytes());
+    Bkey {
+        key_type: aids::BACKPOINTER,
+        size: 0,
+        version_hi: 0,
+        version_lo: 0,
+        pos: Bpos {
+            inode: 0,
+            offset: region << 16 | offset,
+            snapshot: 0,
+        },
+        value: bp,
+    }
+}
+
+/// Extent `k`, when a write may cut it (#447) rather than rewrite it whole:
+/// an extent whose value is exactly one unencrypted, uncompressed crc
+/// entry and one written pointer on device 0, the shape the reference was
+/// seen to cut (docs/clean-room.md, "A small write into the middle of an
+/// extent cuts it"). A compressed or incompressible extent, one with no
+/// checksum, an encrypted one, and one carrying a flags or reconcile entry
+/// have not been seen cut, and are rewritten whole.
+pub(super) fn cuttable(k: &Bkey) -> Result<Option<crate::extent::DataExtent>> {
+    use crate::extent::{compression, parse_entries, ExtentEntry};
+    if k.key_type != key_type::EXTENT || k.size == 0 {
+        return Ok(None);
+    }
+    let entries = parse_entries(&k.value)?;
+    let [ExtentEntry::Crc(c), ExtentEntry::Ptr(p)] = entries.as_slice() else {
+        return Ok(None);
+    };
+    let words = match le64(&k.value, 0).trailing_zeros() {
+        1 => 1,
+        2 => 2,
+        _ => 3,
+    };
+    let plain = c.compression_type == compression::NONE
+        && c.nonce == 0
+        && (5..=7).contains(&c.csum_type)
+        && c.compressed_size == c.uncompressed_size;
+    if !plain || p.dev != 0 || p.flags != 0 || k.value.len() != (words + 1) * 8 {
+        return Ok(None);
+    }
+    crate::extent::DataExtent::from_key(k).map(Some)
 }
 
 impl<D: BlockDevice> Writer<D> {
@@ -668,6 +705,26 @@ impl<D: BlockDevice> Writer<D> {
     /// bucket_gens; backpointers and lru entries go; accounting moves the
     /// buckets from user to need_discard.
     pub(super) fn free_extents(&mut self, ino: u64, extents: &[Bkey], t: &mut Txn) -> Result<()> {
+        self.free_and_cut(ino, extents, &[], t)
+    }
+
+    /// [`Writer::free_extents`] for `extents`, and each extent of `cuts`
+    /// cut down to the file sector ranges given beside it (#447), as the
+    /// reference cuts an extent it overwrote part of (docs/clean-room.md,
+    /// "A small write into the middle of an extent cuts it"): each range
+    /// kept is a key of its own on the same pointer and crc entry, the
+    /// entry's offset moved by as many sectors as the range starts past the
+    /// extent, with a backpointer at the region's sector << 16 plus that
+    /// offset; the bucket loses only the sectors cut away, and the inode's
+    /// accounting counts the pieces. Only an extent [`cuttable`] says may
+    /// be cut is.
+    pub(super) fn free_and_cut(
+        &mut self,
+        ino: u64,
+        extents: &[Bkey],
+        cuts: &[(Bkey, Vec<(u64, u64)>)],
+        t: &mut Txn,
+    ) -> Result<()> {
         let bucket = self.bucket_sectors()?;
         let mut freed: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
         // Extents, and sectors, by the inode their accounting is under:
@@ -705,6 +762,55 @@ impl<D: BlockDevice> Writer<D> {
             } else {
                 t.put_uncounted(REFLINK, v);
             }
+        }
+        for (k, keep) in cuts {
+            let e = cuttable(k)?.ok_or_else(|| {
+                Error::Unsupported(format!("the extent at {} cannot be cut", k.pos))
+            })?;
+            let offset = |at: u64| u64::from(e.crc.map_or(0, |c| c.offset)) + (at - e.file_start);
+            let end = e.file_start + e.len;
+            let mut live = 0u64;
+            for &(a, b) in keep {
+                if a < e.file_start || b > end || a >= b {
+                    return Err(Error::Corrupt(format!(
+                        "a piece {a}..{b} outside the extent {}..{end}",
+                        e.file_start
+                    )));
+                }
+                let piece = Bkey {
+                    size: (b - a) as u32,
+                    pos: Bpos { offset: b, ..k.pos },
+                    value: crate::extent::with_crc_offset(&k.value, offset(a) as u32)?,
+                    ..k.clone()
+                };
+                t.put_uncounted(
+                    aids::BACKPOINTERS,
+                    backpointer(e.ptr.offset, offset(a), piece.size, &piece),
+                );
+                // The piece that ends where the extent did takes its place.
+                let old = (b == end).then_some(k);
+                t.put(ids::EXTENTS, old, piece);
+                live += b - a;
+            }
+            if !keep.iter().any(|&(_, b)| b == end) {
+                t.delete(ids::EXTENTS, k);
+            }
+            if !keep.iter().any(|&(a, _)| a == e.file_start) {
+                t.delete_uncounted(
+                    aids::BACKPOINTERS,
+                    Bpos {
+                        inode: 0,
+                        offset: e.ptr.offset << 16 | offset(e.file_start),
+                        snapshot: 0,
+                    },
+                );
+            }
+            let cut = e.len - live;
+            *freed.entry(e.ptr.offset / bucket).or_default() += cut;
+            t.count(super::btree_counter_pos(ids::EXTENTS), 3, 2, -(cut as i64));
+            let owner = per_inode.entry(ino).or_default();
+            owner.0 += 1 - keep.len() as i64;
+            owner.1 += cut as i64;
         }
         for (k, shared) in &data {
             let e = if *shared {
