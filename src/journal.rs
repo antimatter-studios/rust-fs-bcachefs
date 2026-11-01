@@ -20,6 +20,13 @@
 //! magic:  0x245235c1a3625032 XOR the first 8 bytes of the internal UUID
 //! csum:   over bytes 16 .. 56 + u64s*8, like a bset's
 //! ```
+//!
+//! An encrypted filesystem's entries (#338) carry checksum type 4, a
+//! 128-bit Poly1305 MAC over the same bytes, and are encrypted with
+//! ChaCha20 under the master key from byte 44 to their end: magic, seq,
+//! version, flags and u64s stay in the clear (S4, docs/clean-room.md
+//! "Encryption: journal entries"; the nonce is
+//! [`crate::crypt::journal_nonce`]).
 
 use std::collections::BTreeMap;
 
@@ -34,6 +41,8 @@ use fs_core::BlockRead;
 /// every entry of every fixture.
 pub const JSET_MAGIC_BASE: u64 = 0x2452_35c1_a362_5032;
 const JSET_HEADER: usize = 56;
+/// Where an encrypted jset's ciphertext starts: after its u64s.
+const JSET_ENCRYPTED: usize = 44;
 const FLAG_NO_FLUSH: u32 = 1 << 5;
 /// The superblock field naming the journal's buckets.
 pub const FIELD_JOURNAL_V2: u32 = 9;
@@ -169,6 +178,7 @@ fn scan(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<(Jset, Option<Error>
     }
     let block = (sb.block_size as usize * 512).max(512);
     let magic = jset_magic(&sb.uuid);
+    let key = sb.crypt()?.and_then(|c| c.master_key());
     let mut found: BTreeMap<u64, (Jset, Option<Error>)> = BTreeMap::new();
     for (start, nr) in bucket_ranges(sb)? {
         for bucket in start..start.saturating_add(nr) {
@@ -179,7 +189,7 @@ fn scan(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<(Jset, Option<Error>
             dev.read_at(base, &mut buf)?;
             let mut at = 0usize;
             while at + JSET_HEADER <= buf.len() {
-                let Some((j, damage)) = parse_jset_checked(&buf[at..], magic)? else {
+                let Some((j, damage)) = parse_jset_checked(&buf[at..], magic, key.as_ref())? else {
                     break;
                 };
                 let len = j.bytes.div_ceil(block) * block;
@@ -199,16 +209,35 @@ fn scan(dev: &dyn BlockRead, sb: &Superblock) -> Result<Vec<(Jset, Option<Error>
 /// magic or a checksum that does not hold). A matching header whose length
 /// exceeds the available bucket bytes is corruption, even outside replay.
 pub fn parse_jset(b: &[u8], magic: u64) -> Result<Option<Jset>> {
-    match parse_jset_checked(b, magic)? {
+    parse_jset_keyed(b, magic, None)
+}
+
+/// [`parse_jset`] for a journal of an encrypted filesystem, whose master
+/// key is `key`: an entry carrying a MAC is `None` when its MAC does not
+/// verify, as one whose checksum does not hold is, and is decrypted before
+/// it is read. One carrying a MAC is refused without a key; with one, an
+/// entry carrying a checksum instead is refused too, because an encrypted
+/// filesystem authenticates all of its metadata (S1 2.1.2).
+pub fn parse_jset_keyed(
+    b: &[u8],
+    magic: u64,
+    key: Option<&crate::crypt::MasterKey>,
+) -> Result<Option<Jset>> {
+    match parse_jset_checked(b, magic, key)? {
         None => Ok(None),
         Some((_, Some(e))) => Err(e),
         Some((j, None)) => Ok(Some(j)),
     }
 }
 
-/// [`parse_jset`], with damage in the sub-entries of a jset whose checksum
-/// holds returned beside its header, whose `entries` are then empty.
-fn parse_jset_checked(b: &[u8], magic: u64) -> Result<Option<(Jset, Option<Error>)>> {
+/// [`parse_jset_keyed`], with damage in the sub-entries of a jset whose
+/// checksum or MAC holds returned beside its header, whose `entries` are
+/// then empty.
+fn parse_jset_checked(
+    b: &[u8],
+    magic: u64,
+    key: Option<&crate::crypt::MasterKey>,
+) -> Result<Option<(Jset, Option<Error>)>> {
     if b.len() < JSET_HEADER || le64(b, 16) != magic {
         return Ok(None);
     }
@@ -225,20 +254,49 @@ fn parse_jset_checked(b: &[u8], magic: u64) -> Result<Option<(Jset, Option<Error
     }
     let end = end as usize;
     let csum_type = (flags & 0xf) as u8;
-    if !crate::csum::is_known(csum_type) {
-        return Err(Error::Unsupported(format!(
-            "journal checksum type {csum_type}"
-        )));
-    }
-    let stored = le64(b, 0)
-        & if matches!(csum_type, 1 | 5) {
-            0xffff_ffff
-        } else {
-            u64::MAX
-        };
-    if crate::csum::verify(csum_type, &b[16..end], stored).is_err() {
-        return Ok(None);
-    }
+    let decrypted;
+    let b = match (csum_type == crate::crypt::CSUM_CHACHA20_POLY1305_128, key) {
+        (true, None) => {
+            return Err(Error::Unsupported(format!(
+                "an encrypted journal entry (seq {}), and no master key to decrypt it",
+                le64(b, 24)
+            )))
+        }
+        (true, Some(key)) => {
+            let nonce = crate::crypt::journal_nonce(le64(b, 24))?;
+            if key.mac(nonce, &b[16..end])? != b[..16] {
+                return Ok(None);
+            }
+            let mut copy = b[..end].to_vec();
+            key.apply(nonce, &mut copy[JSET_ENCRYPTED..])?;
+            decrypted = copy;
+            &decrypted[..]
+        }
+        (false, Some(_)) => {
+            return Err(Error::Corrupt(format!(
+                "a journal entry (seq {}) with checksum type {csum_type}, not a MAC, in an \
+                 encrypted filesystem",
+                le64(b, 24)
+            )))
+        }
+        (false, None) => {
+            if !crate::csum::is_known(csum_type) {
+                return Err(Error::Unsupported(format!(
+                    "journal checksum type {csum_type}"
+                )));
+            }
+            let stored = le64(b, 0)
+                & if matches!(csum_type, 1 | 5) {
+                    0xffff_ffff
+                } else {
+                    u64::MAX
+                };
+            if crate::csum::verify(csum_type, &b[16..end], stored).is_err() {
+                return Ok(None);
+            }
+            b
+        }
+    };
     let (entries, damage) = match parse_entries(b, end) {
         Ok(entries) => (entries, None),
         Err(e) => (Vec::new(), Some(e)),
@@ -328,6 +386,85 @@ mod length_tests {
         assert!(e.contains("34359738416"), "{e}");
         b[16..24].fill(0);
         assert!(parse_jset(&b, magic).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod encrypted_tests {
+    use super::*;
+    use crate::crypt::MasterKey;
+
+    /// Entry 48 of `encrypted-unclean.img` (the fixtures artifact of CI run
+    /// 40550479459), at sector 4966: a flush entry whose last_seq is 48,
+    /// with 20 sub-entries, 14 keys among them, as the reference journal
+    /// lister lists it.
+    const JSET_48: &[u8; 1504] =
+        include_bytes!("../tests/data/encrypted-unclean-jset-48-40550479459.bin");
+    const MAGIC: u64 = 0x3b16_c5b2_f8d5_19a8;
+
+    /// The image's master key, from its crypt field (stored unsealed).
+    fn key() -> MasterKey {
+        MasterKey::new([
+            0xe8, 0x01, 0xfd, 0x6f, 0x39, 0x0b, 0xc5, 0x06, 0x5f, 0xa0, 0x7d, 0xa1, 0x88, 0x91,
+            0x6d, 0x56, 0x26, 0x4c, 0x1a, 0x6f, 0x5c, 0x7a, 0xf3, 0x2b, 0xa7, 0x37, 0xea, 0x40,
+            0xc8, 0x13, 0xa0, 0x9a,
+        ])
+    }
+
+    #[test]
+    fn a_real_encrypted_entry_is_verified_and_decrypted() {
+        let j = parse_jset_keyed(JSET_48, MAGIC, Some(&key()))
+            .unwrap()
+            .expect("entry 48 reads");
+        assert_eq!((j.seq, j.last_seq, j.flush, j.bytes), (48, 48, true, 1504));
+        assert_eq!(j.entries.len(), 20);
+        let keys: usize = j.entries.iter().map(|e| e.keys.len()).sum();
+        assert_eq!(keys, 14);
+    }
+
+    /// One bit changed in the MAC, in the clear header the MAC covers, or
+    /// in the ciphertext, or another key: the entry does not read, as one
+    /// whose checksum does not hold does not.
+    #[test]
+    fn an_encrypted_entry_whose_mac_does_not_verify_does_not_read() {
+        for at in [0, 15, 24, 44, 100, 1503] {
+            let mut b = *JSET_48;
+            b[at] ^= 1;
+            assert!(
+                parse_jset_keyed(&b, MAGIC, Some(&key())).unwrap().is_none(),
+                "byte {at} changed"
+            );
+        }
+        let other = MasterKey::new([0x5a; 32]);
+        assert!(parse_jset_keyed(JSET_48, MAGIC, Some(&other))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn an_encrypted_entry_without_a_key_is_refused() {
+        match parse_jset(JSET_48, MAGIC) {
+            Err(Error::Unsupported(m)) => assert!(m.contains("no master key"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Under a master key an entry must carry a MAC: one carrying a crc32c
+    /// checksum that holds is refused, not read in the clear.
+    #[test]
+    fn a_checksummed_entry_in_an_encrypted_filesystem_is_refused() {
+        let mut b = JSET_48[..JSET_HEADER].to_vec();
+        b[40..44].fill(0);
+        let flags = (le32(&b, 36) & !0xf) | 1;
+        b[36..40].copy_from_slice(&flags.to_le_bytes());
+        let c = crate::csum::crc32c_nonzero(&b[16..]);
+        b[..16].fill(0);
+        b[..4].copy_from_slice(&c.to_le_bytes());
+        assert!(parse_jset(&b, MAGIC).unwrap().is_some());
+        match parse_jset_keyed(&b, MAGIC, Some(&key())) {
+            Err(Error::Corrupt(m)) => assert!(m.contains("not a MAC"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 }
 
