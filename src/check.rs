@@ -536,9 +536,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             .filter(|f| f.body.len() >= 16)
             .map(|f| le64(&f.body, 8)),
     };
-    // The has-options flag (#163): bit 12 of bi_flags is set exactly when
-    // the inode carries an option, set on it or inherited (S3 + S4, #142).
-    // A nocow inode may carry it with none of the option fields set.
+    // The has-options flag (#163, #379): bit 12 of bi_flags is set exactly
+    // when the inode carries an option, set on it or inherited (S3 + S4, #142).
+    // The reference also counts `project`, `nocow` and `inodes_32bit`, and
+    // `casefold` on a directory only (docs/clean-room.md).
     for k in trees.get(&btree_id::INODES).into_iter().flatten() {
         if k.key_type != key_type::INODE_V3 || !decoded.contains_key(&k.pos) {
             continue;
@@ -546,10 +547,12 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         let Ok(raw) = InodeV3Raw::parse(&k.value) else {
             continue;
         };
-        let has = OPTION_FIELDS.iter().any(|f| raw.field(f).unwrap_or(0) != 0);
+        let set = |f: &str| raw.field(f).unwrap_or(0) != 0;
+        let has = OPTION_FIELDS.iter().any(|f| set(f))
+            || ["project", "nocow", "inodes_32bit"].iter().any(|f| set(f))
+            || (raw.mode() & 0o170000 == 0o040000 && set("casefold"));
         let flagged = raw.flags & INODE_HAS_OPTIONS != 0;
-        let nocow = raw.field("nocow").unwrap_or(0) != 0;
-        if has != flagged && !(flagged && nocow) {
+        if has != flagged {
             r.add(
                 "inode_has_inode_opts_flag_wrong",
                 format!(
