@@ -1192,6 +1192,13 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
      (tests/oracle_kernel.rs);
    - setting an option also sets inode flag bit 12 (0x1000), on the
      inherited file too; what that bit is called is open.
+   - what counts as an option for that flag (#379; the reference checker
+     1.39.7 in the test VM, CI run 41316600071, one field of a `default.img`
+     inode set at a time with the flag set or clear): an unflagged file with
+     `project`, `nocow` or `inodes_32bit` set is "inode has_inode_opts flag
+     wrong, should be 1", and a flagged file whose only option is `project`
+     or `nocow` is clean. `casefold` counts on a directory, and not on a
+     file, where a set flag is "should be 0".
    Still open: the other option fields (`promote_target`,
    `foreground_target`, `background_target`, `erasure_code`, `nocow`,
    `project`), which no image sets; and a compression level (`zstd:3`).

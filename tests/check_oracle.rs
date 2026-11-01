@@ -2488,3 +2488,127 @@ fn both_checkers_accept_an_inode_with_fields_start_at_its_value_length() {
         None,
     );
 }
+
+/// One option field of the inode at `path` in default.img set to `value`,
+/// the has-options flag (bit 12) set or cleared, committed in place (#379).
+/// The inode's stored field count grows to hold the field when it must.
+/// With `should_be`, the reference must report "inode has_inode_opts flag
+/// wrong, should be N" and this checker inode_has_inode_opts_flag_wrong;
+/// without, neither may.
+#[cfg(feature = "write")]
+fn both_checkers_judge_the_options_flag(
+    path: &str,
+    field: &str,
+    value: u64,
+    flagged: bool,
+    should_be: Option<u8>,
+) {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::inode::{InodeV3Raw, FIELD_NAMES};
+    use fs_bcachefs::write::Writer;
+    use fs_bcachefs::Filesystem;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-options-flag");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("options-{field}.img"));
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+
+    let ino = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup(path)
+        .unwrap();
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, btree_id::INODES)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == key_type::INODE_V3 && k.pos.inode == 0 && k.pos.offset == ino)
+        .unwrap_or_else(|| panic!("default.img has no inode_v3 key for {path}"));
+    drop(dev);
+    let mut raw = InodeV3Raw::parse(&k.value).unwrap();
+    assert_eq!(raw.flags & (1 << 12), 0, "{path} carries no option");
+    // Four times of two varints each come before the named fields.
+    let at = FIELD_NAMES.iter().position(|n| *n == field).unwrap();
+    let nr_fields = 4 + at + 1;
+    if ((raw.flags >> 24) & 0xff) < nr_fields as u64 {
+        raw.flags = (raw.flags & !(0xff << 24)) | ((nr_fields as u64) << 24);
+        raw.varints.resize(nr_fields + 4, 0);
+    }
+    raw.varints[8 + at] = value;
+    if flagged {
+        raw.flags |= 1 << 12;
+    }
+    k.value = raw.encode();
+    let pos = k.pos;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(btree_id::INODES, vec![k]).unwrap();
+    drop(writer);
+
+    let (_, text) = reference_finds_a_problem(&img);
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    let named = ours.problems.iter().any(|p| {
+        p.kind == "inode_has_inode_opts_flag_wrong" && p.detail.contains(&pos.to_string())
+    });
+    match should_be {
+        Some(n) => {
+            assert!(
+                text.contains(&format!("inode has_inode_opts flag wrong, should be {n}")),
+                "{path} {field}={value} flagged={flagged}: the reference did not judge the flag:\n{text}"
+            );
+            assert!(
+                named,
+                "{path} {field}={value} flagged={flagged}: the inode {pos} was not reported as inode_has_inode_opts_flag_wrong: {:?}\n{text}",
+                ours.problems
+            );
+        }
+        None => {
+            assert!(
+                !text.contains("has_inode_opts flag wrong"),
+                "{path} {field}={value} flagged={flagged}:\n{text}"
+            );
+            assert!(
+                !named,
+                "{path} {field}={value} flagged={flagged}: {:?}",
+                ours.problems
+            );
+        }
+    }
+}
+
+/// Differential run 39756419740 (block4k.img seed 1659867): the reference
+/// reported "inode has_inode_opts flag wrong, should be 1" for a file of
+/// 21 stored fields whose flag was clear, and this checker called it
+/// clean. Measured one field at a time (docs/clean-room.md, #379): the
+/// reference counts `project`, `nocow` and `inodes_32bit` as options too,
+/// which this checker did not.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_unflagged_inode_with_a_project_nocow_or_inodes_32bit() {
+    for field in ["project", "nocow", "inodes_32bit"] {
+        both_checkers_judge_the_options_flag("/hello.txt", field, 1, false, Some(1));
+    }
+}
+
+/// A flagged inode whose only option is `project` or `nocow` is right.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_flagged_inode_whose_only_option_is_project_or_nocow() {
+    for field in ["project", "nocow"] {
+        both_checkers_judge_the_options_flag("/hello.txt", field, 1, true, None);
+    }
+}
+
+/// `casefold` counts as an option on a directory and not on a file.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_count_casefold_as_an_option_only_on_a_directory() {
+    both_checkers_judge_the_options_flag("/", "casefold", 1, false, Some(1));
+    both_checkers_judge_the_options_flag("/", "casefold", 1, true, None);
+    both_checkers_judge_the_options_flag("/hello.txt", "casefold", 1, false, None);
+    both_checkers_judge_the_options_flag("/hello.txt", "casefold", 1, true, Some(0));
+}
