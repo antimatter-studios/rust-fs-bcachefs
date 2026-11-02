@@ -102,6 +102,8 @@ const KEY_BACKPOINTER: u8 = 28;
 const ALLOC_DATA_TYPE: usize = 14;
 /// alloc_v4's stripe-sector count, observed at value bytes 56..58 by
 /// changing one field at a time and reading the reference checker's verdict.
+/// alloc_v4's dirty sectors: word 2's low half (docs/clean-room.md).
+const ALLOC_DIRTY_SECTORS: usize = 16;
 const ALLOC_STRIPE_SECTORS: usize = 56;
 const DATA_BTREE: u8 = 3;
 const DATA_USER: u8 = 4;
@@ -1169,6 +1171,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // Every `reflink_p`: where it is, and the reflink btree sectors
     // `idx..idx + size` it shows (#139).
     let mut pointers: Vec<(Bpos, u64, u64)> = Vec::new();
+    // Where each extent's pointers land, for the backpointers no extent claims.
+    let mut extent_sectors: BTreeMap<(u64, u64), Vec<u64>> = BTreeMap::new();
     for k in trees
         .get(&btree_id::EXTENTS)
         .into_iter()
@@ -1249,6 +1253,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             }
             if let Some(bps) = &backpointers {
                 data_backpointer(k, &e, bps, &mut r);
+                extent_sectors
+                    .entry((k.pos.inode, k.pos.offset))
+                    .or_default()
+                    .push(e.ptr.offset);
             }
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
@@ -1261,6 +1269,25 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 r.add("extent_data", format!("extent {}: {e}", k.pos));
             }
         }
+    }
+
+    // One device only, as the lru: a replica's backpointer names an extent
+    // whose first pointer is on another device.
+    if let (Some(bps), Some(b), true, 1) = (
+        &backpointers,
+        bucket_size,
+        trees.contains_key(&btree_id::ALLOC),
+        sb.nr_devices,
+    ) {
+        let dirty: BTreeMap<u64, u32> = trees
+            .get(&btree_id::ALLOC)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
+            .filter(|k| k.value.len() >= ALLOC_DIRTY_SECTORS + 4)
+            .map(|k| (k.pos.offset, le32(&k.value, ALLOC_DIRTY_SECTORS)))
+            .collect();
+        unclaimed_backpointers(bps, &extent_sectors, &dirty, b, &mut r);
     }
 
     // Reflinks (#139): every `reflink_p` lands on indirect extents that
@@ -1821,6 +1848,51 @@ fn btree_backpointer(id: u8, pos: Bpos, sectors: u32, bp: &Bkey, r: &mut Report)
                 pos
             ),
         );
+    }
+}
+
+/// A backpointer that names an extent none of whose pointers land on its
+/// sector (#433). The reference judges a bucket's backpointers only where
+/// their lengths do not add up to the bucket's dirty sectors, so a backpointer
+/// moved within its bucket is left alone here too.
+fn unclaimed_backpointers(
+    bps: &BTreeMap<u64, &Bkey>,
+    extent_sectors: &BTreeMap<(u64, u64), Vec<u64>>,
+    dirty: &BTreeMap<u64, u32>,
+    bucket_size: u64,
+    r: &mut Report,
+) {
+    let mut held: BTreeMap<u64, u64> = BTreeMap::new();
+    for (&at, bp) in bps {
+        if bp.value.len() >= 12 {
+            *held.entry((at >> 16) / bucket_size).or_default() += u64::from(le32(&bp.value, 8));
+        }
+    }
+    for (&at, bp) in bps {
+        let v = &bp.value;
+        let sector = at >> 16;
+        let bucket = sector / bucket_size;
+        if v.len() < 32
+            || v[..3] != [btree_id::EXTENTS, 0, DATA_USER]
+            || held.get(&bucket).copied() == dirty.get(&bucket).map(|d| u64::from(*d))
+        {
+            continue;
+        }
+        let Ok(target) = Bpos::parse(&v[12..32]) else {
+            continue;
+        };
+        let Some(sectors) = extent_sectors.get(&(target.inode, target.offset)) else {
+            continue;
+        };
+        if !sectors.contains(&sector) {
+            r.add(
+                "backpointer_to_missing_ptr",
+                format!(
+                    "backpointer {}: extent {target} has no pointer at device sector {sector}",
+                    bp.pos
+                ),
+            );
+        }
     }
 }
 
@@ -2618,6 +2690,40 @@ mod tests {
 
     /// Backpointer fields observed by the reference tools, checked against
     /// the extent they are supposed to describe.
+    #[test]
+    fn an_unclaimed_backpointer_is_reported_only_where_its_bucket_disagrees() {
+        // The value of a backpointer to the extent at 2147483766:8, eight
+        // sectors long, at device sector 1000 (bucket 15 of 64 sectors).
+        let mut value = vec![btree_id::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let at = 1000u64 << 16;
+        let bp = key(KEY_BACKPOINTER, at, value);
+        let bps = BTreeMap::from([(at, &bp)]);
+        let run = |pointers: Vec<u64>, dirty: u32| {
+            let extents = BTreeMap::from([((2147483766u64, 8u64), pointers)]);
+            let mut r = Report::default();
+            unclaimed_backpointers(
+                &bps,
+                &extents,
+                &BTreeMap::from([(15u64, dirty)]),
+                64,
+                &mut r,
+            );
+            r.problems
+        };
+        // Elsewhere, and the bucket holds other than its backpointers say.
+        let problems = run(vec![2000], 16);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "backpointer_to_missing_ptr");
+        // Elsewhere, with the bucket's sectors adding up: left alone.
+        assert!(run(vec![2000], 8).is_empty());
+        // The extent does point there.
+        assert!(run(vec![1000], 16).is_empty());
+    }
+
     #[test]
     fn a_backpointer_value_must_agree_with_its_extent() {
         // #256, reference run 39018152705, block4k seed 1659443.

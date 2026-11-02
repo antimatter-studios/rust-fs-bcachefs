@@ -485,6 +485,43 @@ fn both_checkers_reject_a_btree_backpointer_with_the_wrong_length() {
     );
 }
 
+/// #433: a backpointer that names an extent whose pointer is elsewhere. Beside
+/// the extent's own backpointer, so the extent's lookup still succeeds and
+/// only a walk over the backpointers can see this one.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_report_a_backpointer_its_extent_does_not_point_at() {
+    use fs_bcachefs::write::Writer;
+
+    let dir = ScratchDir::new("check-backpointer-unclaimed");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("backpointer-unclaimed.img");
+    std::fs::copy(fixture("default.img"), &img).unwrap();
+    let (_, bp) = backpointer::pair(&img);
+    let mut stale = bp.clone();
+    stale.pos.offset -= 1;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer
+        .insert(backpointer::TREE, vec![stale.clone()])
+        .unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains("backpointer"),
+        "the reference did not report it:\n{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "backpointer_to_missing_ptr"
+                && p.detail.contains(&stale.pos.to_string())),
+        "not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
 /// Independently mutate each interpreted field, in both an interior root
 /// and its leaf child. The length-only regression above stays unchanged.
 #[cfg(feature = "write")]
