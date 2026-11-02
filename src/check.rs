@@ -2113,6 +2113,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         // Nightly run 38878947701 (#219).
         (SNAPSHOTS, KEY_SNAPSHOT),
         (SUBVOLUME_CHILDREN, KEY_SET),
+        // Nightly differential runs (#462).
+        (NEED_DISCARD, KEY_SET),
+        (btree_id::ALLOC, key_type::ALLOC_V4),
     ];
     const SNAPSHOT_ZERO: &[(u8, u8)] = &[
         (SUBVOLUMES, KEY_SUBVOLUME),
@@ -2126,6 +2129,10 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         // Differential replay kernel-53 and the guest probe of 2026-10-27
         // (#219).
         (BACKPOINTERS, KEY_BACKPOINTER),
+        // Nightly differential runs (#462).
+        (BUCKET_GENS, KEY_BUCKET_GENS),
+        (SUBVOLUME_CHILDREN, KEY_SET),
+        (btree_id::REFLINK, key_type::REFLINK_V),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -2158,17 +2165,49 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: inode_v3 at {}, not at inode 0", k.pos),
         ),
         // A subvolume is at `0:id` ("Snapshots and subvolumes"): one at
-        // offset 0, or at another inode, is "invalid pos".
-        (SUBVOLUMES, KEY_SUBVOLUME) if k.pos.offset == 0 || k.pos.inode != 0 => r.add(
-            "subvol_pos_bad",
-            format!("btree {name}: subvolume at {}, not at 0:id", k.pos),
-        ),
+        // offset 0, or at another inode, is "invalid pos". So is one at
+        // offset U64_MAX: an id is 32 bits (#463).
+        (SUBVOLUMES, KEY_SUBVOLUME)
+            if k.pos.offset == 0 || k.pos.offset > u64::from(u32::MAX) || k.pos.inode != 0 =>
+        {
+            r.add(
+                "subvol_pos_bad",
+                format!("btree {name}: subvolume at {}, not at 0:id", k.pos),
+            )
+        }
         // Nightly-seed run 39018152705: the root snapshot moved to
-        // inode U64_MAX is "bad pos"; run 38878947701 also saw inode 1.
-        (SNAPSHOTS, KEY_SNAPSHOT) if k.pos.inode != 0 => r.add(
-            "snapshot_pos_bad",
-            format!("btree {name}: snapshot at {}, not at inode 0", k.pos),
+        // inode U64_MAX is "bad pos"; run 38878947701 also saw inode 1. So
+        // are offsets 0 and U64_MAX: an id is nonzero and 32 bits (#463).
+        (SNAPSHOTS, KEY_SNAPSHOT)
+            if k.pos.offset == 0 || k.pos.offset > u64::from(u32::MAX) || k.pos.inode != 0 =>
+        {
+            r.add(
+                "snapshot_pos_bad",
+                format!("btree {name}: snapshot at {}, not at 0:id", k.pos),
+            )
+        }
+        // "indirect extent above maximum position", seen moved to inode
+        // U64_MAX (#463).
+        (btree_id::REFLINK, key_type::REFLINK_V) if k.pos.inode != 0 => r.add(
+            "reflink_v_pos_bad",
+            format!("btree {name}: reflink_v at {}, not at inode 0", k.pos),
         ),
+        // "idx < front_pad" (#470). A value too short to hold them is named
+        // where the pointer is followed.
+        (btree_id::EXTENTS, key_type::REFLINK_P)
+            if v.len() >= 12
+                && crate::extent::reflink_p_idx(v).is_ok_and(|idx| {
+                    idx < u64::from(u32::from_le_bytes([v[8], v[9], v[10], v[11]]))
+                }) =>
+        {
+            r.add(
+                "reflink_p_front_pad_bad",
+                format!(
+                    "btree {name}: reflink_p {} has an index below its front_pad",
+                    k.pos
+                ),
+            )
+        }
         // The inode allocation cursor is at 1:1:0 (S8). Nightly run
         // 39756419740 rejects it moved to inode U64_MAX and to inode 0 as
         // "k.p.inode bad" (#376).
@@ -2192,11 +2231,15 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             )
         }
         // A `btree` accounting key is its kind and the btree's id in the
-        // top two bytes of its inode; a bit below them, or a snapshot, is
-        // "junk at end of accounting key".
+        // top two bytes of its inode; a bit below them, an offset or a
+        // snapshot is "junk at end of accounting key" (#464). So is an offset
+        // on a per-snapshot one, whose fields end inside its inode.
         (ACCOUNTING, KEY_ACCOUNTING)
-            if k.pos.inode >> 56 == ACCT_BTREE
-                && (k.pos.inode & ((1 << 48) - 1) != 0 || k.pos.snapshot != 0) =>
+            if (k.pos.inode >> 56 == ACCT_BTREE
+                && (k.pos.inode & ((1 << 48) - 1) != 0
+                    || k.pos.offset != 0
+                    || k.pos.snapshot != 0))
+                || (k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE && k.pos.offset != 0) =>
         {
             r.add(
                 "accounting_key_junk_at_end",
@@ -2750,6 +2793,97 @@ mod tests {
         assert_eq!(acct(replicas, 0, 0, 4), counters);
         assert_eq!(acct(dev_data_type, 0, 0, 4), counters);
         assert_eq!(acct(dev_data_type, 0, 0, 5), counters);
+    }
+
+    /// The problems `check_key_fields` names for one key.
+    fn field_kinds(id: u8, k: &Bkey) -> Vec<&'static str> {
+        let mut report = Report::default();
+        check_key_fields(id, k, &mut report);
+        report.problems.iter().map(|p| p.kind).collect()
+    }
+
+    #[test]
+    fn a_snapshot_or_size_the_reference_refuses_is_named() {
+        // Nightly differential runs (#462): each of these is "nonzero
+        // snapshot" or "nonzero size" to the reference.
+        for (id, key_type) in [
+            (BUCKET_GENS, KEY_BUCKET_GENS),
+            (SUBVOLUME_CHILDREN, KEY_SET),
+            (btree_id::REFLINK, key_type::REFLINK_V),
+        ] {
+            let mut k = key(key_type, 1, Vec::new());
+            assert_eq!(field_kinds(id, &k), Vec::<&str>::new());
+            k.pos.snapshot = 1;
+            assert_eq!(field_kinds(id, &k), ["bkey_snapshot_nonzero"]);
+        }
+        for (id, key_type) in [
+            (NEED_DISCARD, KEY_SET),
+            (btree_id::ALLOC, key_type::ALLOC_V4),
+        ] {
+            let mut k = key(key_type, 1, Vec::new());
+            assert_eq!(field_kinds(id, &k), Vec::<&str>::new());
+            k.size = 1;
+            assert_eq!(field_kinds(id, &k), ["bkey_size_nonzero"]);
+        }
+    }
+
+    #[test]
+    fn subvolume_snapshot_and_indirect_extent_positions_are_judged() {
+        // Nightly differential runs (#463).
+        let subvolume = |offset| key(KEY_SUBVOLUME, offset, Vec::new());
+        assert_eq!(field_kinds(SUBVOLUMES, &subvolume(1)), Vec::<&str>::new());
+        assert_eq!(
+            field_kinds(SUBVOLUMES, &subvolume(u64::from(u32::MAX))),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            field_kinds(SUBVOLUMES, &subvolume(u64::MAX)),
+            ["subvol_pos_bad"]
+        );
+        let snapshot = |offset| key(KEY_SNAPSHOT, offset, Vec::new());
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &snapshot(u64::from(u32::MAX))),
+            Vec::<&str>::new()
+        );
+        assert_eq!(field_kinds(SNAPSHOTS, &snapshot(0)), ["snapshot_pos_bad"]);
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &snapshot(u64::MAX)),
+            ["snapshot_pos_bad"]
+        );
+        let mut v = key(key_type::REFLINK_V, 1, Vec::new());
+        assert_eq!(field_kinds(btree_id::REFLINK, &v), Vec::<&str>::new());
+        v.pos.inode = u64::MAX;
+        assert_eq!(field_kinds(btree_id::REFLINK, &v), ["reflink_v_pos_bad"]);
+    }
+
+    #[test]
+    fn btree_and_snapshot_accounting_keys_with_a_stray_offset_are_named() {
+        // Nightly differential runs (#464).
+        for inode in [ACCT_BTREE << 56, ACCT_SNAPSHOT_BTREE << 56] {
+            let mut k = key(KEY_ACCOUNTING, 0, vec![0; 24]);
+            k.pos.inode = inode;
+            assert_eq!(field_kinds(ACCOUNTING, &k), Vec::<&str>::new());
+            k.pos.offset = u64::MAX;
+            assert_eq!(field_kinds(ACCOUNTING, &k), ["accounting_key_junk_at_end"]);
+        }
+    }
+
+    #[test]
+    fn a_reflink_pointer_whose_index_is_below_its_front_pad_is_named() {
+        // Differential run 41193184068 (#470): "idx < front_pad".
+        let pointer = |idx: u64, front_pad: u32| {
+            let mut value = idx.to_le_bytes().to_vec();
+            value.extend_from_slice(&front_pad.to_le_bytes());
+            value.extend_from_slice(&0u32.to_le_bytes());
+            key(key_type::REFLINK_P, 1856, value)
+        };
+        for clean in [pointer(1792, 0), pointer(1792, 1792)] {
+            assert_eq!(field_kinds(btree_id::EXTENTS, &clean), Vec::<&str>::new());
+        }
+        assert_eq!(
+            field_kinds(btree_id::EXTENTS, &pointer(1792, 1793)),
+            ["reflink_p_front_pad_bad"]
+        );
     }
 
     #[test]

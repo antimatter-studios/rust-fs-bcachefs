@@ -1186,6 +1186,173 @@ fn where_the_reference_finds_snapshot_damage_this_checker_names_it() {
     }
 }
 
+/// The cases of #462, #463, #464 and #470: each key changed the way the
+/// nightly differential runs changed it, which the reference refuses on read
+/// and this checker has to name.
+#[cfg(feature = "write")]
+#[test]
+fn where_the_reference_refuses_a_key_field_this_checker_names_it() {
+    use fs_bcachefs::bkey::{key_type, Bkey};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    type Change = fn(&mut Bkey);
+    type Case = (&'static str, u8, u8, Option<u64>, Change, &'static str);
+    const SUBVOLUMES: u8 = 8;
+    const SNAPSHOTS: u8 = 9;
+    const NEED_DISCARD: u8 = 12;
+    const BUCKET_GENS: u8 = 14;
+    const SUBVOLUME_CHILDREN: u8 = 19;
+    const ACCOUNTING: u8 = 20;
+    const KEY_SUBVOLUME: u8 = 21;
+    const KEY_SNAPSHOT: u8 = 22;
+    const KEY_SET: u8 = 25;
+    const KEY_BUCKET_GENS: u8 = 30;
+    const KEY_ACCOUNTING: u8 = 34;
+
+    let snapshot: Change = |k| k.pos.snapshot = 1;
+    let size: Change = |k| k.size = 1;
+    let far: Change = |k| k.pos.offset = u64::MAX;
+    let cases: &[Case] = &[
+        (
+            "gens-snap",
+            BUCKET_GENS,
+            KEY_BUCKET_GENS,
+            None,
+            snapshot,
+            "bkey_snapshot_nonzero",
+        ),
+        (
+            "children-snap",
+            SUBVOLUME_CHILDREN,
+            KEY_SET,
+            None,
+            snapshot,
+            "bkey_snapshot_nonzero",
+        ),
+        (
+            "indirect-snap",
+            btree::btree_id::REFLINK,
+            key_type::REFLINK_V,
+            None,
+            snapshot,
+            "bkey_snapshot_nonzero",
+        ),
+        (
+            "discard-size",
+            NEED_DISCARD,
+            KEY_SET,
+            None,
+            size,
+            "bkey_size_nonzero",
+        ),
+        (
+            "alloc-size",
+            btree::btree_id::ALLOC,
+            key_type::ALLOC_V4,
+            None,
+            size,
+            "bkey_size_nonzero",
+        ),
+        (
+            "subvol-far",
+            SUBVOLUMES,
+            KEY_SUBVOLUME,
+            None,
+            far,
+            "subvol_pos_bad",
+        ),
+        (
+            "snap-far",
+            SNAPSHOTS,
+            KEY_SNAPSHOT,
+            None,
+            far,
+            "snapshot_pos_bad",
+        ),
+        (
+            "snap-min",
+            SNAPSHOTS,
+            KEY_SNAPSHOT,
+            None,
+            |k| k.pos.offset = 0,
+            "snapshot_pos_bad",
+        ),
+        (
+            "indirect-inode",
+            btree::btree_id::REFLINK,
+            key_type::REFLINK_V,
+            None,
+            |k| k.pos.inode = u64::MAX,
+            "reflink_v_pos_bad",
+        ),
+        (
+            "acct-btree-far",
+            ACCOUNTING,
+            KEY_ACCOUNTING,
+            Some(6),
+            far,
+            "accounting_key_junk_at_end",
+        ),
+        (
+            "acct-snapshot-far",
+            ACCOUNTING,
+            KEY_ACCOUNTING,
+            Some(5),
+            far,
+            "accounting_key_junk_at_end",
+        ),
+        (
+            "front-pad",
+            btree::btree_id::EXTENTS,
+            key_type::REFLINK_P,
+            None,
+            |k| k.value[8..12].copy_from_slice(&u32::MAX.to_le_bytes()),
+            "reflink_p_front_pad_bad",
+        ),
+    ];
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    for (name, id, kind_of_key, acct, change, kind) in cases {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("{name}.img"));
+        // The first fixture that holds such a key.
+        let found = ["default.img", "kernel.img", "aged.img"]
+            .iter()
+            .find_map(|src| {
+                let dev = FileDevice::open(fixture(src)).unwrap();
+                let sb = Superblock::read(&dev).unwrap();
+                btree::walk(&dev, &sb, *id)
+                    .unwrap()
+                    .into_iter()
+                    .find(|k| {
+                        k.key_type == *kind_of_key && acct.is_none_or(|a| k.pos.inode >> 56 == a)
+                    })
+                    .map(|k| (*src, k))
+            });
+        let (src, mut k) = found.unwrap_or_else(|| panic!("{name}: no fixture holds such a key"));
+        std::fs::copy(fixture(src), &img).unwrap();
+        change(&mut k);
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.insert(*id, vec![k]).unwrap();
+        drop(w);
+        let (theirs, text) = reference_finds_a_problem(&img);
+        assert!(
+            theirs,
+            "{name}: the reference found nothing, so this case proves nothing:\n{text}"
+        );
+        let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(
+            ours.problems.iter().any(|p| p.kind == *kind),
+            "{name}: the reference found damage this checker did not name as {kind}: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// The retained default seed 51 (run 38749903964): the reference names
 /// the nonzero snapshot field even though the snapshot value is unchanged.
 #[cfg(feature = "write")]
