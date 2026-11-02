@@ -89,6 +89,12 @@ const SNAP_FLAG_SUBVOL: u32 = 1 << 1;
 /// a `set` key at `fs_parent:id` for each subvolume with a parent (S3).
 const SUBVOL_FS_PARENT: usize = 20;
 const SUBVOLUME_CHILDREN: u8 = 19;
+/// A subvolume's state word, and a snapshot's reserved pad word, and the
+/// shortest subvolume the reference does not refuse for its size (the guest
+/// probe of 2026-11-02, docs/clean-room.md, #465, #469).
+const SUBVOL_STATE: usize = 40;
+const SUBVOL_MIN_BYTES: usize = 16;
+const SNAP_PAD: usize = 60;
 /// The bucket_gens btree, and its key type: 256 buckets' generations a
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
@@ -2276,6 +2282,12 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     if (id, k.key_type) == (btree_id::INODES, key_type::INODE_V3) {
         check_inode_v3_word(&name, k, r);
     }
+    if (id, k.key_type) == (SNAPSHOTS, KEY_SNAPSHOT) {
+        check_snapshot_pad(&name, k, r);
+    }
+    if (id, k.key_type) == (SUBVOLUMES, KEY_SUBVOLUME) {
+        check_subvolume_state(&name, k, r);
+    }
     if (id, k.key_type) == (btree_id::ALLOC, key_type::ALLOC_V4) {
         check_alloc_v4_value(&name, k, r);
     }
@@ -2435,6 +2447,38 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             format!("btree {name}: key {} is a snapshot", k.pos),
         ),
         _ => {}
+    }
+}
+
+/// "reserved pad field nonzero": any bit of a snapshot value's bytes 60..64,
+/// and no other byte of it. A value that ends before them holds nothing to
+/// refuse, and words after them are not read (#465).
+fn check_snapshot_pad(name: &str, k: &Bkey, r: &mut Report) {
+    let Some(pad) = k.value.get(SNAP_PAD..SNAP_PAD + 4) else {
+        return;
+    };
+    if pad != [0; 4] {
+        r.add(
+            "snapshot_pad_nonzero",
+            format!(
+                "btree {name}: snapshot {} has reserved pad {:02x?}",
+                k.pos, pad
+            ),
+        );
+    }
+}
+
+/// "subvolume state unset": a state word of zero, which a value that ends
+/// before the word also reads as. Below 16 bytes the reference refuses the
+/// value's size instead; other nonzero words have verdicts of their own,
+/// which this rule does not judge (#469).
+fn check_subvolume_state(name: &str, k: &Bkey, r: &mut Report) {
+    let state = k.value.get(SUBVOL_STATE..SUBVOL_STATE + 4);
+    if k.value.len() >= SUBVOL_MIN_BYTES && state.is_none_or(|word| word == [0; 4]) {
+        r.add(
+            "subvol_state_bad",
+            format!("btree {name}: subvolume {} has no state set", k.pos),
+        );
     }
 }
 
@@ -3038,6 +3082,100 @@ mod tests {
         assert_eq!(kinds(0, KEY_SET), Vec::<&str>::new());
         assert_eq!(kinds(1, KEY_SET), ["incorrect_gen_in_bucket_gens"]);
         assert_eq!(kinds(1, KEY_BUCKET_GENS), ["incorrect_gen_in_bucket_gens"]);
+    }
+
+    #[test]
+    fn a_snapshot_reserved_pad_field_the_reference_refuses_is_named() {
+        // The guest probe of 2026-11-02 (#465): bytes 60..64 of the value,
+        // and no other, are "reserved pad field nonzero".
+        let mut value = vec![0; 64];
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, value.clone())),
+            Vec::<&str>::new()
+        );
+        for byte in 0..64 {
+            value[byte] = 0x80;
+            let want: &[&str] = if byte >= 60 {
+                &["snapshot_pad_nonzero"]
+            } else {
+                &[]
+            };
+            assert_eq!(
+                field_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, value.clone())),
+                want,
+                "byte {byte}"
+            );
+            value[byte] = 0;
+        }
+        // A value that ends before the field holds nothing to refuse, and
+        // words past it are not read.
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, vec![0xff; 56])),
+            Vec::<&str>::new()
+        );
+        let mut longer = vec![0; 72];
+        longer[64..].fill(0xff);
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, longer.clone())),
+            Vec::<&str>::new()
+        );
+        longer[63] = 1;
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, longer)),
+            ["snapshot_pad_nonzero"]
+        );
+        // The same bytes of another key type mean nothing here.
+        assert_eq!(
+            field_kinds(SNAPSHOTS, &key(KEY_SET, 1, vec![0xff; 64])),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn a_subvolume_state_the_reference_calls_unset_is_named() {
+        // The guest probe of 2026-11-02 (#469): a zero word at bytes 40..44,
+        // or a value of 16 bytes or more that ends before it. Other words
+        // have other verdicts, none of them "unset".
+        let live = |state: u32| {
+            let mut value = vec![0; 48];
+            value[40..44].copy_from_slice(&state.to_le_bytes());
+            value
+        };
+        assert_eq!(
+            field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, live(0))),
+            ["subvol_state_bad"]
+        );
+        for state in [1, 0x8000_0000, 0x4ad5_447e, u32::MAX] {
+            assert_eq!(
+                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, live(state))),
+                Vec::<&str>::new(),
+                "state {state:#x}"
+            );
+        }
+        for bytes in [16, 24, 32, 40] {
+            assert_eq!(
+                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
+                ["subvol_state_bad"],
+                "{bytes} bytes"
+            );
+        }
+        for bytes in [0, 8] {
+            assert_eq!(
+                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
+                Vec::<&str>::new(),
+                "{bytes} bytes"
+            );
+        }
+        let mut longer = live(0);
+        longer.resize(64, 0xff);
+        assert_eq!(
+            field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, longer)),
+            ["subvol_state_bad"]
+        );
+        assert_eq!(
+            field_kinds(SUBVOLUMES, &key(KEY_SET, 1, vec![0; 48])),
+            Vec::<&str>::new()
+        );
     }
 
     #[test]

@@ -131,7 +131,8 @@ tasks:
       # the node-length regression. Log: tmp/logs/unit.log.
       # #452 adds two unit cases to the measured 119-case main baseline
       # (2026-11-02, tmp/logs/unit.log).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 121'
+      # #465, #469 and #473 add three unit cases to the measured 121.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 124'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -193,7 +194,8 @@ tasks:
       # #338 adds four encrypted journal entry oracle cases.
       # #452 adds one oracle case to the measured 274-case main baseline
       # (2026-11-02, tmp/logs/oracle.log).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 275'
+      # #465, #469 and #473 add three oracle cases to the measured 275.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 278'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -300,7 +302,9 @@ tasks:
       # one-byte import read back, an import that cannot fit, and kills.
       # #452 adds two unit, one host oracle and one live-reference case to
       # the 513 cases executed by main's full run 41476138017.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 517'
+      # #465, #469 and #473 add three unit, three host oracle and three
+      # live-reference cases to the measured 517.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 526'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -451,7 +455,10 @@ tasks:
       # moving to rust-fs-core 0.3.12 missing the cache the same way. About
       # 30% over that is 720 lines; the bytes still fit 40,000.
       # #338's oracle tests printed 723 lines; the budget moves to 780.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 780 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      # COVERAGE MEASURED 2026-11-02 (#465, #469, #473, run 41540843571): 749
+      # lines / 40,250 bytes on a passing run. Both budgets rise about 30%
+      # above that run, to 980 lines and 52,000 bytes.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 980 52000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       # Runs 38997027177 and 39037096192 each executed 138 coverage cases.
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
@@ -465,7 +472,8 @@ tasks:
       # Measured 2026-10-27 on fix/163-node-backpointer: 205 cases, 87.84%
       # line coverage; the exact base's merge-tree CI ran 204 before this unit case.
       # #452's two unit cases also run in this default-feature tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 207'
+      # The three unit cases of #465, #469 and #473 run in this tier too.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 210'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

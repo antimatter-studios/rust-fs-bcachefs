@@ -15,6 +15,9 @@ mod common;
 mod freespace;
 #[path = "common/journal_length.rs"]
 mod journal_length;
+#[cfg(feature = "write")]
+#[path = "common/key_field_bytes.rs"]
+mod key_field_bytes;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
 #[path = "common/superblock_field.rs"]
@@ -45,6 +48,147 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The chroot the reference tools live in (scripts/vm-setup.sh).
 const REF_ROOT: &str = "/srv/ref-trixie";
+
+/// The reference checker's exit status and printed verdict on a damaged key.
+/// A crash, a hang or an internal fault stays private: it fails with no output.
+#[cfg(feature = "write")]
+fn reference_on_key_field(image: &Path) -> (i32, String) {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is required: run `chore test:vm`"
+    );
+    let native = Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
+            "reference",
+        ])
+        .arg(image)
+        .output()
+        .expect("chore test:vm provides the reference checker");
+    let text = String::from_utf8_lossy(&native.stdout).into_owned()
+        + &String::from_utf8_lossy(&native.stderr);
+    let faulted = [
+        "BUG",
+        "ssertion",
+        "acktrace",
+        "Call Trace",
+        "panicked at",
+        "Kernel panic",
+    ]
+    .iter()
+    .any(|fault| text.contains(fault));
+    let status = native.status.code();
+    assert!(
+        matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted,
+        "reference fault or timeout: 1; no case details retained"
+    );
+    (status.unwrap(), text)
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_snapshot_reserved_pad_field() {
+    let mut mismatches = Vec::new();
+    for set in key_field_bytes::SNAPSHOT_SETS {
+        for &(edits, refused) in key_field_bytes::SNAPSHOT_PAD {
+            let (image, position) = key_field_bytes::plant_snapshot(set, edits);
+            let (_, text) = reference_on_key_field(&image);
+            assert_eq!(
+                text.contains("reserved pad field nonzero"),
+                refused,
+                "{set} {edits:?}: {text}"
+            );
+            if refused {
+                assert!(
+                    text.lines().any(|line| {
+                        line.contains("invalid bkey")
+                            && line.contains("btree=snapshots ")
+                            && line.contains("type snapshot ")
+                            && line
+                                .split_whitespace()
+                                .any(|word| word == position.to_string())
+                    }),
+                    "the reference must name the planted snapshot: {text}"
+                );
+            }
+            let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+            let found = report.problems.iter().any(|problem| {
+                problem.kind == "snapshot_pad_nonzero"
+                    && problem.detail.contains(&position.to_string())
+            });
+            if found != refused {
+                mismatches.push(format!("{set} {edits:?}: {:?}", report.problems));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "snapshot_pad_nonzero disagrees with the reference: {mismatches:#?}"
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_an_unset_subvolume_state() {
+    let mut mismatches = Vec::new();
+    for set in key_field_bytes::SUBVOLUME_SETS {
+        for &(edits, unset) in key_field_bytes::SUBVOLUME_STATE {
+            let (image, position) = key_field_bytes::plant_subvolume(set, edits);
+            let (_, text) = reference_on_key_field(&image);
+            assert_eq!(
+                text.contains("subvolume state unset"),
+                unset,
+                "{set} {edits:?}: {text}"
+            );
+            assert_eq!(
+                text.contains("subvol_state_bad"),
+                unset,
+                "{set} {edits:?}: {text}"
+            );
+            let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+            let found = report.problems.iter().any(|problem| {
+                problem.kind == "subvol_state_bad" && problem.detail.contains(&position.to_string())
+            });
+            if found != unset {
+                mismatches.push(format!("{set} {edits:?}: {:?}", report.problems));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "subvol_state_bad disagrees with the reference: {mismatches:#?}"
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_dirent_type_byte() {
+    let mut mismatches = Vec::new();
+    for (set, original) in key_field_bytes::TYPE_BYTE_DIRENTS {
+        for byte in key_field_bytes::type_bytes(set, original) {
+            let image = key_field_bytes::plant_type_byte(set, original, byte);
+            let (status, text) = reference_on_key_field(&image);
+            let reference_clean = status == 0;
+            assert_eq!(
+                reference_clean,
+                key_field_bytes::type_byte_is_clean(original, byte),
+                "{set} {original:#x} {byte:#x}: {text}"
+            );
+            let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+            if report.clean() != reference_clean {
+                mismatches.push(format!(
+                    "{set} {original:#x} {byte:#x}: {:?}",
+                    report.problems
+                ));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "the checkers disagree on dirent type bytes: {mismatches:#?}"
+    );
+}
 
 #[cfg(feature = "write")]
 #[test]

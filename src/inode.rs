@@ -77,6 +77,11 @@ pub const OPTION_FIELDS: [&str; 8] = [
 /// (S4): 0x88, 0x8a and 0x84 for a file, a symlink and a directory in the
 /// `casefold` set, against 8, 10 and 4 everywhere else.
 const DIRENT_CASEFOLDED: u8 = 0x80;
+/// A dirent's type is the low five bits of that byte. OBSERVED (the guest
+/// probe of 2026-11-02, #473): the reference checker reads no meaning from
+/// bits 5 and 6 of any entry, plain or casefolded, and calls a file's 0x28
+/// a file and a subvolume's 0x30 a subvolume.
+const DIRENT_TYPE_BITS: u8 = 0x1f;
 
 /// The varint fields of an `inode_v3`, after the fixed part, in order.
 /// Times take two varints each.
@@ -305,7 +310,7 @@ impl Dirent {
                 dir: k.pos.inode,
                 name: name.to_vec(),
                 inum: le64(v, 0),
-                d_type: v[8] & !DIRENT_CASEFOLDED,
+                d_type: v[8] & DIRENT_TYPE_BITS,
             });
         }
         let raw = &v[9..];
@@ -321,7 +326,7 @@ impl Dirent {
             dir: k.pos.inode,
             name: raw[..n].to_vec(),
             inum: le64(v, 0),
-            d_type: v[8],
+            d_type: v[8] & DIRENT_TYPE_BITS,
         })
     }
 
@@ -467,6 +472,47 @@ mod tests {
         let mut plain = k;
         plain.value[8] = 8;
         assert_eq!(dirent_folded_name(&plain).unwrap(), None);
+    }
+
+    #[test]
+    fn a_dirent_type_is_the_low_five_bits_of_its_byte() {
+        // The guest probe of 2026-11-02 (#473): the reference does not read
+        // bits 5 and 6, as a file's 0x28 and a subvolume's 0x30 showed.
+        let mut k = Bkey {
+            key_type: key_type::DIRENT,
+            size: 0,
+            version_hi: 0,
+            version_lo: 0,
+            pos: crate::bkey::Bpos {
+                inode: ROOT_INO,
+                offset: 1,
+                snapshot: u32::MAX,
+            },
+            value: vec![1, 0, 0, 0, 0, 0, 0, 0, 8, b'f', 0, 0, 0, 0, 0, 0],
+        };
+        for (byte, d_type, name) in [
+            (0x08, 8, "reg"),
+            (0x28, 8, "reg"),
+            (0x48, 8, "reg"),
+            (0x68, 8, "reg"),
+            (0x2a, 10, "lnk"),
+            (0x24, 4, "dir"),
+            (0x20, 0, "unknown"),
+            (0x1f, 0x1f, "unknown"),
+            (0x7f, 0x1f, "unknown"),
+            (0x30, 16, "unknown"),
+        ] {
+            k.value[8] = byte;
+            let d = Dirent::from_key(&k).unwrap();
+            assert_eq!(d.d_type, d_type, "byte {byte:#x}");
+            assert_eq!(d.type_name(), name, "byte {byte:#x}");
+        }
+        // A casefolded entry's type is read the same way.
+        let mut folded = vec![1, 0, 0, 0, 0, 0, 0, 0, 0xa8, 0, 0, 1, 0, 1, 0];
+        folded.extend_from_slice(b"ff");
+        folded.resize(24, 0);
+        k.value = folded;
+        assert_eq!(Dirent::from_key(&k).unwrap().d_type, 8);
     }
 
     #[test]
