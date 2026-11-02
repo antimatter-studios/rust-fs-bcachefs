@@ -100,7 +100,6 @@ ref-only	node	check_allocations...bucket # gen # data type sb has wrong cached_s
 ref-only	key-value	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#465: The checker accepts a snapshot key whose reserved pad field is nonzero
 ours-only	node	check:inode	#435: The checker reports inode_v3 keys the reference checker accepts
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#433: The checker misses a backpointer whose extent no longer points at it
-ref-only	key-type	check_alloc_info...incorrect gen in bucket_gens btree (got # should be #)	#471: The checker misses a bucket's generation when the bucket_gens key was changed to another type
 ref-only	key-value	check_subvols...subvolume state unset, recovering from legacy flags:	#469: The checker misses a subvolume whose state is unset
 ref-only	node	btree node read error at btree extents level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
 ref-only	node	btree node read error at btree accounting level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format

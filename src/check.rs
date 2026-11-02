@@ -920,30 +920,8 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
 
-    // Every bucket's generation as bucket_gens records it, against its
-    // alloc key's; a bucket with no alloc key is at generation 0 (#163: the
-    // reference's "incorrect gen in bucket_gens").
     if judge_alloc && trees.contains_key(&btree_id::ALLOC) {
-        for k in trees
-            .get(&BUCKET_GENS)
-            .into_iter()
-            .flatten()
-            .filter(|k| k.key_type == KEY_BUCKET_GENS && k.pos.inode == u64::from(sb.dev_idx))
-        {
-            for (i, &recorded) in k.value.iter().take(256).enumerate() {
-                let bucket = k.pos.offset << 8 | i as u64;
-                let alloc = gens.get(&bucket).copied().unwrap_or(0);
-                if recorded != alloc {
-                    r.add(
-                        "incorrect_gen_in_bucket_gens",
-                        format!(
-                            "bucket {bucket}: bucket_gens says generation {recorded}, its alloc \
-                             key {alloc}"
-                        ),
-                    );
-                }
-            }
-        }
+        bucket_gens_against_alloc(&trees, &gens, u64::from(sb.dev_idx), &mut r);
     }
 
     // Every partly filled user or btree bucket has its fragmentation lru
@@ -1522,6 +1500,48 @@ fn subvolume_children(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
     }
 }
 
+/// Every bucket's generation as bucket_gens records it, against its alloc
+/// key's; a bucket with no alloc key is at generation 0 (#163: the reference's
+/// "incorrect gen in bucket_gens"). So is a bucket no bucket_gens key covers,
+/// as when that key's type was changed (#471).
+fn bucket_gens_against_alloc(
+    trees: &BTreeMap<u8, Vec<Bkey>>,
+    gens: &BTreeMap<u64, u8>,
+    dev: u64,
+    r: &mut Report,
+) {
+    let mut covered = BTreeSet::new();
+    for k in trees
+        .get(&BUCKET_GENS)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_BUCKET_GENS && k.pos.inode == dev)
+    {
+        covered.insert(k.pos.offset);
+        for (i, &recorded) in k.value.iter().take(256).enumerate() {
+            let bucket = k.pos.offset << 8 | i as u64;
+            let alloc = gens.get(&bucket).copied().unwrap_or(0);
+            if recorded != alloc {
+                r.add(
+                    "incorrect_gen_in_bucket_gens",
+                    format!(
+                        "bucket {bucket}: bucket_gens says generation {recorded}, its alloc \
+                         key {alloc}"
+                    ),
+                );
+            }
+        }
+    }
+    for (&bucket, &alloc) in gens {
+        if alloc != 0 && !covered.contains(&(bucket >> 8)) {
+            r.add(
+                "incorrect_gen_in_bucket_gens",
+                format!("bucket {bucket}: no bucket_gens key, its alloc key {alloc}"),
+            );
+        }
+    }
+}
+
 /// The links between the snapshot btrees (#220): each snapshot tree names
 /// a subvolume the subvolumes btree has; each snapshot names a tree the
 /// snapshot_trees btree has, whose root is the root its parents lead to;
@@ -1844,6 +1864,8 @@ fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mu
     let v = &bp.value;
     let matches = v.len() >= 32
         && v[..3] == [btree_id::EXTENTS, 0, DATA_USER]
+        // Its generation is the pointer's (#427).
+        && v[3] == e.ptr.gen
         && u64::from(le32(v, 8)) == length
         && Bpos::parse(&v[12..32])
             .is_ok_and(|pos| pos.inode == k.pos.inode && pos.offset == k.pos.offset);
@@ -2635,6 +2657,12 @@ mod tests {
             .iter()
             .any(|p| p.kind == "backpointer_to_missing_ptr"
                 && p.detail.contains(&extent.pos.to_string())));
+        // A generation other than the pointer's (#427).
+        let mut gen = bp.clone();
+        gen.value[3] = 0xff;
+        assert!(findings(&gen, &e)
+            .iter()
+            .any(|p| p.kind == "backpointer_to_missing_ptr"));
         // The target snapshot alone is not compared: the reference judged
         // that change clean (run 39094186901, #348).
         let mut snapshot = bp.clone();
@@ -2865,6 +2893,20 @@ mod tests {
         };
         assert_eq!(judge(vec![entry(1, 2)]), Vec::<&str>::new());
         assert_eq!(judge(Vec::new()), ["subvol_children_entry_missing"]);
+    }
+
+    #[test]
+    fn a_bucket_no_bucket_gens_key_covers_is_at_generation_0() {
+        // Differential run 40862227140 (#471): the key's type was changed.
+        let kinds = |gen: u8, key_type: u8| {
+            let trees = BTreeMap::from([(BUCKET_GENS, vec![key(key_type, 0, vec![0; 256])])]);
+            let mut r = Report::default();
+            bucket_gens_against_alloc(&trees, &BTreeMap::from([(82, gen)]), 0, &mut r);
+            r.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(0, KEY_SET), Vec::<&str>::new());
+        assert_eq!(kinds(1, KEY_SET), ["incorrect_gen_in_bucket_gens"]);
+        assert_eq!(kinds(1, KEY_BUCKET_GENS), ["incorrect_gen_in_bucket_gens"]);
     }
 
     #[test]
