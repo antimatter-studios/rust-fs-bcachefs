@@ -2498,6 +2498,63 @@ its only artifact. The report names this crate's side only and quotes
 nothing from the reference, and nothing from the audit becomes part of this
 repository's tooling.
 
+## Allocation value-size fields (#452)
+
+A black-box guest probe on 2026-11-02 used reference checker 1.39.7 and
+copies of the reference-made fixtures from CI run 41476138017 (fixtures
+artifact 13159750269, digest
+`sha256:7c2e8149a7a07eba961c7dd66a48e849ed1e1f0e436702ddbbd16f327f100ebc`).
+The first user-data alloc_v4 key in `default.img` was at `0:93:0`, with a
+64-byte value and value word 1 starting with `23 00 00 00`. The writer's
+raw insert committed each changed key to a separate sparse copy; only
+the printed verdict of `bcachefs-ref fsck -n` was consulted. No reference
+source was read.
+
+Flipping bits 2, 3, 4, 6 and 7 of value word 1 independently made the
+reference refuse the key as `alloc_v4_val_size_bad`: its reason needed
+9, 10, 12, 24 and 40 value words, respectively, rather than the stored 8.
+Flipping bits 8 through 13 independently needed 12, 16, 24, 40, 72 and
+136 words. Bits 0, 1 and 14 through 31 did not cause a value-size refusal.
+The observations identify a six-bit start at bits 2..8 and a six-bit
+backpointer count at bits 8..14; each backpointer occupies four words.
+A zero start means six words, not zero. Other starts, including 3 and 4,
+were judged as their literal word offsets, not clamped to six.
+
+Boundary probes, retained on both `default.img` and `lz4.img` in
+`tests/common/alloc_v4.rs`, gave these results:
+
+| Start | Backpointers | Stored bytes | Reference value-size verdict |
+|---|---|---|---|
+| 0 or 6 | 0 | 48 | accepted |
+| 7 | 0 | 48 / 56 | refused: 7 > 6 words / accepted |
+| 8 | 0 | 56 / 64 / 72 | refused: 8 > 7 words / accepted / accepted |
+| 9 | 0 | 64 / 72 | refused: 9 > 8 words / accepted |
+| 8 | 1 | 88 / 96 / 104 | refused: 12 > 11 words / accepted / accepted |
+| 0 | 1 / 2 | 48 / 64 | refused: 10 > 6 words / 14 > 8 words |
+| 6 | 1 | 72 / 80 | refused: 10 > 9 words / accepted |
+| 3 | 1 | 48 / 64 | refused: 7 > 6 words / accepted |
+| 4 | 1 | 64 | accepted |
+| 5 | 1 | 64 | refused: 9 > 8 words |
+| 63 | 0 | 64 | refused: 63 > 8 words |
+| 8 / 63 | 63 | 64 | refused: 260 > 8 words / 315 > 8 words |
+
+Truncating the unmodified value to 8, 16, 24, 32 or 40 bytes was refused
+as `bad val size (N < 48)` before the allocation-specific size check.
+At 48 and 56 bytes, the original start of 8 was instead refused as
+`alloc_v4_val_size_bad`. Extra trailing words were accepted: this is a
+lower bound, not an exact-length rule. The checker therefore requires
+at least 48 bytes and enough words for the decoded start (six when zero)
+plus four times the decoded count. The live guest regression independently
+requires the reference to name the planted key and its exact size reason,
+and compares this checker's finding on the same image.
+
+The differential signatures are broader than this size rule. Run
+41474397552, over fixtures of run 41444787753, also reported an alloc_v4
+key refusal with the counter `alloc_key_io_time_bad`, both after an
+allocation-pass prefix and without one. A value-size check cannot report
+those clock-field refusals. Both measured signatures therefore remain in
+the baseline; their disappearance is still unfinished work for #452.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
