@@ -97,24 +97,10 @@ ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match bt
 # 54f2a9d, reference checker 1.39.7: twenty-six new classes, each tracked below.
 ours-only	node	check:dirent_type	#473: The checker reports a dirent type byte the reference accepts
 ref-only	node	check_allocations...bucket # gen # data type sb has wrong cached_sectors: got #, should be #, fixing	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
-ref-only	key-snapshot	invalid bkey in btree_node btree=bucket_gens level=#: u#s # type bucket_gens # len # ver # : # # # #	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
 ref-only	key-value	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot # len # ver # : parent # chi	#465: The checker accepts a snapshot key whose reserved pad field is nonzero
 ours-only	node	check:inode	#435: The checker reports inode_v3 keys the reference checker accepts
-ref-only	key-inode	invalid bkey in btree_node btree=reflink level=#: u#s # type reflink_v u#_max:# len # ver # : refcou	#463: The checker accepts subvolume, snapshot and indirect extent keys at positions the reference refuses
 ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match extent it points to:	#433: The checker misses a backpointer whose extent no longer points at it
 ref-only	key-type	check_alloc_info...incorrect gen in bucket_gens btree (got # should be #)	#471: The checker misses a bucket's generation when the bucket_gens key was changed to another type
-ref-only	key-offset	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting #:u#_max:# len # ver # : 	#464: The checker accepts accounting keys with junk the reference refuses
-ref-only	key-offset	invalid bkey in btree_node btree=subvolumes level=#: u#s # type subvolume #:u#_max:# len # ver # : r	#463: The checker accepts subvolume, snapshot and indirect extent keys at positions the reference refuses
-ref-only	node	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : btree btr	#464: The checker accepts accounting keys with junk the reference refuses
-ref-only	key-offset	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot #:u#_max:# len # ver # : par	#463: The checker accepts subvolume, snapshot and indirect extent keys at positions the reference refuses
-ref-only	key-size	invalid bkey in btree_node btree=need_discard level=#: u#s # type set # len # ver #	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
-ref-only	key-size	invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver # :	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
 ref-only	key-value	check_subvols...subvolume state unset, recovering from legacy flags:	#469: The checker misses a subvolume whose state is unset
-ref-only	key-size	check_allocations...invalid bkey in btree_node btree=alloc level=#: u#s # type alloc_v# # len # ver 	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
-ref-only	key-snapshot	invalid bkey in btree_node btree=reflink level=#: u#s # type reflink_v # len # ver # : refcount: # d	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
-ref-only	key-value	check_allocations...invalid bkey in btree_node btree=extents level=#: u#s # type reflink_p #:u#_max 	#470: The checker accepts a reflink_p whose index is below its front_pad
-ref-only	key-offset	invalid bkey in btree_node btree=accounting level=#: u#s # type accounting # len # ver # : snapshot 	#464: The checker accepts accounting keys with junk the reference refuses
 ref-only	node	btree node read error at btree extents level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
-ref-only	key-snapshot	invalid bkey in btree_node btree=subvolume_children level=#: u#s # type set # len # ver #	#462: The checker accepts a nonzero snapshot or size on key types the reference refuses
-ref-only	key-offset	invalid bkey in btree_node btree=snapshots level=#: u#s # type snapshot pos_min len # ver # : parent	#463: The checker accepts subvolume, snapshot and indirect extent keys at positions the reference refuses
 ref-only	node	btree node read error at btree accounting level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
