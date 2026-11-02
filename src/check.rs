@@ -44,7 +44,7 @@
 //! reference (tests in the guest), and on every clean fixture it reports
 //! none.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bkey::{key_type, Bkey, Bpos};
 use crate::btree::{self, btree_id};
@@ -1487,6 +1487,21 @@ fn subvolume_children(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
         .map(|k| (k.pos.offset, le32(&k.value, SUBVOL_FS_PARENT)))
         .collect();
     let entries = trees.get(&SUBVOLUME_CHILDREN).into_iter().flatten();
+    let live: BTreeSet<(u64, u64)> = entries
+        .clone()
+        .filter(|k| k.key_type == KEY_SET)
+        .map(|k| (k.pos.inode, k.pos.offset))
+        .collect();
+    // A subvolume with a parent has its entry: the reference's "subvolume not
+    // set in subvolume_children btree" (#419).
+    for (&child, &parent) in fs_parents.iter().filter(|(_, &parent)| parent != 0) {
+        if !live.contains(&(u64::from(parent), child)) {
+            r.add(
+                "subvol_children_entry_missing",
+                format!("subvolume {child} has parent {parent} and no entry at {parent}:{child}"),
+            );
+        }
+    }
     for k in entries.filter(|k| k.key_type == KEY_SET) {
         let (parent, child) = (k.pos.inode, k.pos.offset);
         match fs_parents.get(&child) {
@@ -2150,6 +2165,17 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
             ),
         );
     }
+    // "bad val size (24 < 32)", seen on user data and on a btree node (#426).
+    if (id, k.key_type) == (BACKPOINTERS, KEY_BACKPOINTER) && k.value.len() < 32 {
+        r.add(
+            "bkey_val_size_too_small",
+            format!(
+                "btree {name}: backpointer {} has {} bytes, not 32",
+                k.pos,
+                k.value.len()
+            ),
+        );
+    }
     if (id, k.key_type) == (ACCOUNTING, KEY_ACCOUNTING) {
         check_accounting_key(&name, k, r);
     }
@@ -2800,6 +2826,45 @@ mod tests {
         let mut report = Report::default();
         check_key_fields(id, k, &mut report);
         report.problems.iter().map(|p| p.kind).collect()
+    }
+
+    #[test]
+    fn a_backpointer_value_shorter_than_its_fields_is_named() {
+        // The guest probe of 2026-10-27 (#426): "bad val size (24 < 32)".
+        assert_eq!(
+            field_kinds(BACKPOINTERS, &key(KEY_BACKPOINTER, 1, vec![0; 32])),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            field_kinds(BACKPOINTERS, &key(KEY_BACKPOINTER, 1, vec![0; 24])),
+            ["bkey_val_size_too_small"]
+        );
+    }
+
+    #[test]
+    fn a_subvolume_with_a_parent_and_no_children_entry_is_named() {
+        // The guest cases of #418 (#419): "subvolume not set in
+        // subvolume_children btree".
+        let subvolume = |id: u64, fs_parent: u32| {
+            let mut value = vec![0; SUBVOL_FS_PARENT + 4];
+            value[SUBVOL_FS_PARENT..].copy_from_slice(&fs_parent.to_le_bytes());
+            key(KEY_SUBVOLUME, id, value)
+        };
+        let entry = |parent: u64, child: u64| {
+            let mut k = key(KEY_SET, child, Vec::new());
+            k.pos.inode = parent;
+            k
+        };
+        let judge = |entries: Vec<Bkey>| {
+            let mut trees = BTreeMap::new();
+            trees.insert(SUBVOLUMES, vec![subvolume(1, 0), subvolume(2, 1)]);
+            trees.insert(SUBVOLUME_CHILDREN, entries);
+            let mut report = Report::default();
+            subvolume_children(&trees, &mut report);
+            report.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        assert_eq!(judge(vec![entry(1, 2)]), Vec::<&str>::new());
+        assert_eq!(judge(Vec::new()), ["subvol_children_entry_missing"]);
     }
 
     #[test]
@@ -3714,7 +3779,13 @@ mod tests {
             let trees = BTreeMap::from([(SUBVOLUMES, subvolumes), (SUBVOLUME_CHILDREN, entries)]);
             let mut r = Report::default();
             subvolume_children(&trees, &mut r);
-            r.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+            // This test judges the entries there; the ones not there are
+            // a_subvolume_with_a_parent_and_no_children_entry_is_named's.
+            r.problems
+                .iter()
+                .map(|p| p.kind)
+                .filter(|kind| *kind != "subvol_children_entry_missing")
+                .collect::<Vec<_>>()
         };
         assert!(kinds(vec![entry(1, 2), entry(1, 3)]).is_empty());
         // Under the creation_parent, under no subvolume, and naming none;

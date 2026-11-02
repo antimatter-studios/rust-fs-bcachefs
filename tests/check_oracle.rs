@@ -1186,6 +1186,95 @@ fn where_the_reference_finds_snapshot_damage_this_checker_names_it() {
     }
 }
 
+/// #419: a subvolume_children entry deleted and none added. The reference
+/// reports the subvolume as "not set in subvolume_children btree".
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_report_a_subvolume_whose_children_entry_is_gone() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const SUBVOLUME_CHILDREN: u8 = 19;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let dir = ScratchDir::new("check-oracle");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("children-entry-gone.img");
+    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, SUBVOLUME_CHILDREN)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == 1 && k.pos.offset == 3)
+        .expect("kernel.img has a subvolume_children entry at 1:3");
+    k.key_type = key_type::DELETED;
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(SUBVOLUME_CHILDREN, vec![k]).unwrap();
+    drop(w);
+    let (theirs, text) = reference_finds_a_problem(&img);
+    assert!(
+        theirs && text.contains("subvolume not set in subvolume_children btree"),
+        "the reference did not report the missing entry:\n{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "subvol_children_entry_missing"),
+        "not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// #426: the last backpointer of each fixture with its 32-byte value cut by 8
+/// bytes. The reference refuses it as "bad val size (24 < 32)".
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_backpointer_value_too_short() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BACKPOINTERS: u8 = 13;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    for src in ["kernel.img", "default.img"] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("short-bp-{src}"));
+        std::fs::copy(fixture(src), &img).unwrap();
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, BACKPOINTERS)
+            .unwrap()
+            .pop()
+            .expect("the fixture has a backpointer");
+        assert_eq!(k.value.len(), 32);
+        k.value.truncate(24);
+        let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+        w.insert(BACKPOINTERS, vec![k]).unwrap();
+        drop(w);
+        let (theirs, text) = reference_finds_a_problem(&img);
+        assert!(
+            theirs && text.contains("24 < 32"),
+            "{src}: the reference did not refuse the value's size:\n{text}"
+        );
+        let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "bkey_val_size_too_small"),
+            "{src}: not reported: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// The cases of #462, #463, #464 and #470: each key changed the way the
 /// nightly differential runs changed it, which the reference refuses on read
 /// and this checker has to name.
