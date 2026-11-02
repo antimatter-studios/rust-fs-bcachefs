@@ -364,6 +364,8 @@ all eight fixture sets.
   deleted key or whiteout removing one. Checked: the uncleanly unmounted
   `aged-unclean` reads exactly as the reference sees it after its own
   replay, every path, listing and file byte.
+- An encrypted filesystem's entries carry a MAC instead of a checksum and
+  are encrypted from byte 44: see "Encryption: journal entries" (#338).
 ### Refused filesystems
 
 - Encryption: the formatter's `--encrypted --no_passphrase` adds a `crypt`
@@ -638,6 +640,64 @@ all eight fixture sets.
   fails with probability 1 - 2^-128 per extent. `src/crypt.rs`'s unit test
   refuses a bit changed in either word, including the 48 bits the 80-bit
   MAC drops.
+
+### Encryption: journal entries (`src/crypt.rs`, `src/journal.rs`) -- documented scheme, observed layout
+
+- S1 (2.1.2) says all metadata but the superblock is encrypted and
+  authenticated, and (9.1.4.3) that metadata MACs are 128 bits. It says
+  nothing of a journal entry's nonce or of which of its bytes are
+  encrypted. The ciphers are RFC 8439's (S11), as for nodes and extents.
+- Everything below is S4: candidate computations over
+  `encrypted-unclean.img` (#337; the fixtures artifact of CI run
+  40550479459, 2026-10-27), with the master key read from its unsealed
+  crypt field, by a scratch program outside this repository, against the
+  reference journal lister's `list_journal -a -H` listing of the same
+  image: 25 entries, sequence numbers 34 to 58, 12 of them flush entries.
+- **In the clear**: the magic (bytes 16..24), which matches the
+  unencrypted formula above; the seq (24..32), the version (32..36, 1063
+  on all 25), the flags (36..40) and u64s (40..44): `56 + u64s * 8` is the
+  lister's `bytes` for all 25, bit 5 of the flags is set exactly on its
+  `flush 0` entries, and the checksum type, the low 4 bits, is 4 on all 25,
+  read as for a node: ChaCha20 with a 128-bit Poly1305 MAC.
+- **The nonce** is four little-endian u32 words, word 0 ChaCha20's block
+  counter, as for a node: word 0 zero, word 1 the entry's sequence number,
+  word 2 zero, word 3 `0x3000_0000`. Known plaintext fixed it: bytes 48..56
+  hold last_seq, which the lister prints (0 for entry 35, 36 for entry 37).
+  Of the candidates with word 0 in 0..3, the sequence number in words 1..2,
+  0..1 or 2..3, and word 3 (or word 1) any of the 16 top-nibble values
+  `k << 28`, any single bit or zero, with the keystream compared at every
+  4-byte offset of its first block, one alone reproduces last_seq on both
+  entries: the nonce above, with byte 48 at keystream byte 4. The keystream
+  therefore starts at byte 44, the first byte after u64s.
+- **Decrypted** from byte 44 to the entry's end with that nonce, every one
+  of the 25 entries reads: bytes 44..48 are zero, last_seq is the one the
+  lister prints, and the sub-entries (the unencrypted layout above) walk
+  to exactly the entry's end; the keys of the replay window's `btree_keys`
+  entries are the lister's `list_journal -d` keys by btree, position and
+  size.
+- **The MAC** is the entry's first 16 bytes: Poly1305 over bytes 16 to the
+  entry's end as stored (the clear header and the ciphertext), keyed with
+  the first 32 keystream bytes of the entry's nonce with `0x8000_0000`
+  XORed into word 3, as for a node. It reproduces all 25 stored MACs; a
+  wrong candidate matches a 128-bit MAC by chance with probability 2^-128.
+- What is not observed, and refused rather than guessed: a sequence
+  number of 2^32 or more (whether its high half is word 2, as a node's
+  seq's is), and a journal MAC of any other width.
+- The reader verifies an entry's MAC before decrypting it. An entry whose
+  MAC does not verify is not an entry, as one whose checksum does not hold
+  is not: a ring holds stale and torn writes by design, and the replay
+  window refuses a missing entry. With a master key it refuses an entry
+  that carries a checksum instead of a MAC; without one, an entry that
+  carries a MAC.
+- Checked: `tests/oracle_encrypted_journal.rs` reads the journal of
+  `encrypted-unclean.img` and compares every entry header (seq, bytes,
+  last_seq, flush, sector) and every replayed `btree_keys` key with the
+  reference's listing, checks every listed entry carries checksum type 4,
+  and requires an entry with a byte of its ciphertext or of its MAC
+  changed not to read. `src/journal.rs`'s unit tests read entry 48 of the
+  same image (`tests/data/encrypted-unclean-jset-48-40550479459.bin`) and
+  refuse it with a bit changed in its MAC, its clear header or its
+  ciphertext, with another key, and without a key.
 
 ### What each write changes (the write study, `fixtures/write-study`, S8)
 

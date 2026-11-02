@@ -185,7 +185,8 @@ tasks:
       # #335 adds the wide_macs image's every-file read.
       # #358 adds the encrypted-compressed key-version comparison.
       # #376 adds three inode allocation cursor oracle cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 245'
+      # #338 adds four encrypted journal entry oracle cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 249'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -440,7 +441,8 @@ tasks:
       # run 38968265210 printed 557 lines / 28,786 bytes, its fuzz lockfile
       # moving to rust-fs-core 0.3.12 missing the cache the same way. About
       # 30% over that is 720 lines; the bytes still fit 40,000.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 720 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
+      # #338's oracle tests printed 723 lines; the budget moves to 780.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored coverage coverage 780 40000 -- scripts/test-scratch-run.sh cargo llvm-cov --locked --summary-only --fail-under-lines 85 --lib --test fuzz_decoders --test "oracle_*" --test capi'
       # Runs 38997027177 and 39037096192 each executed 138 coverage cases.
       # #253/#254 add two unit cases, and #218 adds two more; the new
       # write-feature oracle and parser cases are outside this command.
