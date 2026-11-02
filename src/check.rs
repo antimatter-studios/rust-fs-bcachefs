@@ -2276,6 +2276,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     if (id, k.key_type) == (btree_id::INODES, key_type::INODE_V3) {
         check_inode_v3_word(&name, k, r);
     }
+    if (id, k.key_type) == (btree_id::ALLOC, key_type::ALLOC_V4) {
+        check_alloc_v4_value(&name, k, r);
+    }
     let v = &k.value;
     match (id, k.key_type) {
         // Run 39018152705 rejects inode_v3 at inode U64_MAX as
@@ -2464,6 +2467,28 @@ fn check_inode_v3_word(name: &str, k: &Bkey, r: &mut Report) {
             "inode_fields_start_bad",
             format!(
                 "btree {name}: inode {} has fields_start {fields_start}, outside 6..={max}",
+                k.pos
+            ),
+        );
+    }
+}
+
+fn check_alloc_v4_value(name: &str, k: &Bkey, r: &mut Report) {
+    let bytes = k.value.len();
+    let required = if bytes < 48 {
+        48
+    } else {
+        let flags = u32::from_le_bytes(k.value[8..12].try_into().unwrap());
+        let start = (flags >> 2) & 0x3f;
+        let start = if start == 0 { 6 } else { start };
+        let backpointers = (flags >> 8) & 0x3f;
+        ((start + 4 * backpointers) * 8) as usize
+    };
+    if bytes < required {
+        r.add(
+            "alloc_v4_val_size_bad",
+            format!(
+                "btree {name}: alloc_v4 {} has {bytes} bytes, needs at least {required}",
                 k.pos
             ),
         );
@@ -3033,7 +3058,12 @@ mod tests {
             (NEED_DISCARD, KEY_SET),
             (btree_id::ALLOC, key_type::ALLOC_V4),
         ] {
-            let mut k = key(key_type, 1, Vec::new());
+            let value = if key_type == key_type::ALLOC_V4 {
+                vec![0; 48]
+            } else {
+                Vec::new()
+            };
+            let mut k = key(key_type, 1, value);
             assert_eq!(field_kinds(id, &k), Vec::<&str>::new());
             k.size = 1;
             assert_eq!(field_kinds(id, &k), ["bkey_size_nonzero"]);
@@ -3623,6 +3653,63 @@ mod tests {
                 .any(|p| p.kind == "bkey_invalid_type_for_btree"),
             "{unrelated:?}"
         );
+    }
+
+    #[test]
+    fn an_alloc_v4_value_size_the_reference_refuses_is_named() {
+        for (start, backpointers, bytes, rejected) in [
+            (8u32, 0u32, 64, false),
+            (9, 0, 64, true),
+            (9, 0, 72, false),
+            (8, 1, 88, true),
+            (8, 1, 96, false),
+            (0, 0, 48, false),
+            (0, 1, 48, true),
+            (3, 1, 64, false),
+            (63, 63, 64, true),
+            (8, 0, 40, true),
+        ] {
+            let mut value = vec![0; bytes];
+            value[8..12].copy_from_slice(&((start << 2) | (backpointers << 8)).to_le_bytes());
+            let alloc = key(key_type::ALLOC_V4, 93, value);
+            let mut report = Report::default();
+            check_key_fields(btree_id::ALLOC, &alloc, &mut report);
+            assert_eq!(
+                report
+                    .problems
+                    .iter()
+                    .any(|problem| problem.kind == "alloc_v4_val_size_bad"),
+                rejected,
+                "start {start}, backpointers {backpointers}, bytes {bytes}: {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn alloc_v4_size_flags_are_bounded_and_only_alloc_keys_are_judged() {
+        for bytes in [0, 8, 16, 24, 32, 40, 2512, 2520, 2528] {
+            let value = vec![0xff; bytes];
+            let alloc = key(key_type::ALLOC_V4, 93, value);
+            let mut report = Report::default();
+            check_key_fields(btree_id::ALLOC, &alloc, &mut report);
+            assert_eq!(report.clean(), bytes >= 2520, "{bytes}: {report:?}");
+        }
+        let mut value = vec![0; 64];
+        value[8..12].copy_from_slice(&(0xffff_c003u32 | (8 << 2)).to_le_bytes());
+        let alloc = key(key_type::ALLOC_V4, 93, value);
+        let mut report = Report::default();
+        check_key_fields(btree_id::ALLOC, &alloc, &mut report);
+        assert!(report.clean(), "unrelated flags: {report:?}");
+        for (btree, key_type) in [
+            (btree_id::EXTENTS, key_type::ALLOC_V4),
+            (btree_id::ALLOC, key_type::DELETED),
+            (btree_id::ALLOC, key_type::WHITEOUT),
+        ] {
+            let alloc = key(key_type, 93, Vec::new());
+            let mut report = Report::default();
+            check_key_fields(btree, &alloc, &mut report);
+            assert!(report.clean(), "{btree} {key_type}: {report:?}");
+        }
     }
 
     #[test]

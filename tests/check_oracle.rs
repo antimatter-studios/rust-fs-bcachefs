@@ -4,6 +4,9 @@
 //! problem, this crate's checker must find one too.
 
 #[cfg(feature = "write")]
+#[path = "common/alloc_v4.rs"]
+mod alloc_v4;
+#[cfg(feature = "write")]
 #[path = "common/backpointer.rs"]
 mod backpointer;
 mod common;
@@ -42,6 +45,72 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The chroot the reference tools live in (scripts/vm-setup.sh).
 const REF_ROOT: &str = "/srv/ref-trixie";
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_alloc_v4_values_that_do_not_fit_their_fields() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is required: run `chore test:vm`"
+    );
+    let mut mismatches = Vec::new();
+    for set in ["default", "lz4"] {
+        for &case in alloc_v4::CASES {
+            let (image, position) = alloc_v4::plant(set, case);
+            let native = Command::new("sh")
+                .args([
+                    "-c",
+                    "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
+                    "reference",
+                ])
+                .arg(&*image)
+                .output()
+                .expect("chore test:vm provides the reference checker");
+            assert!(
+                matches!(native.status.code(), Some(0 | 9)),
+                "reference fault or timeout: 1; no case details retained"
+            );
+            let text = String::from_utf8_lossy(&native.stdout).into_owned()
+                + &String::from_utf8_lossy(&native.stderr);
+            let size_refusal = text.contains("bad val size");
+            assert_eq!(size_refusal, case.3.is_some(), "{set} {case:?}: {text}");
+            if let Some(reason) = case.3 {
+                assert!(text.contains(reason), "{set} {case:?}: {text}");
+                assert!(
+                    text.lines().any(|line| {
+                        line.contains("invalid bkey")
+                            && line.contains("btree=alloc ")
+                            && line.contains("type alloc_v4 ")
+                            && line
+                                .split_whitespace()
+                                .any(|word| word == position.to_string())
+                    }),
+                    "the reference must name the planted alloc_v4 key: {text}"
+                );
+                if case.2 >= 48 {
+                    assert!(text.contains("alloc_v4_val_size_bad"), "{text}");
+                }
+            } else {
+                assert!(
+                    native.status.success(),
+                    "reference control: {set} {case:?}: {text}"
+                );
+            }
+            let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+            let found = report.problems.iter().any(|problem| {
+                problem.kind == "alloc_v4_val_size_bad"
+                    && problem.detail.contains(&position.to_string())
+            });
+            if found != size_refusal {
+                mismatches.push(format!("{set} {case:?}: {:?}", report.problems));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "alloc_v4_val_size_bad disagrees with the reference: {mismatches:#?}"
+    );
+}
 
 #[test]
 fn the_reference_reports_an_oversized_stale_journal_entry() {
