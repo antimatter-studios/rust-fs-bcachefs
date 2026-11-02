@@ -423,7 +423,7 @@ impl<D: BlockDevice> Writer<D> {
 
             t.put_uncounted(
                 aids::BACKPOINTERS,
-                backpointer(p.dev_sector, 0, c_size as u32, &extent),
+                backpointer(p.dev_sector, 0, c_size as u32, p.gen, &extent),
             );
         }
 
@@ -515,9 +515,10 @@ impl<D: BlockDevice> Writer<D> {
 /// region at device sector `region`, `len` sectors of it on the device
 /// (S8): at `region << 16` plus `offset`, naming the extent's btree,
 /// level, data type, that length and the extent's position.
-fn backpointer(region: u64, offset: u64, len: u32, extent: &Bkey) -> Bkey {
+fn backpointer(region: u64, offset: u64, len: u32, gen: u8, extent: &Bkey) -> Bkey {
     let mut bp = Vec::with_capacity(32);
-    bp.extend_from_slice(&[ids::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0]);
+    // Byte 3 is the pointer's generation, which the reference compares (#427).
+    bp.extend_from_slice(&[ids::EXTENTS, 0, DATA_USER, gen, 0, 0, 0, 0]);
     bp.extend_from_slice(&len.to_le_bytes());
     bp.extend_from_slice(&extent.pos.snapshot.to_le_bytes());
     bp.extend_from_slice(&extent.pos.offset.to_le_bytes());
@@ -785,7 +786,7 @@ impl<D: BlockDevice> Writer<D> {
                 };
                 t.put_uncounted(
                     aids::BACKPOINTERS,
-                    backpointer(e.ptr.offset, offset(a), piece.size, &piece),
+                    backpointer(e.ptr.offset, offset(a), piece.size, e.ptr.gen, &piece),
                 );
                 // The piece that ends where the extent did takes its place.
                 let old = (b == end).then_some(k);

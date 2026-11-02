@@ -53,6 +53,7 @@ pub fn change(bp: &mut Bkey, case: &str) {
     match case {
         "word-one" => bp.value[8..16].copy_from_slice(&1u64.to_le_bytes()),
         "length" => bp.value[8..12].copy_from_slice(&1u32.to_le_bytes()),
+        "gen" => bp.value[3] = 0xff,
         "snapshot" => bp.value[12..16].copy_from_slice(&0u32.to_le_bytes()),
         _ => panic!("unknown backpointer mutation {case}"),
     }

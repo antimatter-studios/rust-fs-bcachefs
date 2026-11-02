@@ -245,7 +245,7 @@ fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
         "the reference checker is not here: run `chore test:vm`"
     );
     for set in ["default", "block4k"] {
-        for case in ["word-one", "length", "snapshot"] {
+        for case in ["word-one", "length", "gen", "snapshot"] {
             let dir = ScratchDir::new("check-backpointer-oracle");
             assert_seen_by_reference(&dir);
             let img = dir.into_image(format!("{set}-{case}.img"));
@@ -299,6 +299,51 @@ fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
             );
         }
     }
+}
+
+/// #471: a bucket_gens key whose type changed covers no bucket, so each bucket
+/// it held is at generation 0 to the reference.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_report_buckets_a_changed_bucket_gens_key_no_longer_covers() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BUCKET_GENS: u8 = 14;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-oracle");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("bucket-gens-type.img");
+    std::fs::copy(fixture("kernel-rootsnap.img"), &img).unwrap();
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, BUCKET_GENS)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the fixture has a bucket_gens key");
+    k.key_type = key_type::DELETED;
+    k.value.clear();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(BUCKET_GENS, vec![k]).unwrap();
+    drop(w);
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains("incorrect gen in bucket_gens"),
+        "the reference did not report it:\n{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "incorrect_gen_in_bucket_gens"),
+        "not reported: {:?}\n{text}",
+        ours.problems
+    );
 }
 
 /// The reference recomputes alloc_v4's stripe-sector count from the bucket.
