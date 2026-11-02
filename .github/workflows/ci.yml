@@ -384,6 +384,17 @@ jobs:
         run: scripts/cli-install.sh --print-bin-dir >> "$GITHUB_PATH"
       - name: chore test:cli
         run: chore test:cli
+      # The shell guards on the host they most often break on: BSD tools, the
+      # /var symlink, no setsid or timeout (#411, #412). The unit job runs them
+      # on Linux. PyYAML is what the workflow guards read ci.yml with.
+      - name: Python with PyYAML
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+      - name: chore test:scripts
+        run: chore test:scripts
       - name: Keep the tier logs
         # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
         # verdict naming it; the runner is thrown away minutes later.

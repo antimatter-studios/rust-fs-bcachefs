@@ -137,8 +137,13 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
     )
 }
 
+/// A writer's error. Too few free buckets is the volume's state refusing the
+/// write, exit 4, in the writer's own words (#456); anything else `Unsupported`
+/// is what this driver cannot do.
 pub(super) fn failed(e: fs_bcachefs::Error) -> CliError {
+    let refused = e.is_state_refusal();
     match e {
+        fs_bcachefs::Error::Unsupported(m) if refused => CliError::refused_by_state(m),
         fs_bcachefs::Error::Unsupported(m) => CliError::not_implemented(m),
         e => CliError::failed(e.to_string()),
     }
@@ -149,7 +154,7 @@ pub(super) fn failed(e: fs_bcachefs::Error) -> CliError {
 /// is not a directory where one is needed) is the CLI contract's exit 4,
 /// `refused` (EXIT_REFUSED); anything else is [`failed`]'s.
 fn state_failed(e: fs_bcachefs::Error) -> CliError {
-    if e.is_state_refusal() {
+    if e.is_state_refusal() && !matches!(e, fs_bcachefs::Error::Unsupported(_)) {
         CliError::refused_by_state(e.to_string())
     } else {
         failed(e)

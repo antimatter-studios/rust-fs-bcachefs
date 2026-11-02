@@ -15,6 +15,7 @@ import tempfile
 import time
 
 script = Path(sys.argv[1])
+support = script.parent.parent / 'tests/scripts/support'
 # These stand-ins model tool boundaries, not the reference filesystem format.
 # Persistent trees make the script's unchanged fixture operations executable.
 stub = r'''import json, os, shutil, subprocess, sys, time
@@ -27,7 +28,7 @@ mode = os.environ['STUDY_MODE']
 state = case / 'mount.json'
 def record(kind, **kw):
     with (case / 'events').open('a') as f:
-        f.write(json.dumps(dict(kind=kind, pid=os.getpid(), **kw)) + '\n')
+        f.write(json.dumps(dict(kind=kind, pid=os.getpid(), sid=os.getsid(0), **kw)) + '\n')
 def pause():
     while not (case / 'release').exists(): time.sleep(.02)
 def tree(img): return Path(str(img) + '.tree')
@@ -108,6 +109,12 @@ elif name == 'sleep':
     time.sleep(.02)
 elif name in ('sync', 'python3'):
     pass
+elif name == 'stat':
+    # GNU's stat -c, as the guest has it: BSD's stat has no -c.
+    assert args[0] == '-c', args
+    for path in args[2:]:
+        st = os.stat(path)
+        print(args[1].replace('%i', str(st.st_ino)).replace('%s', str(st.st_size)).replace('%n', path))
 elif name == 'rm':
     # The obsolete script's blanket fixture deletion must fail safely, too.
     for arg in args:
@@ -143,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
     executable.write_text('#!' + sys.executable + '\n' + stub)
     executable.chmod(0o755)
     for name in ('bcachefs-ref', 'mountpoint', 'fusermount3', 'umount', 'cp',
-                 'truncate', 'seq', 'sleep', 'sync', 'python3', 'rm', 'pkill', 'pgrep'):
+                 'truncate', 'seq', 'sleep', 'sync', 'python3', 'stat', 'rm', 'pkill', 'pgrep'):
         (tools / name).symlink_to(executable)
     watchdog = sandbox / 'watchdog.sh'
     watchdog.write_text('step() { :; }\n')
@@ -160,7 +167,8 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
     def start(label, mode):
         case = sandbox / label
         case.mkdir()
-        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+        # The host's own setsid wins; tests/scripts/support is for a host with none.
+        env = dict(os.environ, PATH=os.pathsep.join((str(tools), os.environ['PATH'], str(support))),
                    BCACHEFS_REF_ROOT=str(root), BCACHEFS_STUDY_OUT=str(fixtures),
                    BCACHEFS_STUDY_WATCHDOG=str(watchdog), STUDY_CASE=str(case),
                    STUDY_MODE=mode, STUDY_REAL_RM=shutil.which('rm'),
@@ -194,6 +202,7 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
         assert not (case / 'mount.json').exists(), 'owned mount survived'
         for event in records:
             if event['kind'] in ('format', 'fuse', 'copy'):
+                assert event['sid'] == event['pid'], ('owned child does not lead its own session', event)
                 try: os.kill(event['pid'], 0)
                 except ProcessLookupError: pass
                 else: raise AssertionError('owned child survived')
@@ -216,7 +225,8 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
         refusal = subprocess.run([str(tools / 'rm'), '-f', '--', str(mount)],
                                  env=env, text=True, capture_output=True)
         assert refusal.returncode == 1, (refusal.returncode, refusal.stderr)
-        assert 'Is a directory' in refusal.stderr, refusal.stderr
+        # GNU rm says "Is a directory", BSD rm "is a directory".
+        assert 'is a directory' in refusal.stderr.lower(), refusal.stderr
         assert payload.read_text() == 'directory contents'
         subprocess.run([str(tools / 'rm'), '-rf', '--', str(mount.parent)],
                        env=env, check=True)

@@ -15,8 +15,10 @@ fails=0
 ok() { echo "ok    $*"; }
 fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
 
+# The host's own timeout(1) wins; tests/scripts/support is for a host with none.
+export PATH="$PATH:$REPO/tests/scripts/support"
 command -v timeout >/dev/null || {
-    fail "timeout(1) is missing: this test and kernel-oracle.sh need GNU coreutils' (the unit job's Linux runner has it)"
+    fail "timeout(1) is missing: this test and kernel-oracle.sh need GNU coreutils', or tests/scripts/support/timeout"
     exit 1
 }
 

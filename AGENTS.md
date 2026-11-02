@@ -324,6 +324,7 @@ chore siblings        # ../rust-fs-core and ../fs-linux-test-harness at their pi
 chore fixtures        # .vm-share images + oracle JSON, made by the reference tools in the guest
 chore test:unit       # no tool, no fixture, no VM; debug profile, overflow checks on
 chore test:oracle     # reads every fixture and compares with what the reference tools recorded
+chore test:scripts    # the shell guards, on Linux and macOS; needs python3 with PyYAML
 chore lint            # agents-core, ci-gate, family-check, fmt, clippy
 chore test            # unit then oracle, exactly as CI runs them
 ```

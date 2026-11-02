@@ -1972,17 +1972,47 @@ fn cli_imports_are_read_by_the_reference() {
     assert_fsck_clean(&img);
 }
 
-/// An import that cannot fit (#439), replacing a file, fails; the old file
-/// is what the reference mount reads, nothing staged is left, and the
-/// reference checker passes the image.
+/// An import that cannot fit (#439), replacing a file, is refused for space:
+/// exit 4, the volume's state refusing it under the shared error contract
+/// (#456), with the free-bucket shortfall in its one JSON error and no
+/// report. An unknown verb, a journal limit or any other failure is not this
+/// refusal. The old file is what the reference mount reads, byte for byte,
+/// nothing staged is left, and the reference checker passes the image.
 #[cfg(feature = "cli")]
 #[test]
 fn cli_import_out_of_space_keeps_the_old_file() {
+    // Read from its own copy: a reference mount leaves an image unclean, and
+    // the in-place writes that fill this one refuse an unclean image.
+    let pristine = scratch("write-study/base.img", "cli-import-full-old");
+    let old = with_reference_mount(&pristine, |m| std::fs::read(m.join("d/existing")).unwrap());
     let img = scratch("write-study/base.img", "cli-import-full");
-    let old = with_reference_mount(&img, |m| std::fs::read(m.join("d/existing")).unwrap());
-    let size = std::fs::metadata(&*img).unwrap().len() as usize;
-    let source = img.with_extension("too-big");
-    std::fs::write(&source, pattern(size + (8 << 20), 41)).unwrap();
+    let source = img.with_extension("source");
+    // One journal entry holds this, so what refuses it is space. A source
+    // larger than the device stops at a journal limit before space is asked.
+    std::fs::write(&source, pattern(4 << 20, 41)).unwrap();
+    let mut fill = 0;
+    let refusal = loop {
+        let put = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+            .arg("fs")
+            .arg(&*img)
+            .arg("put")
+            .arg(format!("/d/fill-{fill}"))
+            .arg("--from")
+            .arg(&source)
+            .output()
+            .unwrap();
+        if !put.status.success() {
+            break String::from_utf8_lossy(&put.stderr).into_owned();
+        }
+        fill += 1;
+        assert!(fill < 64, "64 files of 4 MiB fit a 64 MiB image");
+    };
+    assert!(
+        fill > 0 && refusal.contains("free buckets are needed"),
+        "the image did not fill: {fill} files, then {refusal}"
+    );
+    assert_fsck_clean(&img);
+
     let out = cli_import(
         &img,
         &[
@@ -1991,9 +2021,24 @@ fn cli_import_out_of_space_keeps_the_old_file() {
             "/d/existing".as_ref(),
         ],
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "an import that cannot fit is not the state refusal: {stderr}"
+    );
     assert!(
-        !out.status.success(),
-        "an import larger than the device succeeded"
+        stderr.contains("free buckets are needed") && !stderr.contains("not implemented"),
+        "the refusal does not name the space it lacks: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"code\": 4") || stderr.contains("\"code\":4"),
+        "the refusal is not the shared JSON error: {stderr}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a refused import printed a report: {}",
+        String::from_utf8_lossy(&out.stdout)
     );
     assert_fsck_clean(&img);
     replay(&img);

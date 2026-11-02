@@ -50,6 +50,10 @@ what could not be learned that way is listed there as an open question.
   the tests that need the reference tools there: the write path and the
   checker against the reference checker.
 - **cli** (`chore test:cli`): the installed tools, found on PATH.
+- **scripts** (`chore test:scripts`): the shell guards in `tests/scripts`, on
+  Linux and macOS. They need `python3` with PyYAML, and no VM, fixture or
+  toolchain. A host with no `setsid` or `timeout` uses the ones in
+  `tests/scripts/support`.
 - **coverage** (`chore coverage`) and **semver** (`chore check:semver`).
 
 Every tier runs through rust-fs-core's `tier.sh`, quiet and output-budgeted,

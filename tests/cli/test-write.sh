@@ -26,10 +26,12 @@ for mode in in-place journal in-place-offset journal-offset; do
     case "$mode" in journal*) j="--journal" ;; esac
 
     printf 'hello from the cli\n' | fs.bcachefs "$img" put /d/hello $j >/dev/null 2>"$SANDBOX/err"
-    check "$mode: put from stdin ($(cat "$SANDBOX/err"))" test $? -eq 0
+    status=$?
+    check "$mode: put from stdin ($(cat "$SANDBOX/err"))" test "$status" -eq 0
     head -c 200000 /dev/zero | tr '\0' 'z' >"$SANDBOX/big"
     fs.bcachefs "$img" put /d/big --from "$SANDBOX/big" $j >/dev/null 2>"$SANDBOX/err"
-    check "$mode: put --from a 200000-byte file ($(cat "$SANDBOX/err"))" test $? -eq 0
+    status=$?
+    check "$mode: put --from a 200000-byte file ($(cat "$SANDBOX/err"))" test "$status" -eq 0
     fs.bcachefs "$img" mkdir /d/sub $j >/dev/null
     check "$mode: mkdir" test $? -eq 0
     fs.bcachefs "$img" mv /d/existing /d/sub/moved $j >/dev/null

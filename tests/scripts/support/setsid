@@ -1,0 +1,24 @@
+#!/usr/bin/env perl
+# setsid [--] COMMAND [ARGS...] -- util-linux's setsid(1), for a host that has
+# none. The lifecycle guards put this directory LAST on PATH, so a host with
+# the real tool uses it. This one really starts a session: the guards assert
+# that each owned tool leads its own, and that signalling that session's
+# process group stops a descendant. It is written in Perl because those guards
+# stand in for python3 on PATH.
+use strict;
+use warnings;
+use POSIX ();
+
+shift @ARGV if @ARGV && $ARGV[0] eq '--';
+@ARGV or die "usage: setsid [--] COMMAND [ARGS...]\n";
+# A process group leader cannot start a session, so, as util-linux does, it
+# forks in that one case and the child carries on.
+if (getpgrp() == $$) {
+    my $pid = fork;
+    defined $pid or die "setsid: fork: $!\n";
+    exit 0 if $pid;
+}
+defined POSIX::setsid() or die "setsid: $!\n";
+{ no warnings 'exec'; exec { $ARGV[0] } @ARGV; }
+print STDERR "setsid: $ARGV[0]: $!\n";
+exit($!{ENOENT} ? 127 : 126);
