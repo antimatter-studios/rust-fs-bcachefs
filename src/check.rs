@@ -73,6 +73,11 @@ const KEY_SNAPSHOT_TREE: u8 = 31;
 const TREE_ROOT: usize = 4;
 const SNAP_TREE: usize = 20;
 const SNAP_SKIPLIST: usize = 28;
+/// A snapshot's two child ids, its second word, and its depth, the low half
+/// of its fourth word: how many parents it has (S3: the reference's lister
+/// beside the key bytes, and its reports in #466, #468).
+const SNAP_CHILDREN: usize = 8;
+const SNAP_DEPTH: usize = 24;
 /// A snapshot's subvolume, the low half of its third word, and its subvol
 /// flag, bit 1 of its first word: set exactly when the subvolume is
 /// nonzero (S3: one bit flipped at a time on the kernel image's snapshots,
@@ -1619,6 +1624,43 @@ fn snapshot_links(
             ),
             _ => {}
         }
+        // A snapshot's depth is how many parents it has (#466); a chain
+        // that reaches no root is reported above.
+        let depth = le32(&k.value, SNAP_DEPTH);
+        if root.is_some() && depth as usize != above.len() {
+            r.add(
+                "snapshot_bad_depth",
+                format!(
+                    "snapshot {snap} says its depth is {depth}, but it has {} parents",
+                    above.len()
+                ),
+            );
+        }
+        // The subvolume a snapshot names names it back (#467).
+        let subvol = le32(&k.value, SNAP_SUBVOL);
+        if subvol != 0 {
+            if let Some(&(_, back)) = subvolumes.get(&subvol).filter(|&&(_, back)| back != snap) {
+                r.add(
+                    "snapshot_subvol_backref_wrong",
+                    format!("snapshot {snap} names subvolume {subvol}, whose snapshot is {back}"),
+                );
+            }
+        }
+        // Each child exists and names this snapshot as its parent (#468).
+        for child in (0..2).map(|i| le32(&k.value, SNAP_CHILDREN + 4 * i)) {
+            match parents.get(&child) {
+                _ if child == 0 => {}
+                None => r.add(
+                    "snapshot_bad_child",
+                    format!("snapshot {snap}'s child {child} does not exist"),
+                ),
+                Some(&p) if p != snap => r.add(
+                    "snapshot_bad_child",
+                    format!("snapshot {snap}'s child {child} has parent {p}"),
+                ),
+                Some(_) => {}
+            }
+        }
         let bad: Vec<u32> = (0..3)
             .map(|i| le32(&k.value, SNAP_SKIPLIST + 4 * i))
             .filter(|&s| s != 0 && s != snap && !above.contains(&s))
@@ -2599,6 +2641,13 @@ mod tests {
         v
     }
 
+    /// [`snapshot`], `depth` parents below its root.
+    fn snapshot_at(tree: u32, skiplist: [u32; 3], depth: u32) -> Vec<u8> {
+        let mut v = snapshot(tree, skiplist);
+        v[SNAP_DEPTH..SNAP_DEPTH + 4].copy_from_slice(&depth.to_le_bytes());
+        v
+    }
+
     /// The kinds `snapshot_links` reports for these btrees.
     fn kinds(
         trees: &[(u32, Vec<u8>)],
@@ -2634,7 +2683,10 @@ mod tests {
     fn consistent_snapshot_links_are_clean() {
         let clean = kinds(
             &[(1, tree(1, 100))],
-            &[(100, snapshot(1, [0; 3])), (99, snapshot(1, [100, 0, 0]))],
+            &[
+                (100, snapshot(1, [0; 3])),
+                (99, snapshot_at(1, [100, 0, 0], 1)),
+            ],
             &[(100, 0), (99, 100)],
             &[1],
         );
@@ -3353,10 +3405,65 @@ mod tests {
         assert_eq!(kinds(SNAP_FLAG_SUBVOL, 0), ["snapshot_subvol_flag_wrong"]);
     }
 
+    /// A depth, a back reference or a child that disagrees is named, and
+    /// nothing else is (#466, #467, #468).
+    #[test]
+    fn a_snapshot_that_disagrees_with_its_relatives_is_named() {
+        let parents = [(100, 0), (99, 100)];
+        let tree1 = [(1, tree(1, 100))];
+        // A depth that is not the number of its parents.
+        assert_eq!(
+            kinds(
+                &tree1,
+                &[(100, snapshot(1, [0; 3])), (99, snapshot(1, [100, 0, 0]))],
+                &parents,
+                &[1]
+            ),
+            ["snapshot_bad_depth"]
+        );
+        // A subvolume whose snapshot is not this one: `kinds` gives every
+        // subvolume snapshot 0.
+        let mut named = snapshot(1, [0; 3]);
+        named[SNAP_SUBVOL..SNAP_SUBVOL + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            kinds(&tree1, &[(100, named)], &[(100, 0)], &[1]),
+            ["snapshot_subvol_backref_wrong"]
+        );
+        // A child that does not exist, and one with another parent.
+        for (child, _why) in [(42u32, "missing"), (99, "another parent")] {
+            let mut root = snapshot(1, [0; 3]);
+            root[SNAP_CHILDREN..SNAP_CHILDREN + 4].copy_from_slice(&child.to_le_bytes());
+            let mut other = snapshot_at(1, [100, 0, 0], 1);
+            if child == 99 {
+                // 99's own child names it, but 99's parent is 100.
+                other[SNAP_CHILDREN..SNAP_CHILDREN + 4].copy_from_slice(&100u32.to_le_bytes());
+                assert_eq!(
+                    kinds(
+                        &tree1,
+                        &[(100, snapshot(1, [0; 3])), (99, other)],
+                        &parents,
+                        &[1]
+                    ),
+                    ["snapshot_bad_child"]
+                );
+            } else {
+                assert_eq!(
+                    kinds(&tree1, &[(100, root), (99, other)], &parents, &[1]),
+                    ["snapshot_bad_child"]
+                );
+            }
+        }
+    }
+
     #[test]
     fn each_broken_snapshot_link_is_named() {
         let parents = [(100, 0), (99, 100)];
-        let snaps = |skip: u32| [(100, snapshot(1, [0; 3])), (99, snapshot(1, [skip, 0, 0]))];
+        let snaps = |skip: u32| {
+            [
+                (100, snapshot(1, [0; 3])),
+                (99, snapshot_at(1, [skip, 0, 0], 1)),
+            ]
+        };
         // A tree whose master subvolume the subvolumes btree lacks.
         assert_eq!(
             kinds(&[(1, tree(7, 100))], &snaps(100), &parents, &[1]),

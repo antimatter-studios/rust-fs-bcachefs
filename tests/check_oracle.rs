@@ -2612,3 +2612,94 @@ fn both_checkers_count_casefold_as_an_option_only_on_a_directory() {
     both_checkers_judge_the_options_flag("/hello.txt", "casefold", 1, false, None);
     both_checkers_judge_the_options_flag("/hello.txt", "casefold", 1, true, Some(0));
 }
+
+/// Change one snapshot's value on a copy of `image`, then require both
+/// checkers to object: the reference by `said`, this crate by `kind`.
+#[cfg(feature = "write")]
+fn both_checkers_reject_a_changed_snapshot(
+    tag: &str,
+    image: &str,
+    offset: u64,
+    change: impl FnOnce(&mut [u8]),
+    said: &str,
+    kind: &str,
+) {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new(tag);
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image(format!("{tag}.img"));
+    std::fs::copy(fixture(image), &img).unwrap();
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, 9)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == 22 && k.pos.inode == 0 && k.pos.offset == offset)
+        .unwrap_or_else(|| panic!("{image} has no snapshot at 0:{offset}"));
+    drop(dev);
+    change(&mut k.value);
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(9, vec![k]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(bad && text.contains(said), "{text}");
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems.iter().any(|p| p.kind == kind),
+        "{kind} was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
+/// A snapshot's depth is how many parents it has (#466).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_whose_depth_disagrees_with_its_parents() {
+    both_checkers_reject_a_changed_snapshot(
+        "check-snapshot-depth",
+        "kernel-rootsnap.img",
+        4294967294,
+        |v| v[24..28].copy_from_slice(&u32::MAX.to_le_bytes()),
+        "incorrect depth field",
+        "snapshot_bad_depth",
+    );
+}
+
+/// A snapshot's subvolume names that snapshot back (#467).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_whose_subvolume_does_not_point_back() {
+    both_checkers_reject_a_changed_snapshot(
+        "check-snapshot-backref",
+        "kernel-rootsnap.img",
+        4294967294,
+        |v| v[16..20].copy_from_slice(&1u32.to_le_bytes()),
+        "doesn't point back",
+        "snapshot_subvol_backref_wrong",
+    );
+}
+
+/// A snapshot's child is a snapshot that exists (#468).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_snapshot_child_that_does_not_exist() {
+    both_checkers_reject_a_changed_snapshot(
+        "check-snapshot-child",
+        "kernel.img",
+        4294967292,
+        |v| v[8..12].copy_from_slice(&3858276524u32.to_le_bytes()),
+        "does not exist",
+        "snapshot_bad_child",
+    );
+}
