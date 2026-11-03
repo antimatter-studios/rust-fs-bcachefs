@@ -89,9 +89,9 @@ failing="$(run_write fails)"
 passing="$(run_write passes)"
 for mode in in-place journal in-place-offset journal-offset; do
     for what in 'put from stdin' 'put --from a 200000-byte file'; do
-        printf '%s\n' "$failing" | grep -qF "FAIL  test-write: $mode: $what (" ||
+        grep -qF "FAIL  test-write: $mode: $what (" <<<"$failing" ||
             fail "$mode: '$what' passed with a put that failed: the check does not read the verb's status"
-        printf '%s\n' "$passing" | grep -qF "FAIL  test-write: $mode: $what (" &&
+        grep -qF "FAIL  test-write: $mode: $what (" <<<"$passing" &&
             fail "$mode: '$what' failed with a put that succeeded"
     done
 done
