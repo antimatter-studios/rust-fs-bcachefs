@@ -29,7 +29,8 @@
 # stage that fails is recorded, not fatal here:
 # tests/oracle_kernel.rs fails on it, naming what is missing. A hang is the
 # exception (#500): it is recorded, the script runs to its end, and then it
-# fails, naming what hung.
+# fails, naming what hung and, from the guest's console, whose hang it was
+# (#514, scripts/kernel-oracle-hang.py).
 set -euo pipefail
 
 OUT="${1:?usage: kernel-oracle.sh OUT}"
@@ -267,9 +268,17 @@ boot 300 -enable-kvm -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
     -no-reboot || first=$?
 [ "$first" -eq 0 ] || echo "kernel-oracle: qemu exited $first" >&2
 # A guest stopped at its limit (124) or killed after it (137) hung (#194):
-# recorded, and the judge boot below is not run over what it left.
+# recorded, and the judge boot below is not run over what it left. Its console
+# says whose hang it was (#514); that changes what the failure says, not that
+# the build fails.
+first_failure=
 case "$first" in
-    124 | 137) record boot "the first boot was stopped at its 300 s limit (kernel.console.txt)" ;;
+    124 | 137)
+        hang="$(python3 "$here/scripts/kernel-oracle-hang.py" "$work/console.log" "$work/oracle.log")" ||
+            hang="its console could not be read"
+        first_failure="the first boot was stopped at its 300 s limit: $hang"
+        record boot "$first_failure (kernel.console.txt)"
+        ;;
 esac
 
 # THIS CRATE'S WRITES, JUDGED BY THE MODULE (#141). The fourth image is a
@@ -376,10 +385,7 @@ echo "kernel-oracle: $(tr '\n' ';' <"$OUT/kernel.txt")"
 
 # A hang fails the build here, and not in tests/oracle_kernel.rs: the job after
 # this one never gets fixtures from a build that did not finish (#500).
-failure=
-case "$first" in
-    124 | 137) failure="the first boot was stopped at its 300 s limit" ;;
-esac
+failure="$first_failure"
 [ -z "$stopped" ] || failure="${failure:+$failure; }$stopped was stopped at its $TOOL_LIMIT s limit"
 if [ -n "$failure" ]; then
     echo "kernel-oracle: FAILED: $failure. The console logs are tmp/kernel-oracle/*.log, in CI the kernel-oracle-console artifact." >&2
