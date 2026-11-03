@@ -24,8 +24,9 @@ dir = ".vm-share"
 # Not a cache: a small disk for the test images, which scripts/guest-suite.sh
 # mounts as the scratch area. On the guest's own disk, images that are written
 # and deleted reach new blocks of the disposable overlay on the host until it has
-# touched most of the guest's free space, and the overlay does not shrink. On a
-# runner with 14 GB free that filled the host's disk and stopped the guest (#504).
+# touched most of the guest's free space. On a runner with 14 GB free that filled
+# the host's disk and stopped the guest (#504). Since harness v0.5.6 the overlay
+# gives deleted blocks back, but its peak still counts, and this disk bounds it.
 # This disk costs the host at most its size. A test that needs more than this
 # fails on ENOSPC, naming what it could not write.
 size = "2G"
