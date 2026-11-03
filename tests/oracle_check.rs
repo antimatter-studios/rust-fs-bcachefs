@@ -37,7 +37,7 @@ pub fn damaged(
     damage(&mut b, &sb);
     let p = common::ScratchDir::new(&format!("check-{set}-{what}"))
         .into_image(format!("{set}-{what}.img"));
-    std::fs::write(&p, &b).unwrap();
+    common::plant::write_sparse(&b, &p);
     p
 }
 

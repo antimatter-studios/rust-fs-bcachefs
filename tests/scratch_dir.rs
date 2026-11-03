@@ -90,3 +90,50 @@ fn an_image_path_cannot_escape_its_owner() {
     assert!(std::panic::catch_unwind(|| dir.join("/outside.img")).is_err());
     assert!(dir.path().is_dir());
 }
+
+/// The copy holds the source's bytes, its length even when it ends in zeros, and
+/// no allocated blocks for its zero blocks (#504).
+#[test]
+fn a_sparse_copy_holds_the_same_bytes_in_fewer_blocks() {
+    use std::os::unix::fs::MetadataExt;
+
+    // APFS leaves no hole for a gap of a few MiB; this is the size of a fixture.
+    const LEN: usize = 64 * 1024 * 1024;
+    let dir = common::ScratchDir::new("sparse-copy");
+    let mut image = vec![0u8; LEN];
+    // Across a read of the copy's own size, in the first block, and unaligned.
+    image[0] = 1;
+    image[1024 * 1024 - 1] = 2;
+    image[1024 * 1024] = 3;
+    image[3 * 1024 * 1024 + 17] = 4;
+    let (src, dst) = (dir.join("full.img"), dir.join("sparse.img"));
+    std::fs::write(&src, &image).unwrap();
+    {
+        let file = std::fs::File::open(&src).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    common::copy_sparse(&src, &dst);
+    {
+        let file = std::fs::File::open(&dst).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    assert!(std::fs::read(&dst).unwrap() == image, "the bytes differ");
+    let (full, sparse) = (
+        std::fs::metadata(&src).unwrap().blocks(),
+        std::fs::metadata(&dst).unwrap().blocks(),
+    );
+    assert!(
+        sparse * 8 < full,
+        "the copy holds {sparse} blocks against the source's {full}"
+    );
+
+    // A copy over an existing longer file leaves nothing of it.
+    std::fs::write(&dst, vec![0xffu8; LEN + 4096]).unwrap();
+    common::copy_sparse(&src, &dst);
+    assert!(
+        std::fs::read(&dst).unwrap() == image,
+        "an old file survives"
+    );
+}

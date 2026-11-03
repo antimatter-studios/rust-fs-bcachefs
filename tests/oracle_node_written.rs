@@ -52,7 +52,7 @@ fn torn_extent_nodes_are_refused_without_rejecting_complete_multiple_bsets() {
 
         let dir = common::ScratchDir::new(&format!("node-written-{set}"));
         let damaged = dir.join(format!("{set}.img"));
-        std::fs::copy(&path, &damaged).unwrap();
+        common::copy_sparse(&path, &damaged);
         // The first bset and its checksum stay intact; the next bset no
         // longer belongs to this node. Its parent's written count stays.
         bytes[next + 16] ^= 1;

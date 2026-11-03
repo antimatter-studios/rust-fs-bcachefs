@@ -22,7 +22,7 @@ use fs_core::FileDevice;
 fn scratch(test: &str) -> common::ScratchImage {
     let dir = common::ScratchDir::new("check-key-types");
     let name = format!("{test}.img");
-    std::fs::copy(fixture("default.img"), dir.join(&name)).unwrap();
+    common::copy_sparse(fixture("default.img"), dir.join(&name));
     dir.into_image(name)
 }
 

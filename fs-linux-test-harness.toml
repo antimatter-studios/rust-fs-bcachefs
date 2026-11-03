@@ -20,6 +20,16 @@ guest_command = "scripts/guest-suite.sh"
 [share]
 dir = ".vm-share"
 
+[cache]
+# Not a cache: a small disk for the test images, which scripts/guest-suite.sh
+# mounts as the scratch area. On the guest's own disk, images that are written
+# and deleted reach new blocks of the disposable overlay on the host until it has
+# touched most of the guest's free space, and the overlay does not shrink. On a
+# runner with 14 GB free that filled the host's disk and stopped the guest (#504).
+# This disk costs the host at most its size. A test that needs more than this
+# fails on ENOSPC, naming what it could not write.
+size = "2G"
+
 [vm]
 # The reference tools are built from source on first provision, which is
 # the long part of a cold boot; the deadline only has to outlast that and

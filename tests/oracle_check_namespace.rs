@@ -27,7 +27,7 @@ use fs_core::FileDevice;
 
 fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("check-namespace").into_image(format!("{test}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     img
 }
 

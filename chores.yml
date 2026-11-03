@@ -261,7 +261,9 @@ tasks:
           exit 1
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        FS_CORE_CALLER="$(pwd -P)" bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1340 68000 -- \
+        # A lost guest is named, and its console kept, by guest-session.sh (#504).
+        FS_CORE_CALLER="$(pwd -P)" bash scripts/guest-session.sh \
+          bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1340 68000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # Run 38997027177 executed the full 304 cases; #253/#254 add six.

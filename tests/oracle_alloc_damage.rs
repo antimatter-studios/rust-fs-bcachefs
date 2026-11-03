@@ -29,7 +29,7 @@ const UNPACKED: BkeyFormat = BkeyFormat {
 fn every_file_reads_with_its_alloc_root_torn() {
     let dir = common::ScratchDir::new("alloc-damage");
     let img = dir.join("alloc-torn.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     // Flip one byte inside the alloc root's first bset, checksum left as it
     // was: a torn write.

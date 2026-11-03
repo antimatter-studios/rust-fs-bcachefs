@@ -21,7 +21,7 @@ use fs_core::FileDevice;
 
 fn scratch(name: &str, test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("crafted-extent").into_image(format!("{test}.img"));
-    std::fs::copy(fixture(name), &img).unwrap();
+    common::copy_sparse(fixture(name), &img);
     img
 }
 

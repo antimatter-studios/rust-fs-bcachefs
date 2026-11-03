@@ -266,7 +266,7 @@ fn the_reference_reports_an_oversized_stale_journal_entry() {
     for (oversized, unknown_version) in [(false, false), (false, true), (true, false), (true, true)]
     {
         let img = dir.join(format!("{oversized}-{unknown_version}.img"));
-        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        common::copy_sparse(fixture("aged-unclean.img"), &img);
         journal_length::plant(&img, oversized, unknown_version);
         let native = Command::new("timeout")
             .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
@@ -326,7 +326,7 @@ fn the_reference_validates_only_the_selected_copys_optional_fields() {
         ("all", vec![0, 1, 2], false, 1),
     ] {
         let img = dir.join(format!("{name}.img"));
-        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        common::copy_sparse(fixture("aged-unclean.img"), &img);
         let sb = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
         assert_eq!(sb.layout.sb_offsets.len(), 3);
         for index in indexes {
@@ -425,7 +425,7 @@ fn damaged(name: &str, damage: impl FnOnce(&mut Vec<u8>, u64)) -> ScratchImage {
     let dir = ScratchDir::new("check-oracle");
     assert_seen_by_reference(&dir);
     let file = format!("{name}.img");
-    std::fs::write(dir.join(&file), &b).unwrap();
+    common::plant::write_sparse(&b, &dir.join(&file));
     dir.into_image(file)
 }
 
@@ -465,7 +465,7 @@ fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
             let dir = ScratchDir::new("check-backpointer-oracle");
             assert_seen_by_reference(&dir);
             let img = dir.into_image(format!("{set}-{case}.img"));
-            std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+            common::copy_sparse(fixture(&format!("{set}.img")), &img);
             let (bad, text) = reference_finds_a_problem(&img);
             assert!(!bad, "the unchanged control must be clean:\n{text}");
             assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -534,7 +534,7 @@ fn both_checkers_report_buckets_a_changed_bucket_gens_key_no_longer_covers() {
     let dir = ScratchDir::new("check-oracle");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("bucket-gens-type.img");
-    std::fs::copy(fixture("kernel-rootsnap.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel-rootsnap.img"), &img);
     let dev = FileDevice::open(&img).unwrap();
     let sb = Superblock::read(&dev).unwrap();
     let mut k = btree::walk(&dev, &sb, BUCKET_GENS)
@@ -576,7 +576,7 @@ fn both_checkers_reject_a_wrong_alloc_stripe_sector_count() {
     let dir = ScratchDir::new("check-alloc-stripe-sectors");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("stripe-sectors.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     let root = fs_bcachefs::Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()
@@ -628,7 +628,7 @@ fn both_checkers_reject_a_btree_backpointer_with_the_wrong_length() {
     let dir = ScratchDir::new("check-node-backpointer");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("node-backpointer.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
     assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -712,7 +712,7 @@ fn both_checkers_report_a_backpointer_its_extent_does_not_point_at() {
     let dir = ScratchDir::new("check-backpointer-unclaimed");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("backpointer-unclaimed.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     let (_, bp) = backpointer::pair(&img);
     let mut stale = bp.clone();
     stale.pos.offset -= 1;
@@ -751,7 +751,7 @@ fn both_checkers_agree_on_btree_backpointer_field_mutations() {
             let dir = ScratchDir::new("check-node-backpointer-fields");
             assert_seen_by_reference(&dir);
             let img = dir.into_image(format!("child-{child}-byte-{byte}.img"));
-            std::fs::copy(fixture("default.img"), &img).unwrap();
+            common::copy_sparse(fixture("default.img"), &img);
             let (bad, text) = reference_finds_a_problem(&img);
             assert!(!bad, "the unchanged fixture must be clean:\n{text}");
             assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -872,7 +872,7 @@ fn both_checkers_reject_a_negative_accounting_counter() {
     let dir = ScratchDir::new("check-accounting-underflow");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("accounting-underflow.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -921,7 +921,7 @@ fn both_checkers_reject_a_per_snapshot_key_count_out_of_step() {
     let dir = ScratchDir::new("check-snapshot-accounting");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("snapshot-accounting.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -980,7 +980,7 @@ fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
     let mut observations = Vec::new();
     for (name, sectors, newer) in cases {
         let img = dir.join(format!("{name}.img"));
-        std::fs::copy(fixture("aged.img"), &img).unwrap();
+        common::copy_sparse(fixture("aged.img"), &img);
         for sector in sectors {
             superblock_copy::change_bucket_size(&img, sector, 8448, newer);
         }
@@ -1117,7 +1117,7 @@ fn where_the_reference_finds_inode_damage_this_checker_names_it() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let p = dir.into_image(format!("{name}.img"));
-        std::fs::copy(fixture(src), &p).unwrap();
+        common::copy_sparse(fixture(src), &p);
         let ino = Filesystem::open(FileDevice::open(&p).unwrap())
             .unwrap()
             .lookup(path)
@@ -1207,7 +1207,7 @@ fn where_the_reference_judges_a_displaced_dirent_this_checker_agrees() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("{name}.img"));
-        std::fs::copy(fixture("default.img"), &img).unwrap();
+        common::copy_sparse(fixture("default.img"), &img);
         let d = {
             let dev = FileDevice::open(&img).unwrap();
             let sb = Superblock::read(&dev).unwrap();
@@ -1398,7 +1398,7 @@ fn where_the_reference_finds_snapshot_damage_this_checker_names_it() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let p = dir.into_image(format!("{name}.img"));
-        std::fs::copy(fixture(src), &p).unwrap();
+        common::copy_sparse(fixture(src), &p);
         let dev = FileDevice::open(&p).unwrap();
         let sb = Superblock::read(&dev).unwrap();
         let mut k = btree::walk(&dev, &sb, id)
@@ -1501,7 +1501,7 @@ fn both_checkers_report_a_subvolume_whose_children_entry_is_gone() {
     let dir = ScratchDir::new("check-oracle");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("children-entry-gone.img");
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel.img"), &img);
     let dev = FileDevice::open(&img).unwrap();
     let sb = Superblock::read(&dev).unwrap();
     let mut k = btree::walk(&dev, &sb, SUBVOLUME_CHILDREN)
@@ -1545,7 +1545,7 @@ fn both_checkers_reject_a_backpointer_value_too_short() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("short-bp-{src}"));
-        std::fs::copy(fixture(src), &img).unwrap();
+        common::copy_sparse(fixture(src), &img);
         let dev = FileDevice::open(&img).unwrap();
         let sb = Superblock::read(&dev).unwrap();
         let mut k = btree::walk(&dev, &sb, BACKPOINTERS)
@@ -1721,7 +1721,7 @@ fn where_the_reference_refuses_a_key_field_this_checker_names_it() {
                     .map(|k| (*src, k))
             });
         let (src, mut k) = found.unwrap_or_else(|| panic!("{name}: no fixture holds such a key"));
-        std::fs::copy(fixture(src), &img).unwrap();
+        common::copy_sparse(fixture(src), &img);
         change(&mut k);
         let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
         w.insert(*id, vec![k]).unwrap();
@@ -1755,7 +1755,7 @@ fn both_checkers_reject_a_snapshot_key_with_a_nonzero_snapshot_field() {
     let dir = ScratchDir::new("check-oracle");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("snapshot-field-nonzero.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     let (control_bad, text) = reference_finds_a_problem(&img);
     assert!(!control_bad, "the unchanged control must be clean:\n{text}");
     assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -1807,7 +1807,7 @@ fn both_checkers_reject_a_snapshot_key_with_a_nonzero_inode() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("snapshot-inode-{inode}.img"));
-        std::fs::copy(fixture("default.img"), &img).unwrap();
+        common::copy_sparse(fixture("default.img"), &img);
         let (control_bad, text) = reference_finds_a_problem(&img);
         assert!(!control_bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -1868,7 +1868,7 @@ fn both_checkers_reject_a_snapshot_tree_key_with_a_nonzero_inode() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("snapshot-tree-inode-{inode}.img"));
-        std::fs::copy(fixture("default.img"), &img).unwrap();
+        common::copy_sparse(fixture("default.img"), &img);
         let (control_bad, text) = reference_finds_a_problem(&img);
         assert!(!control_bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -1935,7 +1935,7 @@ fn both_checkers_reject_a_snapshot_tree_key_past_offset_u32_max() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("snapshot-tree-offset-{offset}.img"));
-        std::fs::copy(fixture("kernel.img"), &img).unwrap();
+        common::copy_sparse(fixture("kernel.img"), &img);
         let (control_bad, text) = reference_finds_a_problem(&img);
         assert!(!control_bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -2005,7 +2005,7 @@ fn both_checkers_reject_a_snapshot_tree_with_a_missing_root_snapshot() {
     let dir = ScratchDir::new("snapshot-tree-root-snapshot");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("missing-root-snapshot.img");
-    std::fs::copy(fixture("kernel-rootsnap.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel-rootsnap.img"), &img);
 
     let dev = FileDevice::open(&img).unwrap();
     let sb = Superblock::read(&dev).unwrap();
@@ -2078,7 +2078,7 @@ fn both_checkers_reject_an_inode_key_with_a_nonzero_inode_position() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("inode-position-{inode}.img"));
-        std::fs::copy(fixture("default.img"), &img).unwrap();
+        common::copy_sparse(fixture("default.img"), &img);
         let (control_bad, text) = reference_finds_a_problem(&img);
         assert!(!control_bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -2147,7 +2147,7 @@ fn both_checkers_reject_an_xattr_key_with_a_nonzero_size() {
         let dir = ScratchDir::new("check-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("xattr-size-{size}.img"));
-        std::fs::copy(fixture("aged.img"), &img).unwrap();
+        common::copy_sparse(fixture("aged.img"), &img);
         let (control_bad, text) = reference_finds_a_problem(&img);
         assert!(!control_bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -2212,7 +2212,7 @@ fn where_the_reference_finds_free_space_damage_this_checker_names_it() {
         let dir = ScratchDir::new("check-freespace-oracle");
         assert_seen_by_reference(&dir);
         let img = dir.into_image(format!("{case}.img"));
-        std::fs::copy(fixture("default.img"), &img).unwrap();
+        common::copy_sparse(fixture("default.img"), &img);
         let (bad, text) = reference_finds_a_problem(&img);
         assert!(!bad, "the unchanged control must be clean:\n{text}");
         assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -2249,7 +2249,7 @@ fn both_checkers_reject_a_bucket_gens_key_with_a_nonzero_size() {
     let dir = ScratchDir::new("check-oracle");
     assert_seen_by_reference(&dir);
     let img = dir.into_image("bucket-gens-size-nonzero.img");
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel.img"), &img);
     let (control_bad, text) = reference_finds_a_problem(&img);
     assert!(!control_bad, "the unchanged control must be clean:\n{text}");
     assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
@@ -2325,7 +2325,7 @@ fn both_checkers_reject_a_stray_reconcile_key(
     let dir = ScratchDir::new(&format!("check-reconcile-{kind}"));
     assert_seen_by_reference(&dir);
     let img = dir.into_image("reconcile.img");
-    std::fs::copy(fixture("reconcile.img"), &img).unwrap();
+    common::copy_sparse(fixture("reconcile.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -2396,7 +2396,7 @@ fn both_checkers_reject_a_snapshot_with_a_wrong_subvol_flag(offset: u64) {
     let dir = ScratchDir::new("check-snapshot-subvol-flag");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("subvol-flag-{offset}.img"));
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -2464,7 +2464,7 @@ fn both_checkers_reject_a_moved_subvolume_children_entry(from: (u64, u64), to: (
     let dir = ScratchDir::new("check-subvol-children");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("subvol-children-{}-{}.img", to.0, to.1));
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -2559,7 +2559,7 @@ fn both_checkers_judge_a_changed_accounting_key(
     let dir = ScratchDir::new("check-accounting-key");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("accounting-{name}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -2795,7 +2795,7 @@ fn both_checkers_judge_a_changed_backpointer_key(
     let dir = ScratchDir::new("check-backpointer-key");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("backpointer-{set}-{data_type}.img"));
-    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+    common::copy_sparse(fixture(&format!("{set}.img")), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -2958,7 +2958,7 @@ fn both_checkers_judge_an_inode_key(
     let dir = ScratchDir::new("check-inode-key");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("inode-{set}.img"));
-    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+    common::copy_sparse(fixture(&format!("{set}.img")), &img);
 
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
@@ -3223,7 +3223,7 @@ fn both_checkers_judge_the_options_flag(
     let dir = ScratchDir::new("check-options-flag");
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("options-{field}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     let ino = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()
@@ -3341,7 +3341,7 @@ fn both_checkers_reject_a_changed_snapshot(
     let dir = ScratchDir::new(tag);
     assert_seen_by_reference(&dir);
     let img = dir.into_image(format!("{tag}.img"));
-    std::fs::copy(fixture(image), &img).unwrap();
+    common::copy_sparse(fixture(image), &img);
     let (bad, text) = reference_finds_a_problem(&img);
     assert!(!bad, "the unchanged fixture must be clean:\n{text}");
     assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());

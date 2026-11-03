@@ -21,7 +21,7 @@ fn c(s: &str) -> CString {
 
 fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("capi-write").into_image(format!("{test}.img"));
-    std::fs::copy(fixture("write-study/base.img"), &img).unwrap();
+    common::copy_sparse(fixture("write-study/base.img"), &img);
     img
 }
 

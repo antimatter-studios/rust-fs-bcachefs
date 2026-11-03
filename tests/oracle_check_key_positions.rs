@@ -57,7 +57,7 @@ fn refused(
     let test = format!("{set}-{id}-{kt}-{kind}");
     // Removed when the test ends however it ends.
     let img = common::ScratchDir::new("check-key-positions").into_image(format!("{test}.img"));
-    std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+    common::copy_sparse(fixture(&format!("{set}.img")), &img);
 
     let before = check::check(&FileDevice::open(&img).unwrap()).expect("the checker runs");
     assert!(

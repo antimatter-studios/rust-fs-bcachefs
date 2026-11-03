@@ -20,7 +20,7 @@ use fs_core::FileDevice;
 
 fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("sb-copies").into_image(format!("{test}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     img
 }
 
@@ -139,7 +139,7 @@ fn when_no_copy_reads_the_error_is_the_primarys() {
 #[test]
 fn a_primary_bucket_size_change_at_the_same_sequence_stays_clean() {
     let img = common::ScratchDir::new("sb-copies").into_image("bucket-size-tie.img");
-    std::fs::copy(fixture("aged.img"), &img).unwrap();
+    common::copy_sparse(fixture("aged.img"), &img);
     let dev = FileDevice::open(&img).unwrap();
     let sb = Superblock::read(&dev).unwrap();
     assert_eq!(sb.members().unwrap()[0].bucket_size, 256);
@@ -171,7 +171,7 @@ fn optional_fields_are_validated_only_in_the_selected_copy() {
         ("checksum", vec![0], false, false, false),
     ] {
         let img = common::ScratchDir::new("sb-fields").into_image(format!("{name}.img"));
-        std::fs::copy(fixture("aged-unclean.img"), &img).unwrap();
+        common::copy_sparse(fixture("aged-unclean.img"), &img);
         let sb = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
         assert_eq!(sb.layout.sb_offsets.len(), 3);
         assert!(check::check(&FileDevice::open(&img).unwrap())

@@ -66,7 +66,7 @@ fn on_every_clean_fixture_the_superblock_and_the_journal_record_the_same_roots()
 fn a_superblock_root_that_names_another_btrees_node_is_read_through_the_journal() {
     let dir = common::ScratchDir::new("journal-roots");
     let img = dir.join("subvolumes-root.img");
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
 
     // The subvolumes btree's root key, overwritten in the superblock with the
     // inodes btree's: a pointer to a node that is not that btree's.
@@ -101,7 +101,7 @@ fn a_superblock_root_that_names_another_btrees_node_is_read_through_the_journal(
     let csum = fs_bcachefs::csum::compute(sb.csum_type(), &raw[start + 16..end]).unwrap();
     raw[start..start + 16].fill(0);
     raw[start..start + 8].copy_from_slice(&csum.to_le_bytes());
-    std::fs::write(&img, &raw).unwrap();
+    common::plant::write_sparse(&raw, &img);
     let damaged = Superblock::read(&FileDevice::open(&img).unwrap()).unwrap();
     assert_ne!(
         damaged.btree_roots().unwrap(),

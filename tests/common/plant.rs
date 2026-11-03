@@ -115,18 +115,20 @@ pub fn type_name(t: u8) -> String {
 }
 
 /// Write `image` to `dst`, leaving its zero blocks as holes, so a copy of a
-/// mostly empty 64 MiB fixture costs what it holds.
+/// mostly empty 64 MiB fixture costs what it holds. It is not synced: an image
+/// deleted before its blocks are flushed never reaches the guest's disk, and so
+/// never reaches the overlay on the host (#504).
 pub fn write_sparse(image: &[u8], dst: &Path) {
     const BLOCK: usize = 4096;
     let mut f = std::fs::File::create(dst).unwrap();
-    f.set_len(image.len() as u64).unwrap();
     for (i, b) in image.chunks(BLOCK).enumerate() {
         if b.iter().any(|&x| x != 0) {
             f.seek(SeekFrom::Start((i * BLOCK) as u64)).unwrap();
             f.write_all(b).unwrap();
         }
     }
-    f.sync_all().unwrap();
+    // Last, as in copy_sparse: only what a seek past the end skips is a hole on APFS.
+    f.set_len(image.len() as u64).unwrap();
 }
 
 /// A btree of `img` that records a root yet holds no keys, other than

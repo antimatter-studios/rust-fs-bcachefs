@@ -12,7 +12,7 @@ fn oversized_stale_journal_entries_are_reported() {
     for (oversized, unknown_version) in [(false, false), (false, true), (true, false), (true, true)]
     {
         let img = dir.join(format!("{oversized}-{unknown_version}.img"));
-        std::fs::copy(common::fixture("aged-unclean.img"), &img).unwrap();
+        common::copy_sparse(common::fixture("aged-unclean.img"), &img);
         journal_length::plant(&img, oversized, unknown_version);
         let r = check(&FileDevice::open(&img).unwrap()).unwrap();
         assert_eq!(r.clean(), !oversized, "{:?}", r.problems);

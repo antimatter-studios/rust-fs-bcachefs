@@ -180,7 +180,7 @@ fn an_encrypted_entry_whose_mac_does_not_verify_is_not_read() {
         let path = dir.copy_fixture(IMG);
         let mut img = std::fs::read(&path).unwrap();
         img[h.4 as usize * 512 + at] ^= 0x20;
-        std::fs::write(&path, &img).unwrap();
+        common::plant::write_sparse(&img, &path);
         assert!(
             !entries(&path).iter().any(|j| j.seq == h.0),
             "entry {} read with a byte of {what} changed",
