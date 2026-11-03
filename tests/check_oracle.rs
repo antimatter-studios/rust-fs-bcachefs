@@ -194,6 +194,220 @@ fn both_checkers_agree_on_a_dirent_type_byte() {
 }
 
 #[cfg(feature = "write")]
+fn agree_on_words(
+    sets: &[&str],
+    table: &[key_field_bytes::WordCase],
+    plant: fn(&str, &[key_field_bytes::Edit]) -> (ScratchImage, fs_bcachefs::bkey::Bpos),
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    for set in sets {
+        for &(edits, finding) in table {
+            let (image, position) = plant(set, edits);
+            let (status, text) = reference_on_key_field(&image);
+            let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+            match finding {
+                None => {
+                    assert_eq!(status, 0, "{set} {edits:?}: {text}");
+                    if !report.clean() {
+                        mismatches.push(format!("{set} {edits:?}: {:?}", report.problems));
+                    }
+                }
+                Some((says, kind)) => {
+                    assert!(text.contains(says), "{set} {edits:?}: {text}");
+                    let found = report.problems.iter().any(|problem| {
+                        problem.kind == kind && problem.detail.contains(&position.to_string())
+                    });
+                    if !found {
+                        mismatches.push(format!("{set} {edits:?}: {:?}", report.problems));
+                    }
+                }
+            }
+        }
+    }
+    mismatches
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_snapshot_state_word() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::SNAPSHOT_SETS,
+        key_field_bytes::SNAPSHOT_STATE_WORDS,
+        key_field_bytes::plant_snapshot,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_an_interior_snapshot_state_word() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::INTERIOR_SNAPSHOT_SETS,
+        key_field_bytes::INTERIOR_SNAPSHOT_WORDS,
+        key_field_bytes::plant_interior_snapshot,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_subvolume_state_word() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::SUBVOLUME_SETS,
+        key_field_bytes::SUBVOLUME_STATE_WORDS,
+        key_field_bytes::plant_subvolume,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_word_near_a_subvolume_state_other_than_live() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::OTHER_STATE_SETS,
+        key_field_bytes::SUBVOLUME_OTHER_STATE_WORDS,
+        key_field_bytes::plant_subvolume,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_subvolume_pad_word() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::SUBVOLUME_SETS,
+        key_field_bytes::SUBVOLUME_PAD_WORDS,
+        key_field_bytes::plant_subvolume,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// A lowered copy's verdict, without what differs between two runs on the
+/// same image: where it is kept, the journal sequence and how long a pass took.
+#[cfg(feature = "write")]
+fn reference_verdict(image: &Path) -> (i32, Vec<String>) {
+    let (status, text) = reference_on_key_field(image);
+    let lines = text
+        .lines()
+        .filter(|line| {
+            !line.contains(".img") && !line.contains("journal seq") && !line.contains("seconds)")
+        })
+        .map(str::to_string)
+        .collect();
+    (status, lines)
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_state_words_below_the_required_version() {
+    use key_field_bytes::{lower_version, plant_snapshot, plant_subvolume, Edit, OLDER_MINORS};
+    const STATE_KINDS: [&str; 6] = [
+        "snapshot_state_bad",
+        "snapshot_state_bitflip",
+        "subvol_state_bad",
+        "subvol_state_bitflip",
+        "subvol_state_invalid",
+        "subvol_pad_nonzero",
+    ];
+    type Plant = fn(&str, &[Edit]) -> (ScratchImage, fs_bcachefs::bkey::Bpos);
+    let families = [
+        (
+            plant_snapshot as Plant,
+            key_field_bytes::OLDER_SNAPSHOT_QUIET,
+            key_field_bytes::OLDER_SNAPSHOT_JUDGED,
+        ),
+        (
+            plant_subvolume as Plant,
+            key_field_bytes::OLDER_SUBVOLUME_QUIET,
+            key_field_bytes::OLDER_SUBVOLUME_JUDGED,
+        ),
+    ];
+    let mut mismatches = Vec::new();
+    for minor in OLDER_MINORS {
+        let (control, _) = plant_subvolume("default", &[]);
+        lower_version(&control, minor);
+        let unchanged = reference_verdict(&control);
+        for (plant, quiet, judged) in families {
+            for &edits in quiet {
+                let (image, _) = plant("default", edits);
+                lower_version(&image, minor);
+                assert_eq!(reference_verdict(&image), unchanged, "1.{minor} {edits:?}");
+                let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+                if report
+                    .problems
+                    .iter()
+                    .any(|p| STATE_KINDS.contains(&p.kind))
+                {
+                    mismatches.push(format!("1.{minor} {edits:?}: {:?}", report.problems));
+                }
+            }
+            for &(edits, finding) in judged {
+                let (says, kind) = finding.unwrap();
+                let (image, position) = plant("default", edits);
+                lower_version(&image, minor);
+                let (_, text) = reference_on_key_field(&image);
+                assert!(text.contains(says), "1.{minor} {edits:?}: {text}");
+                let report = check(&FileDevice::open(&image).unwrap()).unwrap();
+                let found = report.problems.iter().any(|problem| {
+                    problem.kind == kind && problem.detail.contains(&position.to_string())
+                });
+                if !found {
+                    mismatches.push(format!("1.{minor} {edits:?}: {:?}", report.problems));
+                }
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// The reference, asked to format an older version and to start it without
+/// upgrading, writes the words itself: the older format's value is the same.
+/// A zero word on what it made is no finding of its until 1.39 either.
+#[cfg(feature = "write")]
+#[test]
+fn an_image_the_reference_started_at_an_older_version_holds_its_state_words() {
+    use fs_bcachefs::btree;
+    for minor in [33u16, 35, 36, 38] {
+        let image = ScratchDir::new("older-format").into_image("older.img");
+        std::fs::File::create(&image)
+            .unwrap()
+            .set_len(256 << 20)
+            .unwrap();
+        let version = format!("--version=1.{minor}");
+        let reference = |args: &[&str]| {
+            let out = Command::new("bcachefs-ref")
+                .args(args)
+                .arg(image.as_path())
+                .output()
+                .expect("chore test:vm provides the reference tools");
+            assert!(
+                out.status.success(),
+                "{args:?} failed; no case details retained"
+            );
+        };
+        reference(&["format", "-q", &version]);
+        reference(&["fsck", "-y", "-o", "version_upgrade=none"]);
+        let device = FileDevice::open(&image).unwrap();
+        let superblock = Superblock::read(&device).unwrap();
+        assert_eq!(superblock.version.minor(), minor);
+        let keys = |id| btree::walk(&device, &superblock, id).unwrap();
+        let subvolume = keys(8);
+        assert_eq!(
+            subvolume[0].value[40..44],
+            [0x7e, 0x44, 0xd5, 0x4a],
+            "1.{minor}"
+        );
+        let snapshot = keys(9);
+        assert_eq!(
+            snapshot[0].value[56..60],
+            [0xa2, 0x47, 0x7c, 0x75],
+            "1.{minor}"
+        );
+        assert!(check(&device).unwrap().clean(), "1.{minor}");
+    }
+}
+
+#[cfg(feature = "write")]
 #[test]
 fn both_checkers_reject_alloc_v4_values_that_do_not_fit_their_fields() {
     assert!(

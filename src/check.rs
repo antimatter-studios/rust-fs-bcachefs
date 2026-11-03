@@ -52,7 +52,7 @@ use crate::error::{Error, Result};
 use crate::extent::DataExtent;
 use crate::inode::{Dirent, Inode, InodeV3Raw, INODE_HAS_OPTIONS, OPTION_FIELDS, ROOT_INO};
 use crate::journal::{self, Replay};
-use crate::superblock::Superblock;
+use crate::superblock::{Superblock, Version};
 use crate::util::{le32, le64};
 use fs_core::BlockRead;
 
@@ -95,6 +95,27 @@ const SUBVOLUME_CHILDREN: u8 = 19;
 const SUBVOL_STATE: usize = 40;
 const SUBVOL_MIN_BYTES: usize = 16;
 const SNAP_PAD: usize = 60;
+/// A subvolume's reserved pad word, a snapshot's state word, and the shortest
+/// snapshot the reference does not refuse for its size (the guest probes of
+/// 2026-11-03, docs/clean-room.md, #487).
+const SUBVOL_PAD: usize = 44;
+const SNAP_STATE: usize = 56;
+const SNAP_MIN_BYTES: usize = 24;
+/// The state words the reference key editor stores for each name it accepts.
+const SUBVOL_LIVE: u32 = 0x4ad5_447e;
+const SUBVOL_STATES: [u32; 3] = [SUBVOL_LIVE, 0x2d35_8e8f, 0x3c6b_2d4c];
+const SNAP_LIVE: u32 = 0x757c_47a2;
+const SNAP_WILL_DELETE: u32 = 0x3316_a8d2;
+const SNAP_NO_KEYS: u32 = 0x372b_5a01;
+const SNAP_DELETED: u32 = 0x7cd4_a225;
+const SNAP_STATES: [u32; 4] = [SNAP_LIVE, SNAP_WILL_DELETE, SNAP_NO_KEYS, SNAP_DELETED];
+/// The most bits a state word may be from one of those and still be counted
+/// as a flip of it, and still be corrected to it.
+const STATE_FLIP_BITS: u32 = 2;
+const STATE_NEAR_BITS: u32 = 6;
+/// Below this format version the reference says nothing of an unset word, and
+/// nothing of a word that is no flip of a state, but a subvolume's near none.
+const STATE_REQUIRED_FROM: Version = Version((1 << 10) | 39);
 /// The bucket_gens btree, and its key type: 256 buckets' generations a
 /// key, one byte each, at `dev:bucket >> 8` (S8).
 const BUCKET_GENS: u8 = 14;
@@ -381,6 +402,11 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // A btree's per-snapshot counters (#163). Clean only, as above.
     if sb.is_clean() {
         check_snapshot_accounting(&trees, &mut r);
+    }
+    // A snapshot's state against the rest of the filesystem (#487). Clean
+    // only, as above.
+    if sb.is_clean() && sb.version >= STATE_REQUIRED_FROM {
+        snapshot_states(&trees, &mut r);
     }
     // The reconcile btrees' keys against the extents waiting on background
     // work (#163). Clean only, as above.
@@ -2151,6 +2177,7 @@ fn walk_checked(
                 // 38814891184) as bkey_invalid_type_for_btree, the one code
                 // for that offender (#219).
                 check_key_fields(id, k, r);
+                check_state_words(sb.version, id, k, r);
                 check_key_device(id, k, u64::from(sb.dev_idx), r);
             }
             Some(keys)
@@ -2285,9 +2312,6 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
     }
     if (id, k.key_type) == (SNAPSHOTS, KEY_SNAPSHOT) {
         check_snapshot_pad(&name, k, r);
-    }
-    if (id, k.key_type) == (SUBVOLUMES, KEY_SUBVOLUME) {
-        check_subvolume_state(&name, k, r);
     }
     if (id, k.key_type) == (btree_id::ALLOC, key_type::ALLOC_V4) {
         check_alloc_v4_value(&name, k, r);
@@ -2480,6 +2504,143 @@ fn check_subvolume_state(name: &str, k: &Bkey, r: &mut Report) {
             "subvol_state_bad",
             format!("btree {name}: subvolume {} has no state set", k.pos),
         );
+    }
+}
+
+/// The bits a state word is from the nearest of these.
+fn state_distance(word: u32, states: &[u32]) -> u32 {
+    states
+        .iter()
+        .map(|state| (word ^ state).count_ones())
+        .min()
+        .unwrap_or(u32::BITS)
+}
+
+/// A snapshot's state word and a subvolume's state and pad words, as the
+/// guest probes of 2026-11-03 measured them (docs/clean-room.md, #487). A flip
+/// of a state, a subvolume's word near none and its pad are judged at every
+/// format version, and the rest only from `STATE_REQUIRED_FROM`.
+fn check_state_words(version: Version, id: u8, k: &Bkey, r: &mut Report) {
+    let name = journal::btree_name(id);
+    let required = version >= STATE_REQUIRED_FROM;
+    if (id, k.key_type) == (SNAPSHOTS, KEY_SNAPSHOT) && k.value.len() >= SNAP_MIN_BYTES {
+        // A value that ends before the word reads as unset.
+        let word = k
+            .value
+            .get(SNAP_STATE..SNAP_STATE + 4)
+            .map_or(0, |_| le32(&k.value, SNAP_STATE));
+        let kind = match state_distance(word, &SNAP_STATES) {
+            0 => return,
+            1..=STATE_FLIP_BITS => "snapshot_state_bitflip",
+            _ if required => "snapshot_state_bad",
+            _ => return,
+        };
+        r.add(
+            kind,
+            format!("btree {name}: snapshot {} has state {word:#x}", k.pos),
+        );
+    }
+    if (id, k.key_type) == (SUBVOLUMES, KEY_SUBVOLUME) {
+        if required {
+            check_subvolume_state(&name, k, r);
+        }
+        if let Some(word) = k.value.get(SUBVOL_STATE..SUBVOL_STATE + 4) {
+            let word = u32::from_le_bytes(word.try_into().unwrap());
+            let kind = match state_distance(word, &SUBVOL_STATES) {
+                0 => None,
+                _ if word == 0 => None,
+                1..=STATE_FLIP_BITS => Some("subvol_state_bitflip"),
+                d if d > STATE_NEAR_BITS => Some("subvol_state_invalid"),
+                _ if required => Some("subvol_state_bad"),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                r.add(
+                    kind,
+                    format!("btree {name}: subvolume {} has state {word:#x}", k.pos),
+                );
+            }
+        }
+        if let Some(pad) = k.value.get(SUBVOL_PAD..SUBVOL_PAD + 4) {
+            if pad != [0; 4] {
+                r.add(
+                    "subvol_pad_nonzero",
+                    format!(
+                        "btree {name}: subvolume {} has reserved pad {pad:02x?}",
+                        k.pos
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A snapshot in a state other than live, against the rest of the filesystem
+/// (the guest probes of 2026-11-03, #487): `will_delete` on one whose subvolume
+/// is live, or with two live children, and `no_keys` or `deleted` on one with
+/// keys accounted to it. Those are all the probes could reach: every snapshot
+/// of every reference-made fixture is one of these, so the same states on a
+/// snapshot with nothing left are not judged. Measured on clean images at
+/// `STATE_REQUIRED_FROM`.
+fn snapshot_states(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    let snapshots = || {
+        trees
+            .get(&SNAPSHOTS)
+            .into_iter()
+            .flatten()
+            .filter(|k| k.key_type == KEY_SNAPSHOT && k.value.len() >= SNAP_STATE + 4)
+    };
+    let live_snapshot = |id: u32| {
+        snapshots()
+            .any(|k| k.pos.offset == u64::from(id) && le32(&k.value, SNAP_STATE) == SNAP_LIVE)
+    };
+    let live_subvolume = |id: u32| {
+        trees.get(&SUBVOLUMES).into_iter().flatten().any(|k| {
+            k.key_type == KEY_SUBVOLUME
+                && k.pos.offset == u64::from(id)
+                && k.value.len() >= SUBVOL_STATE + 4
+                && le32(&k.value, SUBVOL_STATE) == SUBVOL_LIVE
+        })
+    };
+    let accounted = |id: u32| {
+        trees.get(&ACCOUNTING).into_iter().flatten().any(|k| {
+            k.key_type == KEY_ACCOUNTING
+                && k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE
+                && ((k.pos.inode >> 24) & 0xffff_ffff) as u32 == id.swap_bytes()
+                && k.value.get(..8).is_some_and(|keys| keys != [0; 8])
+        })
+    };
+    for k in snapshots() {
+        let Ok(id) = u32::try_from(k.pos.offset) else {
+            continue;
+        };
+        let state = le32(&k.value, SNAP_STATE);
+        let children = [
+            le32(&k.value, SNAP_CHILDREN),
+            le32(&k.value, SNAP_CHILDREN + 4),
+        ];
+        if state == SNAP_WILL_DELETE {
+            if live_subvolume(le32(&k.value, SNAP_SUBVOL)) {
+                r.add(
+                    "snapshot_deleted_but_subvol_live",
+                    format!("snapshot {}: will_delete, and its subvolume is live", k.pos),
+                );
+            } else if children.iter().all(|child| live_snapshot(*child)) {
+                r.add(
+                    "snapshot_deleted_has_live_children",
+                    format!("snapshot {}: will_delete, and has two live children", k.pos),
+                );
+            }
+        }
+        if matches!(state, SNAP_NO_KEYS | SNAP_DELETED) && accounted(id) {
+            r.add(
+                "snapshot_deleted_but_has_data",
+                format!(
+                    "snapshot {}: state {state:#x}, and keys accounted to it",
+                    k.pos
+                ),
+            );
+        }
     }
 }
 
@@ -3278,32 +3439,37 @@ mod tests {
         // The guest probe of 2026-11-02 (#469): a zero word at bytes 40..44,
         // or a value of 16 bytes or more that ends before it. Other words
         // have other verdicts, none of them "unset".
+        let unset_kinds = |k: &Bkey| {
+            let mut report = Report::default();
+            check_subvolume_state("subvolumes", k, &mut report);
+            report.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
         let live = |state: u32| {
             let mut value = vec![0; 48];
             value[40..44].copy_from_slice(&state.to_le_bytes());
             value
         };
         assert_eq!(
-            field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, live(0))),
+            unset_kinds(&key(KEY_SUBVOLUME, 1, live(0))),
             ["subvol_state_bad"]
         );
         for state in [1, 0x8000_0000, 0x4ad5_447e, u32::MAX] {
             assert_eq!(
-                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, live(state))),
+                unset_kinds(&key(KEY_SUBVOLUME, 1, live(state))),
                 Vec::<&str>::new(),
                 "state {state:#x}"
             );
         }
         for bytes in [16, 24, 32, 40] {
             assert_eq!(
-                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
+                unset_kinds(&key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
                 ["subvol_state_bad"],
                 "{bytes} bytes"
             );
         }
         for bytes in [0, 8] {
             assert_eq!(
-                field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
+                unset_kinds(&key(KEY_SUBVOLUME, 1, vec![0xff; bytes])),
                 Vec::<&str>::new(),
                 "{bytes} bytes"
             );
@@ -3311,13 +3477,259 @@ mod tests {
         let mut longer = live(0);
         longer.resize(64, 0xff);
         assert_eq!(
-            field_kinds(SUBVOLUMES, &key(KEY_SUBVOLUME, 1, longer)),
+            unset_kinds(&key(KEY_SUBVOLUME, 1, longer)),
             ["subvol_state_bad"]
         );
         assert_eq!(
-            field_kinds(SUBVOLUMES, &key(KEY_SET, 1, vec![0; 48])),
+            state_kinds(SUBVOLUMES, &key(KEY_SET, 1, vec![0; 48])),
             Vec::<&str>::new()
         );
+    }
+
+    fn state_kinds(id: u8, k: &Bkey) -> Vec<&'static str> {
+        kinds_at(STATE_REQUIRED_FROM, id, k)
+    }
+
+    fn kinds_at(version: Version, id: u8, k: &Bkey) -> Vec<&'static str> {
+        let mut report = Report::default();
+        check_state_words(version, id, k, &mut report);
+        report.problems.iter().map(|p| p.kind).collect()
+    }
+
+    #[test]
+    fn a_snapshot_state_word_the_reference_judges_is_named() {
+        // The guest probes of 2026-11-03 (#487).
+        let snapshot = |word: u32| {
+            let mut value = vec![0; 64];
+            value[SNAP_STATE..SNAP_STATE + 4].copy_from_slice(&word.to_le_bytes());
+            key(KEY_SNAPSHOT, 1, value)
+        };
+        for word in SNAP_STATES {
+            assert_eq!(state_kinds(SNAPSHOTS, &snapshot(word)), Vec::<&str>::new());
+            for (bits, kind) in [
+                (0b1u32, "snapshot_state_bitflip"),
+                (0b11, "snapshot_state_bitflip"),
+                (0b111, "snapshot_state_bad"),
+                (0b11_1111, "snapshot_state_bad"),
+                (0b111_1111, "snapshot_state_bad"),
+            ] {
+                assert_eq!(
+                    state_kinds(SNAPSHOTS, &snapshot(word ^ bits)),
+                    [kind],
+                    "{word:#x} ^ {bits:#b}"
+                );
+            }
+        }
+        for word in [0, 1, 0x8000_0000, u32::MAX] {
+            assert_eq!(
+                state_kinds(SNAPSHOTS, &snapshot(word)),
+                ["snapshot_state_bad"],
+                "{word:#x}"
+            );
+        }
+        // A value that ends before the word reads as unset, and one too
+        // short for its fixed fields is refused for its size.
+        for bytes in [24, 32, 40, 48, 56] {
+            assert_eq!(
+                state_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, vec![0xff; bytes])),
+                ["snapshot_state_bad"],
+                "{bytes} bytes"
+            );
+        }
+        for bytes in [0, 8, 16] {
+            assert_eq!(
+                state_kinds(SNAPSHOTS, &key(KEY_SNAPSHOT, 1, vec![0xff; bytes])),
+                Vec::<&str>::new(),
+                "{bytes} bytes"
+            );
+        }
+        assert_eq!(
+            state_kinds(SNAPSHOTS, &key(KEY_SET, 1, vec![0xff; 64])),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn a_subvolume_state_or_pad_word_the_reference_judges_is_named() {
+        // The guest probes of 2026-11-03 (#487).
+        let subvolume = |word: u32, pad: u32| {
+            let mut value = vec![0; 48];
+            value[SUBVOL_STATE..SUBVOL_STATE + 4].copy_from_slice(&word.to_le_bytes());
+            value[SUBVOL_PAD..SUBVOL_PAD + 4].copy_from_slice(&pad.to_le_bytes());
+            key(KEY_SUBVOLUME, 1, value)
+        };
+        for word in SUBVOL_STATES {
+            assert_eq!(
+                state_kinds(SUBVOLUMES, &subvolume(word, 0)),
+                Vec::<&str>::new()
+            );
+            for (bits, kind) in [
+                (0b1u32, "subvol_state_bitflip"),
+                (0b11, "subvol_state_bitflip"),
+                (0b111, "subvol_state_bad"),
+                (0b11_1111, "subvol_state_bad"),
+                (0b111_1111, "subvol_state_invalid"),
+            ] {
+                assert_eq!(
+                    state_kinds(SUBVOLUMES, &subvolume(word ^ bits, 0)),
+                    [kind],
+                    "{word:#x} ^ {bits:#b}"
+                );
+            }
+        }
+        for word in [1, 0x8000_0000, u32::MAX] {
+            assert_eq!(
+                state_kinds(SUBVOLUMES, &subvolume(word, 0)),
+                ["subvol_state_invalid"],
+                "{word:#x}"
+            );
+        }
+        for pad in [1, 0x80, 0x8000_0000, u32::MAX] {
+            assert_eq!(
+                state_kinds(SUBVOLUMES, &subvolume(SUBVOL_LIVE, pad)),
+                ["subvol_pad_nonzero"],
+                "{pad:#x}"
+            );
+        }
+        // Words after the pad are not read.
+        let mut longer = subvolume(SUBVOL_LIVE, 0);
+        longer.value.resize(64, 0xff);
+        assert_eq!(state_kinds(SUBVOLUMES, &longer), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn below_the_required_version_only_a_word_near_a_state_is_judged() {
+        // The guest probes of 2026-11-03 (#487): at 1.38 and below only a
+        // word one or two bits from a state and a subvolume's word more than
+        // six bits from one draw a finding.
+        let older = Version(STATE_REQUIRED_FROM.0 - 1);
+        let snapshot = |word: u32| {
+            let mut value = vec![0; 64];
+            value[SNAP_STATE..SNAP_STATE + 4].copy_from_slice(&word.to_le_bytes());
+            key(KEY_SNAPSHOT, 1, value)
+        };
+        let subvolume = |word: u32| {
+            let mut value = vec![0; 48];
+            value[SUBVOL_STATE..SUBVOL_STATE + 4].copy_from_slice(&word.to_le_bytes());
+            key(KEY_SUBVOLUME, 1, value)
+        };
+        for quiet in [snapshot(0), snapshot(1), key(KEY_SNAPSHOT, 1, vec![0; 56])] {
+            assert_eq!(kinds_at(older, SNAPSHOTS, &quiet), Vec::<&str>::new());
+        }
+        for quiet in [subvolume(0), key(KEY_SUBVOLUME, 1, vec![0; 40])] {
+            assert_eq!(kinds_at(older, SUBVOLUMES, &quiet), Vec::<&str>::new());
+        }
+        for bits in [0b111, 0b11_1111] {
+            assert_eq!(
+                kinds_at(older, SNAPSHOTS, &snapshot(SNAP_LIVE ^ bits)),
+                Vec::<&str>::new()
+            );
+            assert_eq!(
+                kinds_at(older, SUBVOLUMES, &subvolume(SUBVOL_LIVE ^ bits)),
+                Vec::<&str>::new()
+            );
+        }
+        for bits in [0b1, 0b11] {
+            assert_eq!(
+                kinds_at(older, SNAPSHOTS, &snapshot(SNAP_LIVE ^ bits)),
+                ["snapshot_state_bitflip"]
+            );
+            assert_eq!(
+                kinds_at(older, SUBVOLUMES, &subvolume(SUBVOL_LIVE ^ bits)),
+                ["subvol_state_bitflip"]
+            );
+        }
+        assert_eq!(
+            kinds_at(older, SUBVOLUMES, &subvolume(1)),
+            ["subvol_state_invalid"]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_state_at_odds_with_the_rest_of_the_filesystem_is_named() {
+        // The guest probes of 2026-11-03 (#487).
+        let snapshot = |id: u64, state: u32, subvol: u32, children: [u32; 2]| {
+            let mut v = vec![0; 64];
+            v[SNAP_CHILDREN..SNAP_CHILDREN + 4].copy_from_slice(&children[0].to_le_bytes());
+            v[SNAP_CHILDREN + 4..SNAP_CHILDREN + 8].copy_from_slice(&children[1].to_le_bytes());
+            v[SNAP_SUBVOL..SNAP_SUBVOL + 4].copy_from_slice(&subvol.to_le_bytes());
+            v[SNAP_STATE..SNAP_STATE + 4].copy_from_slice(&state.to_le_bytes());
+            key(KEY_SNAPSHOT, id, v)
+        };
+        let subvolume = |id: u64, state: u32| {
+            let mut v = vec![0; 48];
+            v[SUBVOL_STATE..SUBVOL_STATE + 4].copy_from_slice(&state.to_le_bytes());
+            key(KEY_SUBVOLUME, id, v)
+        };
+        let accounting = |snapshot: u32, keys: u64| {
+            let mut k = key(KEY_ACCOUNTING, 0, keys.to_le_bytes().to_vec());
+            k.pos.inode = ACCT_SNAPSHOT_BTREE << 56 | u64::from(snapshot.swap_bytes()) << 24;
+            k
+        };
+        let kinds = |snapshots: Vec<Bkey>, subvolumes: Vec<Bkey>, accounted: Vec<Bkey>| {
+            let mut btrees = BTreeMap::new();
+            btrees.insert(SNAPSHOTS, snapshots);
+            btrees.insert(SUBVOLUMES, subvolumes);
+            btrees.insert(ACCOUNTING, accounted);
+            let mut r = Report::default();
+            snapshot_states(&btrees, &mut r);
+            r.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        let live = || subvolume(1, SUBVOL_LIVE);
+        assert_eq!(
+            kinds(
+                vec![snapshot(9, SNAP_LIVE, 1, [0; 2])],
+                vec![live()],
+                vec![accounting(9, 1)]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            kinds(
+                vec![snapshot(9, SNAP_WILL_DELETE, 1, [0; 2])],
+                vec![live()],
+                vec![]
+            ),
+            ["snapshot_deleted_but_subvol_live"]
+        );
+        assert_eq!(
+            kinds(
+                vec![snapshot(9, SNAP_WILL_DELETE, 1, [0; 2])],
+                vec![subvolume(1, SUBVOL_STATES[2])],
+                vec![]
+            ),
+            Vec::<&str>::new()
+        );
+        let interior = |left: u32| {
+            vec![
+                snapshot(9, SNAP_WILL_DELETE, 0, [7, 8]),
+                snapshot(8, SNAP_LIVE, 0, [0; 2]),
+                snapshot(7, left, 0, [0; 2]),
+            ]
+        };
+        assert_eq!(
+            kinds(interior(SNAP_LIVE), vec![], vec![]),
+            ["snapshot_deleted_has_live_children"]
+        );
+        assert_eq!(
+            kinds(interior(SNAP_DELETED), vec![], vec![]),
+            Vec::<&str>::new()
+        );
+        for state in [SNAP_NO_KEYS, SNAP_DELETED] {
+            let lone = || vec![snapshot(9, state, 0, [0; 2])];
+            assert_eq!(
+                kinds(lone(), vec![], vec![accounting(9, 3)]),
+                ["snapshot_deleted_but_has_data"]
+            );
+            assert_eq!(
+                kinds(lone(), vec![], vec![accounting(9, 0)]),
+                Vec::<&str>::new()
+            );
+            assert_eq!(
+                kinds(lone(), vec![], vec![accounting(8, 3)]),
+                Vec::<&str>::new()
+            );
+        }
     }
 
     #[test]

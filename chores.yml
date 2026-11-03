@@ -133,7 +133,9 @@ tasks:
       # (2026-11-02, tmp/logs/unit.log).
       # #465, #469 and #473 add three unit cases to the measured 121.
       # #422 adds one unit case to the measured 124.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 125'
+      # #487 adds four unit cases to that 125: 129 measured 2026-11-03,
+      # tmp/logs/unit.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 129'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -199,7 +201,9 @@ tasks:
       # #465, #469 and #473 add three oracle cases to the measured 275.
       # #489 adds two local write cases: 280 measured 2026-11-03, tmp/logs/oracle.log.
       # #422 and #423 add three oracle cases to that 280.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 283'
+      # #487 adds six oracle cases to that 283: 289 measured 2026-11-03,
+      # tmp/logs/oracle.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 289'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -320,7 +324,9 @@ tasks:
       # import cases: a tree 32 directories deep and the attributes of host files.
       # #495 adds five live-reference cases: the fields_start judgements on
       # times encoded longer and shorter, and the times alone.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 540'
+      # #487 adds four unit, six host oracle and seven live-reference cases
+      # to that 540.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 557'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
