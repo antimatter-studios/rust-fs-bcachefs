@@ -146,6 +146,8 @@ stored access and modification times.
 ```sh
 fs.bcachefs disk.img import hello.txt /hello.txt
 fs.bcachefs disk.img import --replace --verify hello.txt /hello.txt
+fs.bcachefs disk.img import --recursive etc /etc
+fs.bcachefs disk.img import --recursive --preserve=xattrs home /home
 ```
 
 `import SOURCE PATH` streams a local file, or stdin with `-`, into a staged
@@ -154,6 +156,18 @@ publishes it with one rename; an existing PATH needs `--replace`, which the
 rename does in the same transaction, and `--verify` reads the staged file
 back through a fresh open of the image first. A failed import removes the
 staged file and leaves PATH as it was.
+
+`--recursive` imports a local tree the same way, file by file, making
+directories and merging into those already there, and reports every item: a
+name bcachefs cannot store, or an existing file without `--replace`, is
+reported, its siblings still go in, and the import exits nonzero.
+`--preserve=xattrs`, on one file or a tree, sets each item's extended
+attributes after its contents are published; a namespace other than `user.*`
+or `trusted.*`, or a value too large for one key, refuses that item by name.
+`--verify` applies only to one file without `--preserve`. A long run of
+imports on a freshly formatted image can be refused when its journal cannot
+be reclaimed (#490): that item is reported, and later writes are refused until
+the journal is replayed.
 
 `read` streams regular-file bytes to stdout. With `-o FILE`, it writes
 `FILE.partial` and renames that file to `FILE` after a successful read;
