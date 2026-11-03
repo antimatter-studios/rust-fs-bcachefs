@@ -1,0 +1,3 @@
+## Checking
+
+| Replicas accounting key at accounting read | Supported: a key holding sectors is reported for a device the filesystem lacks, for a data type up to btree that the superblock's replicas_v0 field does not list with its devices and one copy required, and for a data type of 12 or above. A key holding nothing is not judged. A superblock without replicas_v0 is not judged for the listing, and whether other replicas keys hold what the filesystem holds is not judged | Unreleased (#496) | #422, #423 | `tests/check_oracle.rs`, `tests/oracle_check_replicas_accounting.rs`, `src/check.rs` unit tests |

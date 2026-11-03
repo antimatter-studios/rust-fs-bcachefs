@@ -1883,6 +1883,49 @@ with the reason cut off by the report's signature. A guest probe on
 No other kind of accounting key was changed this way, and none of these
 rules is applied to one.
 
+### A replicas accounting key at accounting read (S3, #422, #423)
+
+Black-box guest probes on 2026-11-03 used reference checker 1.39.7 and copies
+of the reference-made fixtures from CI run 41559793981 (fixtures artifact
+13197033902, digest
+`sha256:a48a40038313e8c3f954615f91cae6abde7f307b675958e91bf645c8328f8d2a`).
+The writer's raw insert moved the first `replicas` key of `default.img` and
+`kernel.img`, or added one beside it holding 8 sectors, and only the printed
+verdict and exit status of `bcachefs-ref fsck -n` were read. `reconcile.img`,
+`block4k.img`, `kernel-reuse.img` and `kernel-rootsnap.img` gave the same
+verdicts on a sample of the same changes. No reference source was read.
+
+Every fixture is one device, device 0. In the order the reference judges an
+entry, naming a device means naming one that is not 0 and not 255:
+
+| Entry holding anything | Reference verdict | Kind |
+|---|---|---|
+| Names a device, fewer of its devices here than it requires, not `cached`: `1/1 [1]`, `1/1 [254]`, `1/2 [1 2]`, `1/2 [1 255]`, `2/3 [0 1 2]`, `3/4 [0 1 2 3]` | "insufficient devices online (N) for replicas entry btree: ...", and the filesystem does not start | `insufficient_devices_to_start` |
+| Names a device otherwise: `1/2 [0 1]`, `1/3 [0 1 2]`, `0/1 [1]`, `1/2 [0 254]`, `cached: 1/1 [1]` | "accounting entry points to invalid device N", "not fixing" | `accounting_to_invalid_device` |
+| Data type `free`, `sb`, `journal` or `btree`, in no entry of the superblock's replicas_v0 field: `btree: 0/1 [0]`, `btree: 1/1 [255]`, `btree: 1/2 [0 255]`, `free: 1/1 [0]`, `sb: 0/1 [0]` | "accounting not marked in superblock replicas", counted as `accounting_replicas_not_marked` | `accounting_replicas_not_marked` |
+| Data type 12 or above, naming no device: `1/1 [0]`, `0/1 [0]`, `1/1 [255]` | No refusal at accounting read. At check_allocations, "accounting mismatch for replicas (unknown data_type N): 1/1 [0]", "got 8", "should be 0" | `accounting_mismatch` |
+
+Data types 0 to 11 print as `free`, `sb`, `journal`, `btree`, `user`, `cached`,
+`parity`, `stripe`, `need_gc_gens`, `need_discard`, `unstriped` and `multiple`;
+every value from 12 to 255 printed as `(unknown data_type N)` on `default.img`.
+Types 4 to 11 are never "not marked", whatever the entry. `btree: 1/1 [0]` is
+the only entry the fixtures' clean superblocks list (`03 01 00`), and
+replicas_v0 holds no `nr_required`, so listed entries require one copy.
+
+A key whose counters are all zero is judged by none of these, on any entry. The
+first row reads every counter; the other three read only the first.
+
+The reference also refused `2/2 [0 1]`, `3/3 [0 1 2]` and `4/4 [0 1 2 3]` as
+"accounting key replicas entry with bad nr_required", deleting the key, even
+holding nothing. `2/3` and `3/4` were not, nor is `1/1`, so the rule is a
+`nr_required` above one that is not below `nr_devs`.
+
+Two things stay open. The newer replicas field (type 7) is in no fixture, so
+what it holds is unread, and the "not marked" rule is not applied to a
+superblock without replicas_v0. The writer's raw insert does not plant into a
+fixture shut down uncleanly, so these verdicts are unmeasured on one; the rules
+apply there too, and the unclean fixtures' own keys give no finding.
+
 ### subvolume_children entries and their parent (S3, #219, #382)
 
 Our own walker reads two `set` keys in `kernel.img`'s subvolume_children
