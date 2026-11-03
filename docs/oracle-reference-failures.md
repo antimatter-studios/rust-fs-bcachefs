@@ -2,9 +2,10 @@
 
 Every guest target that runs the reference tools under a deadline does it through
 `tests/common/reference_runs.rs`: `check_oracle`, `check_oracle_key_types`,
-`check_oracle_never_started`, `check_oracle_started_superblock` and
-`check_oracle_reconcile_dirent`. `tests/scripts/reference-key-field-outcomes.sh`
-fails on a test target with a deadline of its own.
+`check_oracle_never_started`, `check_oracle_started_superblock`,
+`check_oracle_reconcile_dirent` and `check_oracle_snapshot_claims`.
+`tests/scripts/reference-key-field-outcomes.sh` fails on a test target with a
+deadline of its own.
 
 `write_oracle` is outside this: it runs the reference with no deadline, so a run
 that does not end blocks the job rather than failing a test (#584).

@@ -152,7 +152,8 @@ tasks:
       # #533 adds two started-superblock cases to that 136.
       # #562 adds two unit cases.
       # #589 adds one unit case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 141'
+      # #521 adds three snapshot claim cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 144'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -302,6 +303,10 @@ tasks:
     # 2026-11-03): 1285 lines / 68089 bytes, 89 bytes over 68000, 579 executed,
     # every test passed. 72000 bytes leaves about 6%, because this budget exists to
     # catch a noisy run. 1285 lines are inside 1650, so the line budget stays.
+    # MEASURED AGAIN in the harness guest for #536 on main 5c37bc8 (2026-11-06):
+    # 1394 lines / 75170 bytes, 610 executed, every test passed, which 72000
+    # refused with exit 65. 80000 bytes leaves about 6% again; 1394 lines are
+    # inside 1650, so the line budget stays.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -315,7 +320,7 @@ tasks:
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
         # A lost guest is named, and its console kept, by guest-session.sh (#504).
         FS_CORE_CALLER="$(pwd -P)" bash scripts/guest-session.sh \
-          bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1650 72000 -- \
+          bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1650 80000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # Run 38997027177 executed the full 304 cases; #253/#254 add six.
@@ -385,7 +390,8 @@ tasks:
       # #589 adds one unit, one host oracle and one live-reference case to the
       # 599 merge-queue run 41832709412 executed: 602 measured locally on
       # 2026-11-04, tmp/logs/vm.log.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 602'
+      # #521 adds three unit and five live-reference snapshot claim cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 610'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -568,7 +574,8 @@ tasks:
       # #533 adds its two started-superblock unit cases to this tier too.
       # #562 adds two default-feature unit cases.
       # #589 adds one default-feature unit case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 222'
+      # #521 adds its three snapshot claim unit cases to this tier too.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 225'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

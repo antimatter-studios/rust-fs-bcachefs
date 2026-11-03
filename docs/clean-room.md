@@ -2909,6 +2909,43 @@ length controls. The existing position-only unit test now supplies values
 of these minimum lengths instead of empty values; its expected position
 verdicts are unchanged. The new red regressions are unchanged.
 
+## A snapshot two subvolumes claim (#521, 2026-11-03)
+
+Black-box guest probes used reference checker 1.39.7 on copies of `default.img`,
+`aged.img`, `kernel.img` and `kernel-rootsnap.img` from fixtures artifact
+13159750269 (CI run 41476138017; archive SHA-256
+`7d2625fd939cc994df96ac49c87059baa0317ea36b281dded7e8e4278465205a`), each given a
+copy of a reference-made subvolume at an unused id, parents cleared. Only printed
+output and exit status were consulted; no reference source was read. There were
+no reference faults.
+
+A subvolume's snapshot is bytes 4..8 of its value, as the reference printer's
+`snapshot id` shows.
+
+| The copy at id 4096 | Reference |
+|---|---|
+| live, unlinked, or with a zero word, which it reads as live | exit 1, "snapshot N is claimed by subvolume M, which it backrefs, and also by 4096" |
+| one bit from live | the same, beside the bitflip finding |
+| deleted | exit 0 |
+| one bit from deleted | exit 9, the bitflip finding and no claim |
+| a word far from every state | exit 1, the invalid state, where it stops |
+| with its parents kept, or a second copy beside it | exit 1, the claim |
+| unlinked beside a deleted copy | exit 1, the claim |
+| live, with the original root unlinked | exit 9, "subvolume points to a snapshot that doesn't point back" |
+
+A subvolume that is not the root is the same, on `kernel` and `kernel-rootsnap`.
+Lowering a copy with a live or unlinked claimant to 1.0, 1.20, 1.33, 1.36 or 1.38
+changes nothing, so the rule has no version. With the root deleted and a live
+copy, one subvolume claims the snapshot and the reference exits 13; that is not
+this rule, and #507 covers what a deleted subvolume fails to satisfy.
+
+The checker reports `snapshot_claimed_twice`, naming the snapshot and the
+subvolumes, for two or more subvolumes that name one snapshot and whose word is
+not within two bits of deleted. It runs on a clean image only, as the checks
+beside it do. A replayed image holding such keys stays unobserved: the writer
+that plants them refuses an unclean one. The regressions are in
+`tests/check_oracle_snapshot_claims.rs` and `src/check/snapshot_claims_tests.rs`.
+
 ## Non-live subvolumes and their references (#507, 2026-11-03)
 
 Black-box guest probes used reference checker 1.39.7 and sparse copies of
