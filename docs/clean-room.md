@@ -2469,6 +2469,71 @@ by one unit, one oracle and one native case. Suites remain CI-only under the
 issue-agent brief; local validation builds the test targets and reproduces
 the differential verdict directly. Only #262's exact allowance is removed.
 
+## Snapshot pad, subvolume state and dirent type bytes (#465, #469, #473)
+
+Black-box guest probes on 2026-11-02 used reference checker 1.39.7 and copies
+of the reference-made fixtures from CI run 41476138017 (fixtures artifact
+13159750269, digest
+`sha256:7c2e8149a7a07eba961c7dd66a48e849ed1e1f0e436702ddbbd16f327f100ebc`).
+The writer's raw insert committed each changed key to a separate sparse copy,
+and only the printed verdict and exit status of `bcachefs-ref fsck -n` were
+consulted, over 5,023 cases in run 41530193548 and 120 in run 41532644287. The
+reference crashed, hung or faulted on none. No reference source was read.
+
+**Snapshot pad (#465).** Every bit of every byte of a snapshot's 64-byte value
+was flipped on `default.img` and on `kernel-rootsnap.img`. Each of the 32 bits
+of bytes 60..64 gave "reserved pad field nonzero, deleting", in an `invalid
+bkey` line naming the key, and nothing else did. Bytes 40..56 were not judged
+at all. A value cut to 32, 40, 48 or 56 bytes was not refused for its pad, and
+neither were 8 or 16 trailing bytes of ones. A nonzero byte 63 in a lengthened
+value was still refused, so the field is fixed at bytes 60..64, not at the
+value's end. Every snapshot of `kernel.img` and of `kernel-rootsnap.img` gave
+the same results.
+
+**Subvolume state (#469).** Every bit of every byte of a subvolume's 48-byte
+value was flipped on `default.img`, `aged.img` and `kernel.img`. The state is
+the little-endian word at bytes 40..44: `7e 44 d5 4a` in every fixture. The
+reference calls it "subvolume state unset, recovering from legacy flags", and
+counts `subvol_state_bad`, for exactly two things:
+
+| Value | Reference verdict |
+|---|---|
+| Word zero, any value length of 48 bytes or more | unset, `subvol_state_bad` |
+| Value of 16, 24, 32 or 40 bytes, ending before the word | unset, `subvol_state_bad` |
+| Value of 0 or 8 bytes | refused: `bad val size (N < 16)` |
+| Word one to six bits from the fixtures' word | "is a 1-bit flip of live" or "is N bits from live", corrected |
+| Word 1 to 8, or all ones | "has invalid state", with its nearest codeword |
+
+A word with any bit set is therefore not unset, whatever the other verdict is:
+those verdicts are not judged by this rule. All the fixtures were written by
+the 1.39 format version, so whether an older version's subvolume, which has no
+such word, is held to this is not observed.
+
+**Dirent type (#473).** All 256 values of a dirent's type byte were written to a
+regular file on `default.img`, `lz4.img` and `kernel.img`, a directory on
+`default.img`, a symlink on `aged.img`, both a file and a directory on
+`casefold.img`, and a subvolume entry on `kernel.img` and
+`kernel-rootsnap.img`. The byte is three fields:
+
+- Bits 0..5 are the type. "incorrect d_type: got lnk, should be reg" for 0x0a,
+  0x2a, 0x4a and 0x6a alike names it, and the same holds for every other type.
+  A value of 16 makes the entry a subvolume entry.
+- Bits 5 and 6 are not read. A file at 0x08, 0x28, 0x48 and 0x68 is clean (exit
+  0), which is the case the differential run found. So is a directory at 0x04,
+  0x24, 0x44 and 0x64, a symlink at 0x0a, 0x2a, 0x4a and 0x6a, and a subvolume
+  entry at 0x10, 0x30, 0x50 and 0x70. A regular file at 0x30 is not clean, for
+  the reference takes it as a subvolume entry.
+- Bit 7 is the casefolded layout (see "Per-structure notes"). On a set that is
+  not casefolded, setting it was `invalid bkey`; on `casefold.img`, clearing it
+  was too. With it in place, 0x88, 0xa8, 0xc8 and 0xe8 are all a clean file.
+
+The decoder therefore reads the type as the byte's low five bits.
+
+Both the snapshot's state word at bytes 56..60 (`a2 47 7c 75` in every fixture)
+and the subvolume's pad word at bytes 44..48 were also seen to be judged during
+these probes. Neither is judged by this checker yet, and no differential
+baseline line covers them.
+
 ## No comparison against the reference source
 
 Decided 2026-10-17 (#160). This record is evidence about the *process*: the
