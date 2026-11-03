@@ -259,6 +259,7 @@ while :; do
     fi
     wait "$child"
     status=$?
+    [ -z "$caught" ] || continue
     kill -0 "$child" 2>/dev/null || break
 done
 
