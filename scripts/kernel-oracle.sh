@@ -27,7 +27,9 @@
 # an ordinary one and writes 4 KiB into each (#158). Its console becomes
 # kernel.txt and kernel.json; the reference checker judges both images. A
 # stage that fails is recorded, not fatal here:
-# tests/oracle_kernel.rs fails on it, naming what is missing.
+# tests/oracle_kernel.rs fails on it, naming what is missing. A hang is the
+# exception (#500): it is recorded, the script runs to its end, and then it
+# fails, naming what hung.
 set -euo pipefail
 
 OUT="${1:?usage: kernel-oracle.sh OUT}"
@@ -40,6 +42,88 @@ mkdir -p "$work/root" "$OUT"
 record() { echo "$1: $2" >>"$OUT/kernel.txt"; }
 # shellcheck source=scripts/kernel-oracle-boot.sh
 source "$here/scripts/kernel-oracle-boot.sh"
+
+# EVERY CALL AFTER THE BOOTS HAS A LIMIT (#500). Two fixtures jobs stopped a
+# hung first boot at its limit, then printed nothing until the job's own limit
+# cancelled them, with a docker process still running. Green run 41579678461
+# took 9.5 s for the judge boot and all 15 reference tool calls together, so 60 s
+# is far past a working call. Once a call is stopped the rest are not run, which
+# is also what keeps the limits inside the job's: a daemon that has stopped
+# answering would otherwise cost every call its limit. The worst case after a
+# hung boot is 315 s for the boot, 75 s for the call and 45 s each to remove its
+# container and the image: 8 minutes. The slowest job measured reaches the boots
+# about 33 minutes in, of its 45 (ci.yml).
+TOOL_LIMIT="${KERNEL_ORACLE_TOOL_LIMIT:-60}"
+CLEANUP_LIMIT="${KERNEL_ORACLE_CLEANUP_LIMIT:-30}"
+KILL_AFTER="${KERNEL_ORACLE_KILL_AFTER:-15}"
+TOOL_CONTAINER=rust-fs-bcachefs-ko-tool
+NOT_RUN="not run: a call before it was stopped at its limit"
+STOPPED="stopped at its $TOOL_LIMIT s limit"
+stopped=
+
+# reference_tool KEY OUTPUT ARGS... runs the reference tool in its container and
+# returns the tool's status. A call that gave no answer is recorded under KEY
+# and returns 124. Stopping the docker client does not stop the container, whose
+# first process ignores SIGTERM unless it installs a handler, so the container is
+# removed by name.
+reference_tool() {
+    local key="$1" output="$2" status=0
+    shift 2
+    if [ -n "$stopped" ]; then
+        record "$key" "$NOT_RUN"
+        return 124
+    fi
+    timeout -k "$KILL_AFTER" "$TOOL_LIMIT" docker run --rm --name "$TOOL_CONTAINER" \
+        -v "$work:/work" rust-fs-bcachefs-ko:tools \
+        bcachefs "$@" >"$output" 2>&1 || status=$?
+    case "$status" in
+        124 | 137)
+            stopped="the reference tool's $1 ($key)"
+            record "$key" "$STOPPED"
+            timeout -k "$KILL_AFTER" "$CLEANUP_LIMIT" docker rm -f "$TOOL_CONTAINER" \
+                >/dev/null 2>&1 || true
+            return 124
+            ;;
+    esac
+    return "$status"
+}
+
+# judge_image KEY IMAGE: the reference checker's verdict on IMAGE, in KEY.
+judge_image() {
+    local status=0
+    reference_tool "$1" "$OUT/$2.fsck.txt" fsck -n "/work/$2.img" || status=$?
+    case "$status" in
+        0) record "$1" clean ;;
+        124) ;;
+        *) record "$1" "errors ($2.fsck.txt)" ;;
+    esac
+}
+
+# list_btree BTREE IMAGE: the reference lister's view of BTREE in IMAGE.
+list_btree() {
+    reference_tool "$2.$1" "$OUT/$2.$1.txt" list -b "$1" "/work/$2.img" || true
+}
+
+# write_file KEY PATH: this crate's writer puts written.txt at PATH. It runs on
+# the image a hung guest left, ahead of the reference tools, so it has the same
+# limit.
+write_file() {
+    local status=0
+    if [ -n "$stopped" ]; then
+        record "$1" "$NOT_RUN"
+        return
+    fi
+    timeout -k "$KILL_AFTER" "$TOOL_LIMIT" "$work/fs.bcachefs" "$work/kernel-written.img" \
+        put "$2" --from "$work/written.txt" >/dev/null 2>"$work/written.err" || status=$?
+    case "$status" in
+        0) record "$1" ok ;;
+        124 | 137)
+            stopped="this crate's writer ($1)"
+            record "$1" "$STOPPED"
+            ;;
+        *) record "$1" "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))" ;;
+    esac
+}
 
 missing=
 [ -w /dev/kvm ] || missing="$missing /dev/kvm"
@@ -58,7 +142,7 @@ cp "$here/scripts/prealloc.c" "$work/prealloc.c"
 chmod 0755 "$work/root/init"
 
 echo "kernel-oracle: building the module in a Debian 13 container"
-docker rm -f rust-fs-bcachefs-ko >/dev/null 2>&1 || true
+docker rm -f rust-fs-bcachefs-ko "$TOOL_CONTAINER" >/dev/null 2>&1 || true
 docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERSION" \
     debian:trixie bash -euc '
     export DEBIAN_FRONTEND=noninteractive
@@ -176,20 +260,10 @@ if [ -x "$writer" ]; then
     python3 -c 'print("\n".join(f"a line of text the writer stores compressed with gzip, {i:05d}" for i in range(4096)))' \
         >"$work/written.txt"
     record written-sha256 "$(sha256sum "$work/written.txt" | cut -d' ' -f1)"
-    if "$work/fs.bcachefs" "$work/kernel-written.img" put /written.txt \
-        --from "$work/written.txt" >/dev/null 2>"$work/written.err"; then
-        record written ok
-    else
-        record written "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))"
-    fi
+    write_file written /written.txt
     # A file in the directory with options (#142): it takes them, as the
     # module's own file there did.
-    if "$work/fs.bcachefs" "$work/kernel-written.img" put /optdir/ours.txt \
-        --from "$work/written.txt" >/dev/null 2>"$work/written.err"; then
-        record written-opt ok
-    else
-        record written-opt "failed ($(head -c 200 "$work/written.err" | tr '\n' ' '))"
-    fi
+    write_file written-opt /optdir/ours.txt
 else
     record written "no writer at $writer: build it with chore cli:install"
 fi
@@ -237,56 +311,29 @@ entries.sort(key=lambda e: e["path"])
 json.dump({"entries": entries}, sys.stdout, indent=1)
 ' >"$OUT/kernel.json"
 
-if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs fsck -n /work/kernel.img >"$OUT/kernel.fsck.txt" 2>&1; then
-    record fsck clean
-else
-    record fsck "errors (kernel.fsck.txt)"
-fi
+judge_image fsck kernel
 cp --sparse=always "$work/kernel.img" "$OUT/kernel.img"
 # The reused bucket (#94): judged by the reference checker like the first.
-if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs fsck -n /work/kernel-reuse.img >"$OUT/kernel-reuse.fsck.txt" 2>&1; then
-    record reuse-fsck clean
-else
-    record reuse-fsck "errors (kernel-reuse.fsck.txt)"
-fi
+judge_image reuse-fsck kernel-reuse
 cp --sparse=always "$work/kernel-reuse.img" "$OUT/kernel-reuse.img"
 # The snapshotted root (#138): judged by the reference checker like the
 # others.
-if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs fsck -n /work/kernel-rootsnap.img >"$OUT/kernel-rootsnap.fsck.txt" 2>&1; then
-    record rootsnap-fsck clean
-else
-    record rootsnap-fsck "errors (kernel-rootsnap.fsck.txt)"
-fi
+judge_image rootsnap-fsck kernel-rootsnap
 cp --sparse=always "$work/kernel-rootsnap.img" "$OUT/kernel-rootsnap.img"
 # What this crate wrote (#141): judged by the reference checker too.
-if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs fsck -n /work/kernel-written.img >"$OUT/kernel-written.fsck.txt" 2>&1; then
-    record written-fsck clean
-else
-    record written-fsck "errors (kernel-written.fsck.txt)"
-fi
+judge_image written-fsck kernel-written
 cp --sparse=always "$work/kernel-written.img" "$OUT/kernel-written.img"
 # The preallocated files (#158): judged by the reference checker, and the
 # lister's view of their extents, which says what kind of pointer the
 # module made for space a file holds but never wrote.
-if docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs fsck -n /work/kernel-prealloc.img >"$OUT/kernel-prealloc.fsck.txt" 2>&1; then
-    record prealloc-fsck clean
-else
-    record prealloc-fsck "errors (kernel-prealloc.fsck.txt)"
-fi
+judge_image prealloc-fsck kernel-prealloc
 cp --sparse=always "$work/kernel-prealloc.img" "$OUT/kernel-prealloc.img"
 for b in extents inodes; do
-    docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-        bcachefs list -b "$b" /work/kernel-prealloc.img >"$OUT/kernel-prealloc.$b.txt" 2>&1 || true
+    list_btree "$b" kernel-prealloc
 done
 # The lister's view of its inodes (#142): this crate's file beside the
 # module's, in a directory with options.
-docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-    bcachefs list -b inodes /work/kernel-written.img >"$OUT/kernel-written.inodes.txt" 2>&1 || true
+list_btree inodes kernel-written
 # Per-file options (#81): what the reference tool read back from each file,
 # and its help for the commands that set and read them.
 sed -n 's/\r$//; s/^.*ORACLE O\t//p' "$work/oracle.log" >"$OUT/kernel.options.txt"
@@ -296,8 +343,19 @@ cp "$work/options-help.txt" "$OUT/kernel.options-help.txt" 2>/dev/null || true
 # snapshot touches, the record a reader's layout and visibility rules are
 # checked against.
 for b in reflink subvolumes snapshots snapshot_trees inodes dirents extents; do
-    docker run --rm -v "$work:/work" rust-fs-bcachefs-ko:tools \
-        bcachefs list -b "$b" /work/kernel.img >"$OUT/kernel.$b.txt" 2>&1 || true
+    list_btree "$b" kernel
 done
-docker rmi rust-fs-bcachefs-ko:tools >/dev/null 2>&1 || true
+timeout -k "$KILL_AFTER" "$CLEANUP_LIMIT" docker rmi rust-fs-bcachefs-ko:tools >/dev/null 2>&1 || true
 echo "kernel-oracle: $(tr '\n' ';' <"$OUT/kernel.txt")"
+
+# A hang fails the build here, and not in tests/oracle_kernel.rs: the job after
+# this one never gets fixtures from a build that did not finish (#500).
+failure=
+case "$first" in
+    124 | 137) failure="the first boot was stopped at its 300 s limit" ;;
+esac
+[ -z "$stopped" ] || failure="${failure:+$failure; }$stopped was stopped at its $TOOL_LIMIT s limit"
+if [ -n "$failure" ]; then
+    echo "kernel-oracle: FAILED: $failure. The console logs are tmp/kernel-oracle/*.log, in CI the kernel-oracle-console artifact." >&2
+    exit 1
+fi
