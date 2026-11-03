@@ -28,11 +28,11 @@
 # FS_BCACHEFS_GUEST_ANSWER_LIMIT is how many seconds the guest gets to answer.
 #
 # WHAT STOPPED THOSE RUNS. A boot writes to a disposable overlay on the host's
-# disk, which grows with what the guest writes and does not shrink when the guest
-# deletes it. About one job in fifty lands on a runner with 14 GB free instead of
-# 86 GB (run 41620234394: m8id.xlarge, AWS). There the overlay filled the disk,
-# QEMU paused the guest with `VM status: paused (io-error)`, and ssh gave up two
-# minutes later. A run that would not fit passes on every other runner, so in CI
+# disk, which grows with what the guest writes and, before harness v0.5.6, did not
+# shrink when the guest deleted it. About one job in fifty lands on a runner with
+# 14 GB free instead of 86 GB (run 41620234394: m8id.xlarge, AWS). There the overlay
+# filled the disk, QEMU paused the guest with `VM status: paused (io-error)`, and
+# ssh gave up two minutes later. A run that would not fit passes on every other runner, so in CI
 # (CI=true) a run that passes and used more of the disk than DISK_BUDGET_MB fails
 # with status 66, as a tier over its output budget does. A developer's machine is
 # not judged, because other work moves its free space.
@@ -57,8 +57,9 @@ say() { echo "guest-session: $*" >&2; }
 
 free_kb() { df -Pk "$PWD" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
 
-# What this run has used of the host's disk: the overlay only grows until the
-# session ends, so the free space now is the least it has been.
+# What this run still holds of the host's disk when it ends. The overlay gives
+# back what the guest deletes since harness v0.5.6, so a higher peak does not show
+# here (#530).
 disk_used_mb() {
     local now
     now="$(free_kb)"
