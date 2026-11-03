@@ -3,6 +3,7 @@
 # No reference source, VM, mount privileges, or filesystem fixtures are used.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "$repo/tests/scripts/support/supervisor_guard.py"
 python3 - "${STUDY_GUARD_SUPERVISOR:-$repo/scripts/guest-write-study.sh}" "$repo" <<'PY'
 import json
 import os
