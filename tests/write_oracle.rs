@@ -1972,6 +1972,55 @@ fn cli_imports_are_read_by_the_reference() {
     assert_fsck_clean(&img);
 }
 
+/// One-file imports in a row into a copy of the aged image, each its own
+/// process and each with an extent (#491). The journal is reclaimed on the
+/// way, by a process that did not take the buckets the journal's entries
+/// hold, and a node must not take one of them from a file published earlier.
+/// Every import succeeds, the reference checker passes the image, and the
+/// reference mount reads every file with its own bytes.
+#[cfg(feature = "cli")]
+#[test]
+fn imports_in_a_row_on_the_aged_image_keep_what_they_published() {
+    let img = scratch("aged.img", "cli-import-published");
+    let source = img.with_extension("source");
+    let mut published = Vec::new();
+    let mut refusal = None;
+    for n in 0..520 {
+        // Too large to stay inline in the inode, so each takes a bucket.
+        let bytes = pattern(4096 + n * 97, (n % 251) as u8);
+        std::fs::write(&source, &bytes).unwrap();
+        let dest = format!("/s-{n}");
+        let out = cli_import(&img, &[source.as_ref(), dest.as_ref()]);
+        if !out.status.success() {
+            refusal = Some(format!(
+                "import {n}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+            break;
+        }
+        published.push((format!("s-{n}"), bytes));
+        if n % 50 == 0 {
+            assert_fsck_clean(&img);
+        }
+    }
+    // The damage first: it is what stops the imports, and is the reason.
+    if let Some(refusal) = &refusal {
+        eprintln!("after {} imports, {refusal}", published.len());
+    }
+    assert_fsck_clean(&img);
+    assert_eq!(refusal, None);
+    replay(&img);
+    let files: Vec<(&str, &[u8])> = published
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    assert!(reference_mount_reads(&img, &files));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, ""), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+}
+
 /// An import that cannot fit (#439), replacing a file, is refused for space:
 /// exit 4, the volume's state refusing it under the shared error contract
 /// (#456), with the free-bucket shortfall in its one JSON error and no
