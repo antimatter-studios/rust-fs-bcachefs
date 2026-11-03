@@ -85,6 +85,13 @@ pub struct Writer<D: BlockDevice> {
     journal_seq: u64,
     /// Set by [`Writer::journal_commits`]: commits go to the journal.
     session: Option<journal_commit::Session>,
+    /// While a reclaim runs: the buckets its new nodes took. It leaves every
+    /// node the journal's roots reach as it is, and changes only these, so
+    /// until its one superblock write the image on disk is what it was (#486).
+    reclaiming: Option<std::collections::BTreeSet<u64>>,
+    /// Why a reclaim stopped part way: the journal still holds everything,
+    /// and this writer commits nothing more; a new one replays it (#486).
+    reclaim_failed: Option<String>,
     /// Buckets taken during this writer's life, which the freespace btree
     /// may not show as taken yet.
     reserved: std::collections::BTreeSet<u64>,
@@ -143,6 +150,8 @@ impl<D: BlockDevice> Writer<D> {
             sb_raw,
             journal_seq,
             session: None,
+            reclaiming: None,
+            reclaim_failed: None,
             reserved: Default::default(),
             cache: Default::default(),
         })
@@ -300,7 +309,18 @@ impl<D: BlockDevice> Writer<D> {
             }
             updated
         };
-        match self.append_bset(&ptr, &own)? {
+        // A reclaim adds nothing to a node a replay may still need (#486).
+        let bucket = ptr.ptrs[0].offset / self.bucket_sectors()?;
+        let in_place = self
+            .reclaiming
+            .as_ref()
+            .is_none_or(|new| new.contains(&bucket));
+        let written = if in_place {
+            self.append_bset(&ptr, &own)?
+        } else {
+            None
+        };
+        match written {
             Some(written) => Ok(vec![with_sectors_written(ptr_key, written)?]),
             None => self.rewrite_node(id, level, ptr_key, &own, t),
         }
@@ -419,6 +439,10 @@ impl<D: BlockDevice> Writer<D> {
     /// Checksum the superblock and write it to every location its layout
     /// names.
     fn write_superblock(&mut self) -> Result<()> {
+        // A reclaim's roots and marks are written together when it ends.
+        if self.reclaiming.is_some() {
+            return Ok(());
+        }
         let csum = crate::csum::compute(self.sb.csum_type(), &self.sb_raw[16..])?;
         self.sb_raw[0..16].fill(0);
         self.sb_raw[0..8].copy_from_slice(&csum.to_le_bytes());
@@ -1097,6 +1121,12 @@ impl<D: BlockDevice> Writer<D> {
     /// the keys as they stand, then each btree's keys, then accounting.
     fn commit(&mut self, mut t: Txn) -> Result<()> {
         self.refuse_a_snapshotted_root()?;
+        if let Some(why) = &self.reclaim_failed {
+            return Err(Error::Corrupt(format!(
+                "this writer's reclaim of the journal stopped part way, and it commits nothing \
+                 more; the journal still holds every commit: {why}"
+            )));
+        }
         if self.session.is_some() {
             return self.commit_journal(t);
         }

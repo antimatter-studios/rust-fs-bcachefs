@@ -42,7 +42,9 @@ const HOLD_AFTER_PERSIST: &str = "FS_BCACHEFS_IMPORT_HOLD_AFTER_PERSIST";
 
 /// How much is gathered before the library's write is called. Each call
 /// rewrites the file's stored blocks (#441), so fewer, larger calls cost
-/// less; this bounds what is held besides.
+/// less; this bounds what is held besides. A call is one commit, so it is
+/// also no longer than one journal entry holds (#485,
+/// `Writer::largest_journalled_write`).
 const GATHER: usize = 16 << 20;
 
 /// The file being staged: where it is, and what it will be called.
@@ -74,18 +76,36 @@ impl Sink<'_> {
         Ok(self.writer.as_mut().expect("opened above"))
     }
 
-    fn flush(&mut self) -> Result<(), CliError> {
-        if self.gathered.is_empty() {
-            return Ok(());
-        }
+    /// Commit the first `len` gathered bytes.
+    fn commit_run(&mut self, len: usize) -> Result<(), CliError> {
         let ino = self
             .staged
             .as_ref()
             .map(|s| s.ino)
             .ok_or_else(|| CliError::failed("write before stage"))?;
         let at = self.gathered_at;
-        let bytes = std::mem::take(&mut self.gathered);
+        let bytes: Vec<u8> = self.gathered.drain(..len).collect();
+        self.gathered_at += len as u64;
         self.writer()?.write_at(ino, at, &bytes).map_err(failed)
+    }
+
+    /// Commit whole runs of the gathered bytes, and with `all` the rest.
+    fn flush(&mut self, all: bool) -> Result<(), CliError> {
+        if self.gathered.is_empty() {
+            return Ok(());
+        }
+        let largest = self
+            .writer()?
+            .largest_journalled_write()
+            .map_err(failed)?
+            .min(GATHER);
+        while self.gathered.len() >= largest {
+            self.commit_run(largest)?;
+        }
+        if all && !self.gathered.is_empty() {
+            self.commit_run(self.gathered.len())?;
+        }
+        Ok(())
     }
 }
 
@@ -135,20 +155,17 @@ impl FileSink for Sink<'_> {
             return Err(CliError::failed("write_at before stage"));
         }
         if !self.gathered.is_empty() && self.gathered_at + self.gathered.len() as u64 != offset {
-            self.flush()?;
+            self.flush(true)?;
         }
         if self.gathered.is_empty() {
             self.gathered_at = offset;
         }
         self.gathered.extend_from_slice(bytes);
-        if self.gathered.len() >= GATHER {
-            self.flush()?;
-        }
-        Ok(())
+        self.flush(false)
     }
 
     fn persist(&mut self) -> Result<(), CliError> {
-        self.flush()?;
+        self.flush(true)?;
         self.writer = None;
         if std::env::var_os(HOLD_AFTER_PERSIST).is_some() {
             eprintln!("fs.bcachefs import: held after persist");
@@ -219,7 +236,7 @@ impl FileSink for Sink<'_> {
         self.writer = None;
         let unlinked = self
             .writer()
-            .and_then(|w| w.unlink(staged.dir, &staged.stage).map_err(failed));
+            .and_then(|w| w.unlink_in_steps(staged.dir, &staged.stage).map_err(failed));
         self.writer = None;
         unlinked.map_err(|e| {
             CliError::failed(format!(

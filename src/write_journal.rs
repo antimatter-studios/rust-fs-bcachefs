@@ -14,9 +14,12 @@
 //! CRASH SAFETY. Data goes to free buckets first, then the jset in one
 //! write, then the superblock's clean bit is cleared. Interrupted before the
 //! jset, the image is unchanged; before the superblock, the jset is ignored
-//! on a clean filesystem; after it, the entry is replayed whole.
+//! on a clean filesystem; after it, the entry is replayed whole. A reclaim
+//! changes only free buckets until the one superblock write that ends it
+//! (`Writer::reclaim`), so interrupted before that the journal is replayed
+//! as if it had not started.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{ids, Txn, Writer};
 use crate::bkey::Bkey;
@@ -29,6 +32,20 @@ const JSET_HEADER: usize = 56;
 /// Flags of a flush jset: the checksum type, and bit 6, set on every flush
 /// entry the reference wrote (S4: 0x41, against 0x61 on a non-flush one).
 const JSET_FLAG_BIT6: u32 = 1 << 6;
+
+/// What one entry holds besides a transaction's own keys, at most: the header
+/// and every btree's root. Measured with the keys below: on the 32 KiB journal
+/// buckets of the write study's base image, a 6 MiB write's entry is 46592
+/// bytes for 192 extents, an 8 MiB write's 61440 for 256, a 16 MiB write's
+/// 120832 for 512 (#485), and freeing a 4 MiB file's 128 extents 69120 (#486).
+const ENTRY_OVERHEAD: usize = 8192;
+/// An entry's bytes per extent a write adds, above the 242 measured.
+const ENTRY_BYTES_PER_WRITTEN_EXTENT: usize = 320;
+/// An entry's bytes per extent a removal frees, above the 540 measured.
+const ENTRY_BYTES_PER_FREED_EXTENT: usize = 640;
+/// An entry's bytes per emptied bucket made free: its alloc key, the
+/// need_discard key gone and a freespace run, each one key.
+const ENTRY_BYTES_PER_DISCARDED_BUCKET: usize = 256;
 
 /// The state of a journalled session.
 pub(super) struct Session {
@@ -281,9 +298,15 @@ impl<D: BlockDevice> Writer<D> {
             off = 0;
             // Every entry from the window's first on is still needed, and
             // this writer reclaims none: going on into the bucket that
-            // holds the first would write over it (#101).
-            if s.window_bucket == Some(idx) {
-                self.reclaim()?;
+            // holds the first would write over it (#101). Nor may the window
+            // take the whole ring: a replay needs journal space of its own
+            // to run in (#486).
+            let n = s.buckets.len();
+            let held = s.window_bucket.map(|w| (idx + n - w) % n + 1);
+            if s.window_bucket == Some(idx) || held.is_some_and(|held| held > window_limit(n)) {
+                let took = self.reclaim()?;
+                let mut retry = retry;
+                without_buckets(&mut retry, &took);
                 return self.commit_journal(retry);
             }
         }
@@ -312,16 +335,28 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Reclaim the whole journal (#113, S1 9.7.2-9.7.3): every key the
     /// session's replay holds -- what this session committed, and what a
-    /// continued journal held before it -- is written into its node in
-    /// place, the accounting deltas summed onto the accounting keys; the
-    /// superblock is then marked clean at the newest sequence, so no entry
-    /// is needed any more, and a fresh session starts after it. Each step
-    /// leaves an image the reference replays: until the clean bit is
-    /// written the journal still holds everything, and after it nothing is
-    /// needed from it.
-    fn reclaim(&mut self) -> Result<()> {
+    /// continued journal held before it -- goes into the btrees, the
+    /// accounting deltas summed onto the accounting keys; one superblock
+    /// write then names the new roots and marks the filesystem clean at the
+    /// newest sequence, so no entry is needed any more, and a fresh session
+    /// starts after it.
+    ///
+    /// Returns the buckets the reclaim's nodes took, which the transaction
+    /// waiting for it may show as still free.
+    ///
+    /// Nothing the journal's roots reach is changed (#486). Any node the keys
+    /// reach is written again in a free bucket, as a full node is, and only
+    /// those new nodes take further keys. So until the superblock write the
+    /// image is what it was: free buckets aside, a stop at any point leaves
+    /// the old nodes and the whole journal, and a replay as if nothing had
+    /// started. No new node may take a bucket the replay's alloc keys name,
+    /// whichever writer took it: the nodes do not show that yet, and it may
+    /// hold the data an extent points at. After a stop this writer commits
+    /// nothing more, because the buckets it has taken are unaccounted.
+    fn reclaim(&mut self) -> Result<BTreeSet<u64>> {
+        let free = self.free_buckets()?;
         let s = self.session.take().expect("journalled");
-        let refuse = |w: &mut Self, s: Session, why: String| -> Result<()> {
+        let refuse = |w: &mut Self, s: Session, why: String| -> Result<BTreeSet<u64>> {
             let first = s.first_seq;
             w.session = Some(s);
             Err(Error::Unsupported(format!(
@@ -334,6 +369,14 @@ impl<D: BlockDevice> Writer<D> {
             Ok(t) => t,
             Err(why) => return refuse(self, s, why),
         };
+        let needed = self.reclaim_needs(&pending);
+        if free < needed {
+            return refuse(
+                self,
+                s,
+                format!("{needed} free buckets are needed for its nodes and only {free} are free"),
+            );
+        }
         // Roots the session moved must be where the superblock names them.
         let on_disk: Result<BTreeMap<u8, (u8, Bkey)>> = self.sb.btree_roots().and_then(|rs| {
             rs.into_iter()
@@ -361,19 +404,150 @@ impl<D: BlockDevice> Writer<D> {
             }
         }
         let newest = s.next_seq.saturating_sub(1);
+        let (journal_seq, sb_raw) = (self.journal_seq, self.sb_raw.clone());
         self.journal_seq = newest;
+        let held = self.reserved.clone();
+        self.reserved.extend(
+            pending
+                .keys
+                .get(&super::alloc::aids::ALLOC)
+                .into_iter()
+                .flatten()
+                .filter(|k| k.pos.inode == 0)
+                .map(|k| k.pos.offset),
+        );
         // The in-place path reads the btrees from their nodes, which it does
         // only on a clean filesystem (CI run 37925455364: "its journal must
-        // be replayed first"). The clean bit is set in memory for it; on
-        // disk it is set by mark_clean once every key is in its node, or by
-        // a root the commit moves, which writes the superblock with the
-        // nodes already written.
+        // be replayed first"). The clean bit is set in memory for it, and on
+        // disk by mark_clean with everything else.
         let f = le64(&self.sb_raw, 0x90) | 0b10;
         self.sb_raw[0x90..0x98].copy_from_slice(&f.to_le_bytes());
         self.sb = crate::superblock::Superblock::parse_unchecked(&self.sb_raw)?;
-        self.commit_in_place(pending)?;
-        self.mark_clean(newest)?;
-        self.journal_commits()
+        self.reclaiming = Some(BTreeSet::new());
+        let in_nodes = self.commit_in_place(pending);
+        let took = self.reclaiming.take().unwrap_or_default();
+        if let Err(e) = in_nodes.and_then(|()| self.mark_clean(newest)) {
+            self.sb_raw = sb_raw;
+            self.sb = crate::superblock::Superblock::parse_unchecked(&self.sb_raw)?;
+            self.journal_seq = journal_seq;
+            self.session = Some(s);
+            self.reclaim_failed = Some(e.to_string());
+            return Err(e);
+        }
+        // What the nodes now show needs no holding back; the buckets the
+        // nodes took do, for the transaction this reclaim was for.
+        self.reserved = held;
+        self.reserved.extend(took.iter().copied());
+        self.journal_commits()?;
+        Ok(took)
+    }
+
+    /// Free buckets, as this session sees them.
+    fn free_buckets(&self) -> Result<u64> {
+        let mut free = 0;
+        for run in self.keys(super::alloc::aids::FREESPACE)? {
+            if run.key_type == super::alloc::aids::SET && run.pos.inode == 0 {
+                let start = run.pos.offset.saturating_sub(u64::from(run.size));
+                free += (start..run.pos.offset)
+                    .filter(|b| !self.reserved.contains(b))
+                    .count() as u64;
+            }
+        }
+        Ok(free)
+    }
+
+    /// How much of a node a reclaim's keys may fill: as `rewrite_node` fills
+    /// one, 2/3 of it past the header.
+    fn node_room(&self) -> u64 {
+        (u64::from(self.sb.btree_node_size()) * 512).saturating_sub(160) * 2 / 3
+    }
+
+    /// The buckets the nodes of a reclaim of `pending` take: its keys laid
+    /// into nodes as `rewrite_node` lays them, and one more per btree for
+    /// the part node or new root that does not fill.
+    fn reclaim_needs(&self, pending: &Txn) -> u64 {
+        let room = self.node_room().max(1);
+        pending
+            .keys
+            .values()
+            .filter(|ks| !ks.is_empty())
+            .map(|ks| {
+                let bytes: u64 = ks.iter().map(|k| 40 + k.value.len() as u64).sum();
+                bytes.div_ceil(room) + 1
+            })
+            .sum()
+    }
+
+    /// The buckets data leaves free for a reclaim of the whole journal, past
+    /// `NODE_RESERVE`: without a session, none.
+    pub(super) fn reclaim_reserve(&self) -> Result<u64> {
+        let Some(s) = &self.session else {
+            return Ok(0);
+        };
+        let journal = s.buckets.len() as u64 * self.bucket_sectors()? * 512;
+        Ok(journal.div_ceil(self.node_room().max(1)))
+    }
+
+    /// How many buckets to make free in one commit: as many as one journal
+    /// entry holds, in a session; all of them without one.
+    pub(super) fn discard_batch(&self) -> Result<usize> {
+        if self.session.is_none() {
+            return Ok(usize::MAX);
+        }
+        Ok(self.entry_room()? / ENTRY_BYTES_PER_DISCARDED_BUCKET)
+    }
+
+    /// What one journal entry has room for besides what every entry holds,
+    /// never less than one key's share of it.
+    fn entry_room(&self) -> Result<usize> {
+        let bucket = self.bucket_sectors()? as usize * 512;
+        Ok(bucket
+            .saturating_sub(ENTRY_OVERHEAD)
+            .max(ENTRY_BYTES_PER_FREED_EXTENT))
+    }
+
+    /// The most bytes one [`Writer::write_at`] of new data into a journalled
+    /// file is sure to fit one journal entry (#485), a whole number of
+    /// extents, so whole blocks. A longer write is refused: write it in
+    /// runs of this length, each committed whole.
+    pub fn largest_journalled_write(&self) -> Result<usize> {
+        let bucket = self.bucket_sectors()?;
+        let extent = super::alloc::MAX_EXTENT_SECTORS.min(bucket) as usize * 512;
+        Ok(extent * (self.entry_room()? / ENTRY_BYTES_PER_WRITTEN_EXTENT).max(1))
+    }
+
+    /// Remove the file `name` from `parent` however large it is (#486): its
+    /// extents go from the end, as many in each commit as one journal entry
+    /// holds, and its name and inode in the last. Each commit is whole, but
+    /// a stop part way leaves the file shorter under its name, so this is for
+    /// a file nothing relies on yet, such as a staged import; a file another
+    /// name links keeps its data, and only that name goes.
+    pub fn unlink_in_steps(&mut self, parent: u64, name: &[u8]) -> Result<()> {
+        let p = self.dir(parent)?;
+        let (_, dirent, _) = self.dirent(&p, name)?;
+        let dirent = dirent
+            .ok_or_else(|| Error::NotFound(format!("{:?}", String::from_utf8_lossy(name))))?;
+        let ino = crate::inode::Dirent::from_key(&dirent)?.inum;
+        let linked = self.inode(ino)?.raw.varints[super::field::NLINK] > 0;
+        let step = (self.entry_room()? / ENTRY_BYTES_PER_FREED_EXTENT).max(1);
+        loop {
+            use crate::bkey::key_type::{EXTENT_WHITEOUT, WHITEOUT};
+            let ends: Vec<u64> = self
+                .extents_of(ino)?
+                .iter()
+                .filter(|k| k.size > 0 && !matches!(k.key_type, WHITEOUT | EXTENT_WHITEOUT))
+                .map(|k| k.pos.offset)
+                .collect();
+            if linked || ends.len() <= step {
+                break;
+            }
+            // Space the last step freed comes back, so a reclaim on the way
+            // always has buckets for its nodes.
+            self.discard_freed()?;
+            self.truncate(ino, ends[ends.len() - step - 1] * 512)?;
+        }
+        self.discard_freed()?;
+        self.unlink(parent, name)
     }
 
     /// Set the superblock's clean bit and its clean field's journal
@@ -471,6 +645,36 @@ impl<D: BlockDevice> Writer<D> {
             s.replay.roots.retain(|(b, _, _)| *b != id);
             s.replay.roots.push((id, level, key.clone()));
             s.roots.insert(id, (level, key));
+        }
+    }
+}
+
+/// The most of a journal of `n` buckets a replay window may hold: a quarter
+/// of them, and at least two, stay free.
+fn window_limit(n: usize) -> usize {
+    n.saturating_sub((n / 4).max(2)).max(1)
+}
+
+/// `t`'s freespace keys with the buckets `took` gone from them, as a reclaim
+/// took them while `t` waited for it (#486). A run only ever shrinks from its
+/// start, so those are the buckets just before what `t` left of the run; left
+/// as they were, its key would put them back in the run.
+fn without_buckets(t: &mut Txn, took: &BTreeSet<u64>) {
+    let Some(runs) = t.keys.get_mut(&super::alloc::aids::FREESPACE) else {
+        return;
+    };
+    for run in runs
+        .iter_mut()
+        .filter(|k| k.key_type == super::alloc::aids::SET)
+    {
+        let end = run.pos.offset;
+        let mut start = end.saturating_sub(u64::from(run.size));
+        while start < end && took.contains(&start) {
+            start += 1;
+        }
+        run.size = (end - start) as u32;
+        if start == end {
+            run.key_type = crate::bkey::key_type::DELETED;
         }
     }
 }

@@ -2048,6 +2048,145 @@ fn cli_import_out_of_space_keeps_the_old_file() {
     });
 }
 
+/// Journalled imports in a row, each its own process, more than the image
+/// can hold (#486): the journal fills and is reclaimed on the way, and the
+/// reference checker passes the image after every import. The sequence ends
+/// in a refusal for space, which leaves nothing staged; the reference mount
+/// reads every file that was published, and the checker passes what is left.
+#[cfg(feature = "cli")]
+#[test]
+fn imports_in_a_row_end_in_a_clean_refusal_for_space() {
+    let img = scratch("write-study/base.img", "cli-import-sequence");
+    let bytes = pattern(4 << 20, 61);
+    let source = img.with_extension("source");
+    std::fs::write(&source, &bytes).unwrap();
+    let mut published = Vec::new();
+    let mut refusal = None;
+    // 64 MiB image: the twentieth 4 MiB file cannot fit.
+    for i in 1..=20 {
+        let dest = format!("/d/fill{i}");
+        let out = cli_import(&img, &[source.as_ref(), dest.as_ref()]);
+        if out.status.success() {
+            published.push(format!("d/fill{i}"));
+        } else {
+            refusal = Some(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        assert_fsck_clean(&img);
+        if refusal.is_some() {
+            break;
+        }
+    }
+    let refusal = refusal.expect("twenty 4 MiB files fitted a 64 MiB image");
+    assert!(
+        refusal.contains("free buckets are needed") && !refusal.contains("abort failed"),
+        "after {} imports, not a clean refusal for space: {refusal}",
+        published.len()
+    );
+    assert!(
+        published.len() >= 8,
+        "only {} imports fitted: {refusal}",
+        published.len()
+    );
+    replay(&img);
+    let files: Vec<(&str, &[u8])> = published
+        .iter()
+        .map(|p| (p.as_str(), bytes.as_slice()))
+        .collect();
+    assert!(reference_mount_reads(&img, &files));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, "d"), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+}
+
+/// Imports larger than one journal entry can describe on 32 KiB journal
+/// buckets (#485): new names and a replaced one are read back by the
+/// reference mount with the bytes sent, and the reference checker passes the
+/// image.
+#[cfg(feature = "cli")]
+#[test]
+fn imports_larger_than_a_journal_bucket_are_read_by_the_reference() {
+    let img = scratch("write-study/base.img", "cli-import-large");
+    let six = pattern(6 << 20, 71);
+    let sixteen = pattern(16 << 20, 73);
+    let replacing = pattern(24 << 20, 79);
+    for (name, bytes, args) in [
+        ("six", &six, vec!["/d/six"]),
+        ("sixteen", &sixteen, vec!["/d/sixteen"]),
+        ("replacing", &replacing, vec!["--replace", "/d/existing"]),
+    ] {
+        let source = img.with_extension(name);
+        std::fs::write(&source, bytes).unwrap();
+        let (dest, flags) = args.split_last().unwrap();
+        let mut argv: Vec<&std::ffi::OsStr> = flags.iter().map(|f| f.as_ref()).collect();
+        argv.push("--verify".as_ref());
+        argv.push(source.as_ref());
+        argv.push(dest.as_ref());
+        let out = cli_import(&img, &argv);
+        assert!(
+            out.status.success(),
+            "import {dest}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_fsck_clean(&img);
+    }
+    replay(&img);
+    assert!(reference_mount_reads(
+        &img,
+        &[
+            ("d/six", six.as_slice()),
+            ("d/sixteen", sixteen.as_slice()),
+            ("d/existing", replacing.as_slice()),
+        ]
+    ));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, "d"), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+}
+
+/// The limit #485 leaves, stated in the verb's help: `--replace` over a file
+/// whose removal does not fit one journal entry is refused. The old file is
+/// what the reference mount reads, nothing staged is left, and the reference
+/// checker passes the image.
+#[cfg(feature = "cli")]
+#[test]
+fn an_import_over_a_file_too_large_to_free_at_once_keeps_it() {
+    let img = scratch("write-study/base.img", "cli-import-over-large");
+    let old = pattern(4 << 20, 83);
+    let new = pattern(1 << 20, 89);
+    let old_source = img.with_extension("old");
+    let new_source = img.with_extension("new");
+    std::fs::write(&old_source, &old).unwrap();
+    std::fs::write(&new_source, &new).unwrap();
+    let out = cli_import(&img, &[old_source.as_ref(), "/d/large".as_ref()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = cli_import(
+        &img,
+        &[
+            "--replace".as_ref(),
+            new_source.as_ref(),
+            "/d/large".as_ref(),
+        ],
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.contains("does not fit") && !said.contains("abort failed"),
+        "not the stated refusal: {said}"
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(&img, &[("d/large", &old)]));
+    with_reference_mount(&img, |m| {
+        assert_eq!(staged_names(m, "d"), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+}
+
 /// A replacing import killed between persist and publish (#439): with
 /// FS_BCACHEFS_IMPORT_HOLD_AFTER_PERSIST set the tool says so on stderr
 /// once the staged file is persisted and waits there, and is killed. The
