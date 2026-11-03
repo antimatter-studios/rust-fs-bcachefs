@@ -343,6 +343,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             }
         }
     }
+    check_replicas_entries(&trees, &sb, &mut r);
     // A btree's own accounting key holds its nodes' sectors, its nodes and
     // its interior nodes (#381). Judged for logged_ops, the btree run
     // 39764355709 caught, and like the other allocation figures only on a
@@ -2543,6 +2544,16 @@ fn check_alloc_v4_value(name: &str, k: &Bkey, r: &mut Report) {
 /// judge on read (#219): `nr_inodes`, `replicas` and `dev_data_type`.
 const ACCT_NR_INODES: u64 = 0;
 const ACCT_REPLICAS: u64 = 2;
+/// The superblock field listing replicas entries, its one form any fixture
+/// has (S3: `03 01 00`, btree on device 0).
+const FIELD_REPLICAS_V0: u32 = 3;
+/// In a replicas entry, what the reference does not count as a missing device.
+const REPLICAS_NO_DEVICE: u8 = 255;
+/// Data types: the highest the superblock must list, the one a missing device
+/// does not stop the filesystem for, and the lowest with no name (S3).
+const REPLICAS_LISTED_UP_TO: u8 = 3;
+const REPLICAS_CACHED: u8 = 5;
+const REPLICAS_UNKNOWN_FROM: u8 = 12;
 
 /// What the reference refuses in an `nr_inodes`, `replicas` or
 /// `dev_data_type` accounting key, each seen one field at a time on
@@ -2557,12 +2568,7 @@ fn check_accounting_key(name: &str, k: &Bkey, r: &mut Report) {
     if ![ACCT_NR_INODES, ACCT_REPLICAS, ACCT_DEV_DATA_TYPE].contains(&kind) {
         return;
     }
-    // The position as the byte string it encodes: inode, offset and
-    // snapshot, each big-endian.
-    let mut bytes = [0u8; 20];
-    bytes[..8].copy_from_slice(&k.pos.inode.to_be_bytes());
-    bytes[8..16].copy_from_slice(&k.pos.offset.to_be_bytes());
-    bytes[16..].copy_from_slice(&k.pos.snapshot.to_be_bytes());
+    let bytes = accounting_position_bytes(k);
     let fields = match kind {
         ACCT_NR_INODES => 1,
         // Kind, data type, nr_devs, nr_required, then the devices.
@@ -2580,20 +2586,7 @@ fn check_accounting_key(name: &str, k: &Bkey, r: &mut Report) {
         );
     }
     if kind == ACCT_REPLICAS {
-        let (nr_devs, nr_required) = (bytes[2], bytes[3]);
-        let devs = &bytes[4..fields];
-        let bad = if nr_devs == 0 {
-            Some("no devices".to_string())
-        } else if nr_required > nr_devs {
-            Some(format!(
-                "{nr_required} copies required of {nr_devs} devices"
-            ))
-        } else if devs.windows(2).any(|w| w[0] >= w[1]) {
-            Some(format!("devices {devs:?} not in increasing order"))
-        } else {
-            None
-        };
-        if let Some(why) = bad {
+        if let Some(why) = replicas_entry_refused(&bytes) {
             r.add(
                 "accounting_replicas_bad",
                 format!("btree {name}: replicas accounting key {}: {why}", k.pos),
@@ -2609,6 +2602,135 @@ fn check_accounting_key(name: &str, k: &Bkey, r: &mut Report) {
                 k.pos
             ),
         );
+    }
+}
+
+/// An accounting key's position as the byte string it encodes: inode, offset
+/// and snapshot, each big-endian.
+fn accounting_position_bytes(k: &Bkey) -> [u8; 20] {
+    let mut bytes = [0u8; 20];
+    bytes[..8].copy_from_slice(&k.pos.inode.to_be_bytes());
+    bytes[8..16].copy_from_slice(&k.pos.offset.to_be_bytes());
+    bytes[16..].copy_from_slice(&k.pos.snapshot.to_be_bytes());
+    bytes
+}
+
+/// A replicas entry's devices: after its kind, data type, nr_devs and
+/// nr_required, as many as the position holds.
+fn replicas_entry_devs(bytes: &[u8; 20]) -> &[u8] {
+    &bytes[4..(4 + usize::from(bytes[2])).min(bytes.len())]
+}
+
+/// Why the reference refuses a replicas entry as an invalid key, or `None`:
+/// no devices, unsorted devices, or a `nr_required` above one that is not
+/// below `nr_devs` (2/1, 2/2 and 4/4, and not 1/1 or 3/4).
+fn replicas_entry_refused(bytes: &[u8; 20]) -> Option<String> {
+    let (nr_devs, nr_required) = (bytes[2], bytes[3]);
+    let devs = replicas_entry_devs(bytes);
+    if nr_devs == 0 {
+        Some("no devices".to_string())
+    } else if nr_required > 1 && nr_required >= nr_devs {
+        Some(format!(
+            "{nr_required} copies required of {nr_devs} devices"
+        ))
+    } else if devs.windows(2).any(|w| w[0] >= w[1]) {
+        Some(format!("devices {devs:?} not in increasing order"))
+    } else {
+        None
+    }
+}
+
+/// The superblock's replicas_v0 field as `(data type, devices)` entries, each
+/// requiring one copy. `None` when the superblock has no such field: no
+/// fixture has the newer replicas field alone, so what that holds is unread.
+fn replicas_v0_entries(sb: &Superblock) -> Option<Vec<(u8, &[u8])>> {
+    let body = &sb.field(FIELD_REPLICAS_V0)?.body;
+    let mut entries = Vec::new();
+    let mut at = 0;
+    while let Some(&[data_type, nr_devs]) = body.get(at..at + 2).and_then(|b| b.first_chunk()) {
+        let end = at + 2 + usize::from(nr_devs);
+        match body.get(at + 2..end) {
+            Some(devs) if data_type != 0 => entries.push((data_type, devs)),
+            _ => break,
+        }
+        at = end;
+    }
+    Some(entries)
+}
+
+/// What the reference says of a well-formed replicas key that holds anything,
+/// measured one entry at a time on default.img and kernel.img
+/// (docs/clean-room.md, "A replicas accounting key at accounting read"). A
+/// device other than this one and other than `REPLICAS_NO_DEVICE` is missing.
+/// In the order the reference judges them:
+///
+/// - Fewer of its devices here than it requires, with one missing, and not
+///   cached: "insufficient devices online", on any counter.
+/// - One missing: "accounting entry points to invalid device".
+/// - A data type up to btree the superblock does not list with these devices,
+///   one copy required: "accounting not marked in superblock replicas".
+/// - A data type the reference has no name for: "accounting mismatch" (#423).
+///
+/// The last three are judged on the first counter only. `check` refuses
+/// anything but one device before this, so this device is the only one.
+fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &mut Report) {
+    let listed = replicas_v0_entries(sb);
+    for k in trees
+        .get(&ACCOUNTING)
+        .into_iter()
+        .flatten()
+        .filter(|k| k.key_type == KEY_ACCOUNTING && k.pos.inode >> 56 == ACCT_REPLICAS)
+    {
+        let bytes = accounting_position_bytes(k);
+        if replicas_entry_refused(&bytes).is_some() {
+            continue;
+        }
+        let (data_type, nr_required) = (bytes[1], bytes[3]);
+        let devs = replicas_entry_devs(&bytes);
+        let holds = |word: &[u8]| word.iter().any(|&b| b != 0);
+        let first_holds = k.value.get(..8).is_some_and(holds);
+        let online = devs.iter().filter(|&&d| d == sb.dev_idx).count();
+        let missing = devs
+            .iter()
+            .find(|&&d| d != sb.dev_idx && d != REPLICAS_NO_DEVICE);
+        let at = k.pos;
+        if missing.is_some()
+            && data_type != REPLICAS_CACHED
+            && online < usize::from(nr_required)
+            && k.value.chunks_exact(8).any(holds)
+        {
+            r.add(
+                "insufficient_devices_to_start",
+                format!(
+                    "replicas accounting key {at}: {online} of its devices {devs:?} here, \
+                     {nr_required} required"
+                ),
+            );
+        } else if !first_holds {
+            continue;
+        } else if let Some(device) = missing {
+            r.add(
+                "accounting_to_invalid_device",
+                format!("replicas accounting key {at} names device {device}"),
+            );
+        } else if data_type <= REPLICAS_LISTED_UP_TO
+            && listed
+                .as_ref()
+                .is_some_and(|entries| nr_required != 1 || !entries.contains(&(data_type, devs)))
+        {
+            r.add(
+                "accounting_replicas_not_marked",
+                format!(
+                    "replicas accounting key {at}: data type {data_type}, {nr_required} of \
+                     {devs:?}, is not in the superblock's replicas"
+                ),
+            );
+        } else if data_type >= REPLICAS_UNKNOWN_FROM {
+            r.add(
+                "accounting_mismatch",
+                format!("replicas accounting key {at} holds data of unknown type {data_type}"),
+            );
+        }
     }
 }
 
@@ -3022,6 +3144,26 @@ mod tests {
         assert_eq!(acct(replicas, 0, 0, 4), counters);
         assert_eq!(acct(dev_data_type, 0, 0, 4), counters);
         assert_eq!(acct(dev_data_type, 0, 0, 5), counters);
+    }
+
+    #[test]
+    fn a_replicas_key_requiring_all_of_several_devices_is_named() {
+        // The guest probe of 2026-11-03 (#422): "bad nr_required" for 2/2,
+        // 3/3 and 4/4, and not for 1/1 or for fewer than all of several.
+        let replicas = |inode: u64| {
+            let mut k = key(KEY_ACCOUNTING, 0, vec![1; 8]);
+            k.pos.inode = inode;
+            field_kinds(ACCOUNTING, &k)
+        };
+        let bad = ["accounting_replicas_bad"];
+        assert_eq!(replicas(0x0203_0202_0001_0000), bad); // 2/2 [0 1]
+        assert_eq!(replicas(0x0203_0303_0001_0200), bad); // 3/3 [0 1 2]
+        assert_eq!(replicas(0x0204_0404_0001_0203), bad); // 4/4 [0 1 2 3]
+        let none = Vec::<&str>::new();
+        assert_eq!(replicas(0x0203_0101_0000_0000), none); // 1/1 [0]
+        assert_eq!(replicas(0x0203_0201_0001_0000), none); // 1/2 [0 1]
+        assert_eq!(replicas(0x0203_0302_0001_0200), none); // 2/3 [0 1 2]
+        assert_eq!(replicas(0x0203_0403_0001_0203), none); // 3/4 [0 1 2 3]
     }
 
     /// The problems `check_key_fields` names for one key.

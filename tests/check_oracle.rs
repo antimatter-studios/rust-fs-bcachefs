@@ -18,6 +18,9 @@ mod journal_length;
 #[cfg(feature = "write")]
 #[path = "common/key_field_bytes.rs"]
 mod key_field_bytes;
+#[cfg(feature = "write")]
+#[path = "common/replicas_accounting.rs"]
+mod replicas_accounting;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
 #[path = "common/superblock_field.rs"]
@@ -3253,4 +3256,63 @@ fn both_checkers_reject_a_snapshot_child_that_does_not_exist() {
         "does not exist",
         "snapshot_bad_child",
     );
+}
+
+/// Each change to a replicas accounting key, on a copy of a fixture both
+/// checkers call clean: the reference prints what the table measured, and
+/// this checker names the kind, at the key's position.
+#[cfg(feature = "write")]
+fn both_checkers_judge_replicas_accounting_keys(cases: &[replicas_accounting::Case]) {
+    let mut mismatches = Vec::new();
+    for set in replicas_accounting::SETS {
+        let unchanged = replicas_accounting::copy(set);
+        let (status, text) = reference_on_key_field(&unchanged);
+        assert_eq!(status, 0, "{set} must be clean to start from:\n{text}");
+        assert!(check(&FileDevice::open(&unchanged).unwrap())
+            .unwrap()
+            .clean());
+        for case in cases {
+            let (image, position) = replicas_accounting::plant(set, case);
+            let (status, text) = reference_on_key_field(&image);
+            let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+            let agreed = match case.verdict {
+                Some((printed, kind)) => {
+                    status != 0
+                        && text.contains(printed)
+                        && ours.problems.iter().any(|problem| {
+                            problem.kind == kind && problem.detail.contains(&position.to_string())
+                        })
+                }
+                None => status == 0 && ours.clean(),
+            };
+            if !agreed {
+                mismatches.push(format!(
+                    "{set} {case:?}: reference {status}: {text}\nours: {:?}",
+                    ours.problems
+                ));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// A device the filesystem lacks, or an entry requiring no copies (#422).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_naming_a_missing_device_or_requiring_no_copies() {
+    both_checkers_judge_replicas_accounting_keys(replicas_accounting::DEVICES_AND_COPIES);
+}
+
+/// A data type the reference has no name for (#423).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_replicas_key_with_an_unknown_data_type() {
+    both_checkers_judge_replicas_accounting_keys(replicas_accounting::UNKNOWN_DATA_TYPES);
+}
+
+/// The same entries holding nothing are not judged.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_replicas_key_holding_nothing() {
+    both_checkers_judge_replicas_accounting_keys(replicas_accounting::HOLDING_NOTHING);
 }

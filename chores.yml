@@ -132,7 +132,8 @@ tasks:
       # #452 adds two unit cases to the measured 119-case main baseline
       # (2026-11-02, tmp/logs/unit.log).
       # #465, #469 and #473 add three unit cases to the measured 121.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 124'
+      # #422 adds one unit case to the measured 124.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 125'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -196,7 +197,8 @@ tasks:
       # (2026-11-02, tmp/logs/oracle.log).
       # #465, #469 and #473 add three oracle cases to the measured 275.
       # #489 adds two local write cases: 280 measured 2026-11-03, tmp/logs/oracle.log.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 280'
+      # #422 and #423 add three oracle cases to that 280.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 283'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -312,7 +314,9 @@ tasks:
       # the 513 cases executed by main's full run 41476138017.
       # #465, #469 and #473 add three unit, three host oracle and three
       # live-reference cases to the measured 517.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 526'
+      # #422 and #423 add one unit, three host oracle and three
+      # live-reference cases to the measured 526.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 533'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -481,7 +485,8 @@ tasks:
       # line coverage; the exact base's merge-tree CI ran 204 before this unit case.
       # #452's two unit cases also run in this default-feature tier.
       # The three unit cases of #465, #469 and #473 run in this tier too.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 210'
+      # The unit case of #422 runs in this tier too.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 211'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
