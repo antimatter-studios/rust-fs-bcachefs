@@ -48,6 +48,7 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
         # here; the writer makes some of its damaged images.
         bash "$run" cargo test --locked --release --features write --test check_oracle "$@" || failed=1
         bash "$run" cargo test --locked --release --features write --test check_oracle_key_types "$@" || failed=1
+        bash "$run" cargo test --locked --release --features write --test check_oracle_never_started "$@" || failed=1
         # The write path, judged by the reference tools that only exist in
         # here; one test at a time, since they share one mount point.
         RUST_TEST_THREADS=1 bash "$run" cargo test --locked --release --features cli,write --test write_oracle "$@" || failed=1
