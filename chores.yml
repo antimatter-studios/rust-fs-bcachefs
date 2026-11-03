@@ -195,7 +195,8 @@ tasks:
       # #452 adds one oracle case to the measured 274-case main baseline
       # (2026-11-02, tmp/logs/oracle.log).
       # #465, #469 and #473 add three oracle cases to the measured 275.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 278'
+      # #489 adds two local write cases: 280 measured 2026-11-03, tmp/logs/oracle.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 280'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

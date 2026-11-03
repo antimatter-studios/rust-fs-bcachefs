@@ -30,7 +30,7 @@ pub(super) mod aids {
 
 /// The largest extent one crc32 entry describes: its sizes are 7 bits,
 /// stored minus one (src/extent.rs).
-const MAX_EXTENT_SECTORS: u64 = 128;
+pub(super) const MAX_EXTENT_SECTORS: u64 = 128;
 
 /// Data types in alloc keys, accounting and backpointers (S1's order; the
 /// lister names 1 sb, 2 journal, 3 btree, 4 user).
@@ -184,6 +184,9 @@ impl<D: BlockDevice> Writer<D> {
             )));
         }
         self.reserved.extend(out.iter().copied());
+        if let Some(new) = self.reclaiming.as_mut() {
+            new.extend(out.iter().copied());
+        }
         Ok(out)
     }
 
@@ -356,8 +359,10 @@ impl<D: BlockDevice> Writer<D> {
             self.create_root(aids::LRU, t)?;
         }
         // Data leaves NODE_RESERVE buckets free, so the btree nodes this
-        // transaction rewrites always have room (#168).
-        let buckets = self.take_buckets(data_buckets, NODE_RESERVE, t)?;
+        // transaction rewrites always have room (#168), and in a journalled
+        // session those a reclaim of the whole journal writes as well (#486).
+        let keep = NODE_RESERVE + self.reclaim_reserve()?;
+        let buckets = self.take_buckets(data_buckets, keep, t)?;
         let clock = self.write_clock()?;
         let mut plan = Vec::new();
         for (p, &(i, off)) in pieces.iter().zip(&layout) {
@@ -1109,12 +1114,25 @@ impl<D: BlockDevice> Writer<D> {
                     && k.value[12] < 16
             })
             .collect();
-        if freed.is_empty() {
-            return Ok(());
+        // One journal entry holds a bounded number of them (#486): a large
+        // file's buckets go back over as many commits as they need.
+        let batch = self.discard_batch()?;
+        for buckets in freed.chunks(batch) {
+            self.discard_buckets(buckets, &waiting)?;
         }
+        Ok(())
+    }
+
+    /// Make the emptied buckets `freed` free, in one commit; `waiting` holds
+    /// their need_discard keys' positions.
+    fn discard_buckets(
+        &mut self,
+        freed: &[Bkey],
+        waiting: &std::collections::BTreeMap<u64, Bpos>,
+    ) -> Result<()> {
         let mut t = Txn::default();
         let mut free: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-        for a in &freed {
+        for a in freed {
             let b = a.pos.offset;
             let mut v = a.value.clone();
             let w1 = le64(&v, 8);

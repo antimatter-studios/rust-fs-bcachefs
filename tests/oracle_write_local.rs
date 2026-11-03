@@ -1827,3 +1827,164 @@ fn unlinking_a_reflinked_file_reads_its_run_not_the_rest_of_the_reflink_btree() 
     assert!(fs.lookup("/big/random-clone.bin").is_err());
     assert!(fs.lookup("/big/random.bin").is_ok());
 }
+
+/// Staged writes in a row, each by its own writer on the journal the last one
+/// left (#486): the journal fills and is reclaimed in a writer that did not
+/// take the buckets its entries hold, which may not hand those buckets to a
+/// btree node. Every file reads back and this crate's checker passes the
+/// image at every step, until a write is refused for space.
+#[test]
+fn a_journal_reclaimed_by_a_later_writer_keeps_what_it_held() {
+    let img = scratch("write-study/base.img", "local-later-reclaim");
+    let dir = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d")
+        .unwrap();
+    let bytes: Vec<u8> = (0..(1 << 21)).map(|i| (i % 251) as u8).collect();
+    let mut made = Vec::new();
+    for i in 0..40 {
+        let name = format!("fill{i}");
+        let mut w = Writer::open_journalled(FileDevice::open_rw(&img).unwrap()).unwrap();
+        let written = w
+            .create_file(dir, b"staged", &[], 0o644)
+            .and_then(|ino| w.write_at(ino, 0, &bytes))
+            .and_then(|()| w.rename(dir, b"staged", dir, name.as_bytes()));
+        drop(w);
+        let report = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(report.clean(), "after {name}: {:?}", report.problems);
+        match written {
+            Ok(()) => made.push(name),
+            Err(Error::Unsupported(why)) if why.contains("free buckets are needed") => break,
+            Err(e) => panic!("{name}: {e}"),
+        }
+    }
+    assert!(made.len() >= 16, "only {} files fitted", made.len());
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    for name in &made {
+        assert_eq!(
+            fs.read(fs.lookup(&format!("/d/{name}")).unwrap()).unwrap(),
+            bytes,
+            "{name}"
+        );
+    }
+}
+
+/// A device whose writes start failing after a set number of them.
+struct FailingRw {
+    inner: FileDevice,
+    writes_left: std::sync::atomic::AtomicU64,
+    written: std::sync::atomic::AtomicU64,
+}
+
+impl FailingRw {
+    fn new(inner: FileDevice, writes_left: u64) -> Self {
+        FailingRw {
+            inner,
+            writes_left: writes_left.into(),
+            written: 0.into(),
+        }
+    }
+}
+
+impl fs_core::BlockRead for FailingRw {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        fs_core::BlockRead::read_at(&self.inner, offset, buf)
+    }
+    fn size_bytes(&self) -> u64 {
+        fs_core::BlockRead::size_bytes(&self.inner)
+    }
+}
+
+impl fs_core::BlockDevice for FailingRw {
+    fn write_at(&self, offset: u64, buf: &[u8]) -> fs_core::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let left = self.writes_left.load(SeqCst);
+        if left == 0 {
+            return Err(fs_core::Error::ReadOnly);
+        }
+        self.writes_left.store(left - 1, SeqCst);
+        self.written.fetch_add(1, SeqCst);
+        fs_core::BlockDevice::write_at(&self.inner, offset, buf)
+    }
+    fn flush(&self) -> fs_core::Result<()> {
+        fs_core::BlockDevice::flush(&self.inner)
+    }
+    fn is_writable(&self) -> bool {
+        true
+    }
+}
+
+/// A reclaim that stops part way (#486), its writes failing at several
+/// points: the superblock still says "replay me", so everything committed is
+/// read back through the journal, this crate's checker passes the image, the
+/// writer commits nothing more, and a new writer goes on from there.
+#[test]
+fn a_reclaim_stopped_part_way_leaves_the_journal_to_replay() {
+    let bytes: Vec<u8> = (0..(1 << 21)).map(|i| (i % 241) as u8).collect();
+    let dir = {
+        let img = scratch("write-study/base.img", "local-reclaim-dir");
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        fs.lookup("/d").unwrap()
+    };
+    let create = |img: &std::path::Path, i: usize, writes_left: u64| {
+        let dev = FailingRw::new(FileDevice::open_rw(img).unwrap(), writes_left);
+        let mut w = Writer::open_journalled(dev).unwrap();
+        let made = w.create_file(dir, format!("f{i}").as_bytes(), &bytes, 0o644);
+        let written = w.device().written.load(std::sync::atomic::Ordering::SeqCst);
+        (w, made, written)
+    };
+    // How many files fill the journal: the one that reclaims writes far more.
+    let img = scratch("write-study/base.img", "local-reclaim-find");
+    let mut before = None;
+    for i in 0..40 {
+        let (_, made, written) = create(&img, i, u64::MAX);
+        made.unwrap();
+        // Its data's 64 buckets, its entry, and the superblock on a first one.
+        if written > 64 + 8 {
+            before = Some((i, written));
+            break;
+        }
+    }
+    let (filling, written) = before.expect("forty files never filled the journal");
+
+    for k in [65, 66, 67, 70, written / 2, written - 12] {
+        let test = format!("local-reclaim-stop-{k}");
+        let img = scratch("write-study/base.img", &test);
+        for i in 0..filling {
+            create(&img, i, u64::MAX).1.unwrap();
+        }
+        let (mut w, made, _) = create(&img, filling, k);
+        assert!(made.is_err(), "{test}: its writes failed and it succeeded");
+        assert!(
+            w.create_file(dir, b"after", b"after", 0o644).is_err(),
+            "{test}: this writer committed after its reclaim stopped"
+        );
+        drop(w);
+        let sb = fs_bcachefs::superblock::Superblock::read(&FileDevice::open(&img).unwrap());
+        assert!(
+            !sb.unwrap().is_clean(),
+            "{test}: the journal would be ignored"
+        );
+        let report = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(report.clean(), "{test}: {:?}", report.problems);
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        for i in 0..filling {
+            assert_eq!(
+                fs.read(fs.lookup(&format!("/d/f{i}")).unwrap()).unwrap(),
+                bytes,
+                "{test}: f{i}"
+            );
+        }
+        drop(fs);
+        create(&img, filling, u64::MAX).1.unwrap();
+        let report = fs_bcachefs::check::check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert!(report.clean(), "{test}, went on: {:?}", report.problems);
+        let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(
+            fs.read(fs.lookup(&format!("/d/f{filling}")).unwrap())
+                .unwrap(),
+            bytes,
+            "{test}"
+        );
+    }
+}

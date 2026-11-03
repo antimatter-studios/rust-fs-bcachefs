@@ -139,7 +139,10 @@ fn read_command() -> Cmd {
                      same transaction, so the old file is never deleted first. --verify \
                      reads the staged file back through a fresh open of the image and \
                      publishes only when its length and SHA-256 match. A failed import \
-                     removes the staged file and leaves PATH as it was.",
+                     removes the staged file and leaves PATH as it was. --replace is \
+                     refused when removing the old file does not fit one journal entry, \
+                     about 1.9 MiB of extents on 32 KiB journal buckets, and PATH is left \
+                     as it was.",
                 ),
         )
         .subcommand(
