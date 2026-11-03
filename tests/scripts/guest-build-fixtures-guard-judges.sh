@@ -10,6 +10,7 @@ set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 guard="$repo/tests/scripts/guest-build-fixtures-cleans-up.sh"
 supervisor="$repo/scripts/guest-build-fixtures.sh"
+python3 "$repo/tests/scripts/support/supervisor_guard.py" || exit 1
 
 fails=0
 fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
@@ -18,17 +19,19 @@ sandbox="$(mktemp -d)"
 trap 'rm -rf -- "$sandbox"' EXIT
 
 # break NAME OLD NEW [OLD NEW]...: a copy of the supervisor with each OLD
-# replaced. An OLD that is gone fails: the mutation would test nothing.
+# replaced. An OLD that is gone fails by name: the mutation would test nothing.
 break_supervisor() {
-    python3 - "$supervisor" "$sandbox/$1.sh" "${@:2}" <<'PY'
+    python3 - "$supervisor" "$sandbox/$1.sh" "${@:2}" <<'PY' ||
 import sys
 source, dest, pairs = sys.argv[1], sys.argv[2], sys.argv[3:]
+assert pairs and len(pairs) % 2 == 0, f'old and new do not pair up: {pairs}'
 text = open(source).read()
 for old, new in zip(pairs[::2], pairs[1::2]):
     assert old in text, f'the supervisor no longer holds: {old}'
     text = text.replace(old, new)
 open(dest, 'w').write(text)
 PY
+        fail "$1: the mutation could not be built"
 }
 
 # expect_failure NAME CASE TEXT...: the guard fails on that broken supervisor,
@@ -51,6 +54,23 @@ expect_failure() {
     done
 }
 
+# Every mutation is built before any case runs, so a stale anchor is named at once.
+# The supervisor stops before any tool runs: nothing ever becomes ready.
+break_supervisor stuck-before-ready \
+    "trap 'exit 143' TERM" "trap 'exit 143' TERM; exec /bin/sleep 100000"
+# The supervisor takes its signal and then stops inside its cleanup.
+break_supervisor stuck-in-cleanup \
+    'local status=$? unmounted=yes' 'local status=$? unmounted=yes; exec /bin/sleep 100000'
+# Cleanup forgets the tool it owns.
+break_supervisor leaks-tool \
+    'tool_pid=$!' 'forgotten=$!' \
+    'wait "$tool_pid" || status=$?' 'wait "$forgotten" || status=$?'
+# Cleanup stops the tool but not the tool's session.
+break_supervisor leaks-descendant \
+    'kill -TERM -- "-$tool_pid" "$tool_pid" 2>/dev/null || true' 'kill -TERM "$tool_pid" 2>/dev/null || true' \
+    'kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true' 'kill -KILL "$tool_pid" 2>/dev/null || true'
+[ "$fails" = 0 ] || exit 1
+
 # 0.15 s per stand-in is more than 15 s across the 124 tools that run before
 # the first mount is ready, as a host at a load of about 57 was measured to be.
 output="$(FIXTURE_TOOL_DELAY=0.15 FIXTURE_GUARD_CASES=SIGTERM-mount-hold bash "$guard" 2>&1)" ||
@@ -62,29 +82,15 @@ output="$(FIXTURE_TOOL_DELAY=0.15 FIXTURE_GUARD_CASES=SIGTERM-mount-hold bash "$
 output="$( (trap '' HUP INT; FIXTURE_GUARD_CASES=SIGHUP-format-hold,SIGINT-format-hold bash "$guard") 2>&1)" ||
     { fail "a guard started with its signals ignored failed"; printf '%s\n' "$output" | tail -n 20 >&2; }
 
-# The supervisor stops before any tool runs: nothing ever becomes ready.
-break_supervisor stuck-before-ready \
-    "trap 'exit 143' TERM" "trap 'exit 143' TERM; exec /bin/sleep 100000" &&
-    FIXTURE_GUARD_IDLE_LIMIT=3 expect_failure stuck-before-ready SIGTERM-format-hold \
-        'SIGTERM-format-hold' 'ready' 'no progress for'
+FIXTURE_GUARD_IDLE_LIMIT=3 expect_failure stuck-before-ready SIGTERM-format-hold \
+    'SIGTERM-format-hold' 'ready' 'no progress for'
 
-# The supervisor takes its signal and then stops inside its cleanup.
-break_supervisor stuck-in-cleanup \
-    'local status=$? unmounted=yes' 'local status=$? unmounted=yes; exec /bin/sleep 100000' &&
-    FIXTURE_GUARD_IDLE_LIMIT=3 expect_failure stuck-in-cleanup SIGTERM-format-hold \
-        'SIGTERM-format-hold' 'exit with status 143' 'no progress for'
+FIXTURE_GUARD_IDLE_LIMIT=3 expect_failure stuck-in-cleanup SIGTERM-format-hold \
+    'SIGTERM-format-hold' 'exit with status 143' 'no progress for'
 
-# Cleanup forgets the tool it owns.
-break_supervisor leaks-tool \
-    'tool_pid=$!' 'forgotten=$!' \
-    'wait "$tool_pid" || status=$?' 'wait "$forgotten" || status=$?' &&
-    expect_failure leaks-tool SIGTERM-format-hold 'owned child survived cleanup'
+expect_failure leaks-tool SIGTERM-format-hold 'owned child survived cleanup'
 
-# Cleanup stops the tool but not the tool's session.
-break_supervisor leaks-descendant \
-    'kill -TERM -- "-$tool_pid" "$tool_pid" 2>/dev/null || true' 'kill -TERM "$tool_pid" 2>/dev/null || true' \
-    'kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true' 'kill -KILL "$tool_pid" 2>/dev/null || true' &&
-    FIXTURE_GUARD_REAP_LIMIT=3 expect_failure leaks-descendant SIGTERM-format-descendant-hold 'descendant survived cleanup'
+FIXTURE_GUARD_REAP_LIMIT=3 expect_failure leaks-descendant SIGTERM-format-descendant-hold 'descendant survived cleanup'
 
 # A signal can land just as a tool exits: bash collects the status and jumps
 # out of its wait before recording it, so it believes the tool still runs. A

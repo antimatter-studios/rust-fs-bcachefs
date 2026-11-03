@@ -12,6 +12,7 @@
 #   FIXTURE_GUARD_REAP_LIMIT  seconds a killed descendant may take to disappear
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "$repo/tests/scripts/support/supervisor_guard.py"
 python3 - "${FIXTURE_GUARD_SUPERVISOR:-$repo/scripts/guest-build-fixtures.sh}" "$repo" <<'PY'
 import json
 import os

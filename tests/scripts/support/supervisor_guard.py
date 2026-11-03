@@ -1,8 +1,11 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
+import sys
+import tempfile
 import time
 
 
@@ -10,6 +13,52 @@ def trace_progress_into(env, log):
     """Make a supervisor started with env trace to log, not to its stderr."""
     env["BASH_ENV"] = str(Path(__file__).with_name("progress-trace.sh"))
     env["SUPERVISOR_PROGRESS_FD"] = str(log.fileno())
+
+
+def require_clean_capture():
+    """Fail at once, naming the shell, if a supervisor's trace would mislead.
+
+    Run with the trace the guards use, a function's redirected output must keep
+    its exact bytes and the trace must still arrive. Otherwise a guard reports a
+    defect in fixture output, or a stuck supervisor, that the shell caused.
+    """
+    with tempfile.TemporaryDirectory(prefix="supervisor-capture-control.") as name:
+        root = Path(name)
+        sample = root / "sample.sh"
+        sample.write_text(
+            'sample() { printf "native output\\n"; printf "native stderr\\n" >&2; }\n'
+            'sample >"$1" 2>&1\n'
+        )
+        capture, trace = root / "capture", root / "trace"
+        env = dict(os.environ)
+        with trace.open("w") as log:
+            trace_progress_into(env, log)
+            subprocess.run(
+                ["bash", str(sample), str(capture)],
+                env=env,
+                stdout=log,
+                stderr=log,
+                pass_fds=(log.fileno(),),
+                check=False,
+            )
+        captured = capture.read_text() if capture.exists() else None
+        traced = trace.read_text()
+    if captured != "native output\nnative stderr\n":
+        lacks = f"writes its trace into a native capture: {captured!r}"
+    elif "native output" not in traced:
+        lacks = "gives no trace, so a guard has no progress to follow"
+    else:
+        return
+    version = subprocess.run(
+        ["bash", "-c", 'echo "$BASH_VERSION"'],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    sys.exit(
+        f"FAIL  shell capability: {shutil.which('bash')} ({version}) {lacks}. "
+        "Put a bash first on PATH that traces to a descriptor of its own."
+    )
 
 
 def signals_at_default():
@@ -90,3 +139,7 @@ class SupervisorProgress:
             return False
 
         self.wait_for(case, "the held child's ready file", ready)
+
+
+if __name__ == "__main__":
+    require_clean_capture()
