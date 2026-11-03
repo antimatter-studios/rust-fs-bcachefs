@@ -72,6 +72,7 @@ cat >"$stubs/docker" <<'EOF'
 echo "$*" >>"$KO_STATE/docker.calls"
 never_returns() {
     trap '' TERM
+    [ "$KO_DOCKER" != build-term ] || trap 'exit 143' TERM
     i=0
     while [ "$i" -lt 240 ] && { [ -z "${1:-}" ] || [ -e "$1" ]; }; do
         sleep 0.25
@@ -84,8 +85,16 @@ if [ "$KO_DOCKER" = wedged ] && [ -e "$KO_STATE/booted" ]; then
 fi
 case "$1" in
     rm | kill)
+        case "$KO_DOCKER:$*" in
+            build-remove-stale:*) never_returns "" ;;
+            "build-remove:rm rust-fs-bcachefs-ko") never_returns "" ;;
+        esac
         for last; do :; done
         rm -f "$KO_STATE/running.$last"
+        exit 0
+        ;;
+    commit)
+        [ "$KO_DOCKER" != build-commit ] || never_returns ""
         exit 0
         ;;
     run) ;;
@@ -99,6 +108,10 @@ for arg; do
 done
 case "$*" in
     *debian:trixie*)
+        : >"$KO_STATE/running.$name"
+        case "$KO_DOCKER" in
+            build-run | build-term) never_returns "$KO_STATE/running.$name" ;;
+        esac
         work="$KO_REPO/tmp/kernel-oracle"
         echo 0.0.0-stand-in >"$work/kver"
         : >"$work/vmlinuz"
@@ -167,7 +180,7 @@ scenario() {
         fail "$name: kernel-oracle.sh no longer checks /dev/kvm the way this test passes it"
     start=$SECONDS
     KO_STATE="$state" KO_REPO="$repo" KO_BOOT="$2" KO_DOCKER="$3" KO_WRITER="$4" \
-        KERNEL_ORACLE_WRITER="$stubs/writer" KERNEL_ORACLE_TOOL_LIMIT=1 \
+        KERNEL_ORACLE_WRITER="$stubs/writer" KERNEL_ORACLE_BUILD_LIMIT=1 KERNEL_ORACLE_TOOL_LIMIT=1 \
         KERNEL_ORACLE_CLEANUP_LIMIT=1 KERNEL_ORACLE_KILL_AFTER=1 PATH="$stubs:$PATH" \
         timeout -s KILL "$WATCHDOG" bash "$repo/scripts/kernel-oracle.sh" "$out" >"$log" 2>&1
     status=$?
@@ -213,6 +226,31 @@ for output in kernel.fsck kernel-reuse.fsck kernel-rootsnap.fsck kernel-written.
     kernel.dirents kernel.extents; do
     [ -s "$out/$output.txt" ] || fail "$name: $output.txt is empty or missing"
 done
+
+for build_call in run term commit remove remove-stale; do
+    scenario "hung-build-$build_call" 0 "build-$build_call" none
+    if [ -n "$fin" ]; then
+        exits 1
+        build_key="build-$build_call"
+        [ "$build_call" != term ] || build_key=build-run
+        recorded "$build_key: stopped at its 1 s limit"
+        named "$build_key"
+        [ ! -e "$state/booted" ] || fail "$name: the guest booted after a build call stopped"
+        ! grep -q ':tools bcachefs ' "$state/docker.calls" ||
+            fail "$name: a reference tool ran after a build call stopped"
+        no_container_left
+    fi
+done
+
+build_limit="$(sed -n 's/^BUILD_LIMIT="${KERNEL_ORACLE_BUILD_LIMIT:-\([0-9][0-9]*\)}"$/\1/p' "$REPO/scripts/kernel-oracle.sh")"
+case "$build_limit" in
+    '' | *[!0-9]*) fail "the module build has no numeric default limit" ;;
+    *)
+        [ "$build_limit" -ge 200 ] || fail "the build limit leaves less than twice the measured 100 s"
+        [ "$((build_limit + 15 + 2 * (30 + 15)))" -lt "$((45 * 60))" ] ||
+            fail "the build and its removals can exhaust the fixtures job's 45-minute limit"
+        ;;
+esac
 
 # A reference checker that finds errors is a recorded result, for
 # tests/oracle_kernel.rs to fail on, and not a hang.

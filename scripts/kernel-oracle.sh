@@ -53,6 +53,9 @@ source "$here/scripts/kernel-oracle-boot.sh"
 # hung boot is 315 s for the boot, 75 s for the call and 45 s each to remove its
 # container and the image: 8 minutes. The slowest job measured reaches the boots
 # about 33 minutes in, of its 45 (ci.yml).
+# The module build took about 100 s in green run 41579678461 (#502), mostly
+# network and DKMS. A 300 s limit leaves three times that measurement.
+BUILD_LIMIT="${KERNEL_ORACLE_BUILD_LIMIT:-300}"
 TOOL_LIMIT="${KERNEL_ORACLE_TOOL_LIMIT:-60}"
 CLEANUP_LIMIT="${KERNEL_ORACLE_CLEANUP_LIMIT:-30}"
 KILL_AFTER="${KERNEL_ORACLE_KILL_AFTER:-15}"
@@ -60,6 +63,26 @@ TOOL_CONTAINER=rust-fs-bcachefs-ko-tool
 NOT_RUN="not run: a call before it was stopped at its limit"
 STOPPED="stopped at its $TOOL_LIMIT s limit"
 stopped=
+
+build_step() {
+    local key="$1" limit="$2" output="$3" status=0
+    shift 3
+    case "$output" in
+        -) timeout -k "$KILL_AFTER" "$limit" "$@" || status=$? ;;
+        quiet) timeout -k "$KILL_AFTER" "$limit" "$@" >/dev/null 2>&1 || status=$? ;;
+        *) timeout -k "$KILL_AFTER" "$limit" "$@" >"$output" || status=$? ;;
+    esac
+    case "$status" in
+        124 | 137)
+            record "$key" "stopped at its $limit s limit"
+            echo "kernel-oracle: FAILED: the module build ($key) was stopped at its $limit s limit." >&2
+            timeout -k "$KILL_AFTER" "$CLEANUP_LIMIT" docker rm -f rust-fs-bcachefs-ko \
+                >/dev/null 2>&1 || true
+            exit 1
+            ;;
+    esac
+    return "$status"
+}
 
 # reference_tool KEY OUTPUT ARGS... runs the reference tool in its container and
 # returns the tool's status. A call that gave no answer is recorded under KEY
@@ -142,8 +165,10 @@ cp "$here/scripts/prealloc.c" "$work/prealloc.c"
 chmod 0755 "$work/root/init"
 
 echo "kernel-oracle: building the module in a Debian 13 container"
-docker rm -f rust-fs-bcachefs-ko "$TOOL_CONTAINER" >/dev/null 2>&1 || true
-docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERSION" \
+build_step build-remove-stale "$CLEANUP_LIMIT" quiet \
+    docker rm -f rust-fs-bcachefs-ko "$TOOL_CONTAINER" || true
+build_step build-run "$BUILD_LIMIT" - \
+    docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERSION" \
     debian:trixie bash -euc '
     export DEBIAN_FRONTEND=noninteractive
     echo "deb http://deb.debian.org/debian trixie-backports main" \
@@ -220,8 +245,9 @@ docker run --name rust-fs-bcachefs-ko -v "$work:/work" -e REF_VERSION="$REF_VERS
     fi
     chmod -R a+rwX /work
 '
-docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools >/dev/null
-docker rm rust-fs-bcachefs-ko >/dev/null
+build_step build-commit "$TOOL_LIMIT" /dev/null \
+    docker commit rust-fs-bcachefs-ko rust-fs-bcachefs-ko:tools
+build_step build-remove "$CLEANUP_LIMIT" /dev/null docker rm rust-fs-bcachefs-ko
 kver="$(cat "$work/kver")"
 echo "kernel-oracle: kernel $kver; modules: $(tr '\n' ' ' <"$work/root/modules.order")"
 
