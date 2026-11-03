@@ -10,6 +10,7 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 - "$repo/.github/workflows/ci.yml" <<'PY'
+import copy
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,36 @@ assert {"unit", "lint", "semver"}.isdisjoint(full), "quick jobs are never exempt
 focused = {"guest-write-study", "crc128-native"}
 assert focused <= set(jobs)
 assert events["workflow_call"]["inputs"]["reproducer"]["default"] == "full"
+
+def check_dispatch_default(workflow):
+    triggers = workflow.get("on", workflow.get(True))
+    selector = triggers["workflow_dispatch"]["inputs"]["reproducer"]
+    assert selector.get("default") == "full", (
+        "workflow_dispatch.reproducer must default to full; "
+        "focused reproducer runs require explicit input"
+    )
+    assert {"full", "write-study-lifecycle", "crc128-native"} <= set(selector["options"])
+
+guidance = (Path(sys.argv[1]).resolve().parents[2] / "AGENTS.md").read_text()
+assert (
+    "gh workflow run ci.yml -R antimatter-studios/rust-fs-bcachefs --ref <branch>"
+    in guidance.splitlines()
+), "AGENTS.md must document the no-input full CI dispatch"
+for selected in ["write-study-lifecycle", "crc128-native", None]:
+    mutated = copy.deepcopy(doc)
+    triggers = mutated.get("on", mutated.get(True))
+    selector = triggers["workflow_dispatch"]["inputs"]["reproducer"]
+    if selected is None:
+        selector.pop("default", None)
+    else:
+        selector["default"] = selected
+    try:
+        check_dispatch_default(mutated)
+    except AssertionError as error:
+        assert "must default to full" in str(error), str(error)
+    else:
+        raise AssertionError((selected, "an unsafe dispatch default was accepted"))
+check_dispatch_default(doc)
 
 for event, ref, decision in [
     ("pull_request", "refs/pull/1/merge", "false"),

@@ -17,17 +17,18 @@ on:
         description: Evidence path for a reusable invocation
         type: string
         default: full
-  # Dispatch selects focused evidence or explicitly runs the full gate.
+  # A dispatch runs the full gate unless it names one focused reproducer.
+  # tests/scripts/ci-depth.sh holds this default to the command in AGENTS.md.
   workflow_dispatch:
     inputs:
       reproducer:
         description: Evidence path to run on this branch
         type: choice
-        default: write-study-lifecycle
+        default: full
         options:
+          - full
           - write-study-lifecycle
           - crc128-native
-          - full
 
 # A newer push to a pull request cancels the run still going on the older one,
 # except while the pull request's title starts "red:". Such a pull request
