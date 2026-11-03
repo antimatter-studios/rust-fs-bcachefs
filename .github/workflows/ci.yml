@@ -229,6 +229,21 @@ jobs:
           path: ${{ runner.temp }}/fixtures.tar.gz
           if-no-files-found: error
           retention-days: 7
+      # The record of a hung guest (#500). QEMU writes these as the guest runs,
+      # so they are there even when the job was cancelled during a boot. Only
+      # the guests' logs: nothing the reference tools printed, and no image.
+      - name: Keep the kernel-oracle console logs of a build that did not finish
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-oracle-console
+          path: |
+            tmp/kernel-oracle/console.log
+            tmp/kernel-oracle/oracle.log
+            tmp/kernel-oracle/judge-console.log
+            tmp/kernel-oracle/judge.log
+          if-no-files-found: warn
+          retention-days: 7
 
   # This crate reads every fixture and must agree with what the reference
   # tools recorded about it, field by field and byte by byte.
