@@ -59,7 +59,7 @@ const DATA_NEED_DISCARD: u8 = 9;
 
 fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("check-alloc").into_image(format!("{test}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     img
 }
 
@@ -187,7 +187,7 @@ fn a_backpointer_whose_value_disagrees_with_its_extent_is_reported() {
         for case in ["word-one", "length", "snapshot"] {
             let img = common::ScratchDir::new("check-backpointer")
                 .into_image(format!("{set}-{case}.img"));
-            std::fs::copy(fixture(&format!("{set}.img")), &img).unwrap();
+            common::copy_sparse(fixture(&format!("{set}.img")), &img);
             assert!(check::check(&FileDevice::open(&img).unwrap())
                 .unwrap()
                 .clean());
@@ -400,7 +400,7 @@ fn a_piece_of_a_checksummed_region_whose_backpointer_is_gone_is_reported() {
     // sector 26880 has its backpointer at 26880 << 16 | 136).
     let dir = common::ScratchDir::new("check-alloc-piece-backpointer");
     let img = dir.join("piece-backpointer.img");
-    std::fs::copy(fixture("aged.img"), &img).unwrap();
+    common::copy_sparse(fixture("aged.img"), &img);
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(
         report.clean(),
@@ -853,7 +853,7 @@ fn a_backpointer_in_a_bucket_with_no_alloc_key_is_reported() {
 #[test]
 fn a_btree_accounting_out_of_step_with_its_nodes_is_reported() {
     let img = common::ScratchDir::new("check-alloc").into_image("btree-accounting.img");
-    std::fs::copy(fixture("kernel.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel.img"), &img);
     let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
     assert!(
         !report

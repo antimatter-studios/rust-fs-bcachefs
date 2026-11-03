@@ -32,6 +32,40 @@ pub fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// Copy an image, leaving its zero blocks as holes; a plain file copy writes
+/// them. A fixture is mostly zeros, and in the guest every block a
+/// copy writes stays in the disposable overlay on the host after the copy is
+/// deleted: full copies filled a runner's disk and stopped the guest (#504).
+pub fn copy_sparse(src: impl AsRef<std::path::Path>, dst: impl AsRef<std::path::Path>) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    const BLOCK: usize = 4096;
+    const BLOCKS_READ_AT_ONCE: usize = 256;
+
+    let (src, dst) = (src.as_ref(), dst.as_ref());
+    let mut from =
+        std::fs::File::open(src).unwrap_or_else(|e| panic!("cannot open {}: {e}", src.display()));
+    let mut to = std::fs::File::create(dst)
+        .unwrap_or_else(|e| panic!("cannot create {}: {e}", dst.display()));
+    let len = from.metadata().unwrap().len();
+
+    let mut buf = vec![0u8; BLOCK * BLOCKS_READ_AT_ONCE];
+    let mut at = 0u64;
+    while at < len {
+        let want = usize::try_from((len - at).min(buf.len() as u64)).unwrap();
+        from.read_exact(&mut buf[..want]).unwrap();
+        for (i, block) in buf[..want].chunks(BLOCK).enumerate() {
+            if block.iter().any(|&byte| byte != 0) {
+                to.seek(SeekFrom::Start(at + (i * BLOCK) as u64)).unwrap();
+                to.write_all(block).unwrap();
+            }
+        }
+        at += want as u64;
+    }
+    // Last, not first: APFS allocates the space a file is extended by, and only
+    // what a seek past the end skips is a hole.
+    to.set_len(len).unwrap();
+}
+
 pub fn read_text(name: &str) -> String {
     std::fs::read_to_string(fixture(name)).unwrap()
 }
@@ -207,7 +241,7 @@ impl ScratchDir {
     pub fn copy_fixture(&self, name: &str) -> PathBuf {
         let dst = self.join(name);
         std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
-        std::fs::copy(fixture(name), &dst).unwrap();
+        copy_sparse(fixture(name), &dst);
         dst
     }
 

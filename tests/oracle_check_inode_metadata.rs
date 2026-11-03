@@ -53,7 +53,7 @@ const AGED_SECTORS_FILE: &str = "/many/f02467";
 /// suite (`oracle_write_pieces`) could make its own.
 fn scratch(src: &str, test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("check-inode-metadata").into_image(format!("{test}.img"));
-    std::fs::copy(fixture(src), &img).unwrap();
+    common::copy_sparse(fixture(src), &img);
     img
 }
 

@@ -66,7 +66,7 @@ fn scratch(fixture_name: &str, test: &str) -> ScratchImage {
     let dir = ScratchDir::new("write-oracle");
     assert_seen_by_reference(&dir);
     let name = format!("{test}.img");
-    std::fs::copy(fixture(fixture_name), dir.join(&name)).unwrap();
+    common::copy_sparse(fixture(fixture_name), dir.join(&name));
     dir.into_image(name)
 }
 

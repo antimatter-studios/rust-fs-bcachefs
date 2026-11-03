@@ -31,7 +31,7 @@ fn expected() -> Vec<u8> {
 fn a_write_to_a_file_with_preallocated_space_keeps_that_space_zeros() {
     let dir = common::ScratchDir::new("write-unwritten");
     let img = dir.join("kernel-prealloc.img");
-    std::fs::copy(fixture("kernel-prealloc.img"), &img).unwrap();
+    common::copy_sparse(fixture("kernel-prealloc.img"), &img);
 
     let ino = Filesystem::open(FileDevice::open(&img).unwrap())
         .unwrap()

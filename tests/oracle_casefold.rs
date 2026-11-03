@@ -198,7 +198,7 @@ fn the_writer_refuses_to_change_a_casefolded_directory() {
     use fs_bcachefs::write::Writer;
     let dir = common::ScratchDir::new("casefold");
     let img = dir.join("casefold.img");
-    std::fs::copy(fixture("casefold.img"), &img).unwrap();
+    common::copy_sparse(fixture("casefold.img"), &img);
     let before = std::fs::read(&img).unwrap();
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     let root = fs_bcachefs::inode::ROOT_INO;

@@ -23,7 +23,7 @@ use fs_core::FileDevice;
 /// A damaged copy of a fixture, removed when dropped.
 fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("check-dirent-hash").into_image(format!("{test}.img"));
-    std::fs::copy(fixture("default.img"), &img).unwrap();
+    common::copy_sparse(fixture("default.img"), &img);
     img
 }
 

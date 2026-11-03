@@ -16,7 +16,7 @@ use fs_core::FileDevice;
 
 fn scratch(name: &str, test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("failed-write").into_image(format!("{test}.img"));
-    std::fs::copy(fixture(name), &img).unwrap();
+    common::copy_sparse(fixture(name), &img);
     img
 }
 
