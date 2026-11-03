@@ -24,6 +24,9 @@ import time
 
 script = Path(sys.argv[1])
 support = Path(sys.argv[2]) / 'tests/scripts/support'
+sys.path.insert(0, str(support))
+from supervisor_guard import SupervisorProgress, events, in_session, signals_at_default, trace_progress_into
+
 selected = os.environ.get('FIXTURE_GUARD_CASES')
 def wanted(label):
     return not selected or label in selected.split(',')
@@ -293,11 +296,9 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
     # How many cases of each kind ran: a run cut short has fewer, and fails.
     ran = dict(status=0, signal=0, descendant=0)
 
-    def signals_at_default():
-        # A guard started in the background or under nohup inherits these ignored,
-        # and a shell cannot trap what was ignored when it started.
-        for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, signal.SIG_DFL)
+    progress = SupervisorProgress(sandbox, IDLE_LIMIT, CASE_LIMIT)
+    wait_for = progress.wait_for
+    await_ready = progress.await_ready
 
     def start(label, mode):
         case = sandbox / label
@@ -311,55 +312,13 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
         with (case / 'log').open('w') as log:
             # Trace to a separate descriptor so native stderr captures keep
             # their exact bytes even when a command redirects stderr.
-            env['BASH_XTRACEFD'] = str(log.fileno())
-            proc = subprocess.Popen(['bash', '-x', str(script)], env=env, stdout=log,
+            trace_progress_into(env, log)
+            proc = subprocess.Popen(['bash', str(script)], env=env, stdout=log,
                                     stderr=log, pass_fds=(log.fileno(),), start_new_session=True,
                                     preexec_fn=signals_at_default)
         processes.append(proc)
         cases.append(case)
         return proc, case
-
-    def events(case):
-        p = case / 'events'
-        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
-
-    def in_session(pid, sid):
-        # A pid alone may have been reused by now; a process left over from
-        # this case is still in the session it started.
-        try: return os.getsid(pid) == sid
-        except (ProcessLookupError, PermissionError): return False
-
-    def diagnose(case):
-        lines = [f'--- what {case.name} last traced']
-        lines += (case / 'log').read_text(errors='replace').splitlines()[-40:]
-        lines += ['--- its last events'] + [json.dumps(e) for e in events(case)[-20:]]
-        table = subprocess.run(['ps', '-axo', 'pid,ppid,pgid,stat,etime,command'],
-                               capture_output=True, text=True).stdout.splitlines()
-        lines += ['--- its processes still running'] + [l[:200] for l in table if str(sandbox) in l][:40]
-        return '\n'.join(lines)
-
-    def wait_for(case, what, done):
-        began = moved = time.monotonic()
-        seen = None
-        while not done():
-            now = time.monotonic()
-            mark = [p.stat().st_size if p.exists() else 0 for p in (case / 'log', case / 'events')]
-            if mark != seen: seen, moved = mark, now
-            if now - moved > IDLE_LIMIT:
-                raise AssertionError(f'{case.name}: waited {now - began:.0f}s for {what}, '
-                                     f'with no progress for {now - moved:.0f}s\n{diagnose(case)}')
-            if now - began > CASE_LIMIT:
-                raise AssertionError(f'{case.name}: waited {now - began:.0f}s for {what}, '
-                                     f'and the supervisor is still running commands\n{diagnose(case)}')
-            time.sleep(.01)
-
-    def await_ready(proc, case):
-        def ready():
-            if (case / 'ready').exists(): return True
-            assert proc.poll() is None, (f'{case.name}: the supervisor exited with status '
-                                         f'{proc.returncode} before its child was ready\n{diagnose(case)}')
-            return False
-        wait_for(case, "the held child's ready file", ready)
 
     def finish(proc, case, status, retained=False):
         wait_for(case, f'the supervisor to exit with status {status}', lambda: proc.poll() is not None)
@@ -468,6 +427,10 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                          'casefold.img', 'casefold.json', 'reference-help.txt',
                          'reference-version.txt', 'write-study-reached'):
                 assert (fixtures / name).exists(), f'published fixture lost: {name}'
+            # This capture passes through run_owned, a function, so a trace on
+            # the supervisor's stderr lands in it unless it is kept apart.
+            capture = (fixtures / 'default.inodes.txt').read_text()
+            assert capture == 'stand-in reference output\n', ('native capture changed', capture)
         if wanted('busy-unmount'):
             proc, case = start('busy-unmount', 'unmount-fail')
             finish(proc, case, 1, retained=True)
