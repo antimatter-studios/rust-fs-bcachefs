@@ -2897,7 +2897,54 @@ fn both_checkers_judge_a_changed_inode_key(
     set: &str,
     path: &str,
     change: impl FnOnce(u64) -> u64,
-    refused: Option<(&str, &str)>,
+    refused: Option<(&str, &'static str)>,
+) {
+    both_checkers_judge_an_inode_key(set, path, |k| {
+        let word = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+        k.value[16..24].copy_from_slice(&change(word).to_le_bytes());
+        refused.map(|(reason, kind)| (reason.to_string(), kind))
+    });
+}
+
+/// The accounting btree, which `both_checkers_judge_an_inode_key` writes.
+#[cfg(feature = "write")]
+const ACCOUNTING_BTREE: u8 = 20;
+
+/// The accounting key counting the keys and bytes of the inodes btree in
+/// `img` (S8: kind 5, `snapshot id=4294967295 btree=inodes`, holds keys,
+/// bytes, 0), its bytes moved by `grew`.
+#[cfg(feature = "write")]
+fn inodes_byte_counter_moved(img: &Path, grew: i64) -> bkey::Bkey {
+    use fs_bcachefs::btree;
+
+    const ACCOUNTING_KEY: u8 = 34;
+    let at = 0x05ff_ffff_ff00_0000 | (u64::from(btree_id::INODES) << 16);
+    let dev = FileDevice::open(img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut k = btree::walk(&dev, &sb, ACCOUNTING_BTREE)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == ACCOUNTING_KEY && k.pos.inode == at && k.pos.offset == 0)
+        .expect("the inodes btree's key and byte counter");
+    let bytes = u64::from_le_bytes(k.value[8..16].try_into().unwrap());
+    let bytes = bytes
+        .checked_add_signed(grew)
+        .expect("a counter below zero");
+    k.value[8..16].copy_from_slice(&bytes.to_le_bytes());
+    k
+}
+
+/// The inode_v3 key of `path` in `set.img` changed by `change` and committed
+/// in place. `change` says what must follow from the key it was given: a
+/// reason the reference must delete it for and the kind this checker must
+/// report for it, or nothing, when both must call the image clean. A change
+/// to the value's length moves the btree's byte counter with it, so the
+/// length is not itself a problem.
+#[cfg(feature = "write")]
+fn both_checkers_judge_an_inode_key(
+    set: &str,
+    path: &str,
+    change: impl FnOnce(&mut bkey::Bkey) -> Option<(String, &'static str)>,
 ) {
     use fs_bcachefs::bkey::key_type;
     use fs_bcachefs::btree;
@@ -2929,11 +2976,16 @@ fn both_checkers_judge_a_changed_inode_key(
         .find(|k| k.key_type == key_type::INODE_V3 && k.pos.inode == 0 && k.pos.offset == ino)
         .unwrap_or_else(|| panic!("{set}.img has no inode_v3 key for {path}"));
     drop(dev);
-    let word = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
-    k.value[16..24].copy_from_slice(&change(word).to_le_bytes());
+    let stored = k.value.len() as i64;
+    let refused = change(&mut k);
+    let grew = k.value.len() as i64 - stored;
+    let counter = (grew != 0).then(|| inodes_byte_counter_moved(&img, grew));
     let pos = k.pos;
     let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     writer.insert(btree_id::INODES, vec![k]).unwrap();
+    if let Some(counter) = counter {
+        writer.insert(ACCOUNTING_BTREE, vec![counter]).unwrap();
+    }
     drop(writer);
 
     let (bad, text) = reference_finds_a_problem(&img);
@@ -2942,8 +2994,8 @@ fn both_checkers_judge_a_changed_inode_key(
         Some((reason, kind)) => {
             assert!(
                 bad && text.contains("invalid bkey in btree_node btree=inodes")
-                    && text.contains(reason),
-                "{text}"
+                    && text.contains(&reason),
+                "{reason}:\n{text}"
             );
             assert!(
                 ours.problems
@@ -2996,51 +3048,152 @@ fn both_checkers_accept_a_file_inode_with_hash_type_zero() {
 }
 
 /// Bits 32..36 of the word, 3 in every fixture, are read as fields_start,
-/// twice their value: below 6, or past the value's length in u64s (14 for
-/// this file, 11 for default's root, 12 for kernel's), is "invalid
-/// fields_start (got N, min 6 max M)".
+/// twice their value: below 6, or past the value's length in u64s, which
+/// differs with the fixture (#495), is "invalid fields_start (got N, min 6
+/// max M)".
 #[cfg(feature = "write")]
 #[test]
 fn both_checkers_reject_an_inode_with_fields_start_out_of_range() {
-    for (set, path, nibble, max) in [
-        ("default", "/many/file-0200.txt", 2u64, 14),
-        ("default", "/many/file-0200.txt", 8, 14),
-        ("default", "/", 6, 11),
-        ("kernel", "/", 0, 12),
-        ("kernel", "/", 15, 12),
-    ] {
-        both_checkers_judge_a_changed_inode_key(
-            set,
-            path,
-            |w| (w & !(0xf << 32)) | (nibble << 32),
+    both_checkers_reject_fields_start_out_of_range(times_as_made);
+}
+
+/// fields_start equal to the value's length is accepted, on this file and on
+/// kernel's root, whatever that length is in the fixture (#495).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_an_inode_with_fields_start_at_its_value_length() {
+    both_checkers_accept_fields_start_at_the_value_length(times_as_made);
+}
+
+/// The inode's times as the fixture holds them.
+#[cfg(feature = "write")]
+fn times_as_made(_varints: &mut [u64]) {}
+
+/// The first varint of each of the four times, which take the eight varints
+/// that come first, in the varint's longest form, 9 bytes.
+#[cfg(feature = "write")]
+fn longest_times(varints: &mut [u64]) {
+    for time in varints[..8].iter_mut().step_by(2) {
+        *time = 1 << 60;
+    }
+}
+
+/// All four times zero: one byte for each of their eight varints.
+#[cfg(feature = "write")]
+fn shortest_times(varints: &mut [u64]) {
+    varints[..8].fill(0);
+}
+
+/// The inode_v3 value in `k` encoded again, with its times changed by `times`.
+#[cfg(feature = "write")]
+fn retime(k: &mut bkey::Bkey, times: fn(&mut [u64])) {
+    use fs_bcachefs::inode::InodeV3Raw;
+
+    let mut raw = InodeV3Raw::parse(&k.value).unwrap();
+    times(&mut raw.varints);
+    k.value = raw.encode();
+}
+
+/// Bits 32..36 of the third value word of the inode_v3 value in `k`, which
+/// are read as fields_start at twice their value, set to `nibble`.
+#[cfg(feature = "write")]
+fn set_fields_start(k: &mut bkey::Bkey, nibble: u64) {
+    let word = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+    let word = (word & !(0xf << 32)) | (nibble << 32);
+    k.value[16..24].copy_from_slice(&word.to_le_bytes());
+}
+
+/// Each case's bits for fields_start, given the value's length in u64s once
+/// its times have changed: `max / 2 + 1` is the smallest value past that
+/// length, and the reference's "max" is that length, read from the key.
+#[cfg(feature = "write")]
+fn both_checkers_reject_fields_start_out_of_range(times: fn(&mut [u64])) {
+    type Nibble = fn(u64) -> u64;
+    let cases: [(&str, &str, Nibble); 5] = [
+        ("default", "/many/file-0200.txt", |_| 2),
+        ("default", "/many/file-0200.txt", |max| max / 2 + 1),
+        ("default", "/", |max| max / 2 + 1),
+        ("kernel", "/", |_| 0),
+        ("kernel", "/", |_| 15),
+    ];
+    for (set, path, nibble) in cases {
+        both_checkers_judge_an_inode_key(set, path, |k| {
+            retime(k, times);
+            let max = k.value.len() as u64 / 8;
+            let nibble = nibble(max);
+            set_fields_start(k, nibble);
             Some((
-                &format!(
+                format!(
                     "invalid fields_start (got {}, min 6 max {max}), deleting",
                     2 * nibble
                 ),
                 "inode_fields_start_bad",
-            )),
-        );
+            ))
+        });
     }
 }
 
-/// fields_start equal to the value's length is accepted: 14 on this file
-/// (112 bytes), 12 on kernel's root (96 bytes).
+/// fields_start is twice the bits it is read from, so it only reaches the end
+/// of a value whose length in u64s is even. A value of odd length takes the 8
+/// zero bytes the reference accepts after it (docs/clean-room.md), so nothing
+/// is left past fields_start for the reference to decode as a field.
+#[cfg(feature = "write")]
+fn both_checkers_accept_fields_start_at_the_value_length(times: fn(&mut [u64])) {
+    for (set, path) in [("default", "/many/file-0200.txt"), ("kernel", "/")] {
+        both_checkers_judge_an_inode_key(set, path, |k| {
+            retime(k, times);
+            if (k.value.len() / 8) % 2 == 1 {
+                k.value.extend_from_slice(&[0; 8]);
+            }
+            set_fields_start(k, k.value.len() as u64 / 16);
+            None
+        });
+    }
+}
+
+/// An inode's times are varints, so the same inode's value differs in length
+/// with what they hold, and the reference's "max" follows it: the value of
+/// this file was 14 u64s in one fresh fixture and 15 in another (#495). The
+/// times alone trouble neither checker, whichever length they encode to.
 #[cfg(feature = "write")]
 #[test]
-fn both_checkers_accept_an_inode_with_fields_start_at_its_value_length() {
-    both_checkers_judge_a_changed_inode_key(
-        "default",
-        "/many/file-0200.txt",
-        |w| (w & !(0xf << 32)) | (7 << 32),
-        None,
+fn both_checkers_accept_an_inode_whose_times_encode_longer_or_shorter() {
+    let mut lengths = Vec::new();
+    for times in [longest_times, shortest_times] {
+        both_checkers_judge_an_inode_key("default", "/many/file-0200.txt", |k| {
+            retime(k, times);
+            lengths.push(k.value.len());
+            None
+        });
+    }
+    assert!(
+        lengths[0] > lengths[1],
+        "the times changed nothing in the value's length: {lengths:?}"
     );
-    both_checkers_judge_a_changed_inode_key(
-        "kernel",
-        "/",
-        |w| (w & !(0xf << 32)) | (6 << 32),
-        None,
-    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_fields_start_out_of_range_on_longer_times() {
+    both_checkers_reject_fields_start_out_of_range(longest_times);
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_fields_start_out_of_range_on_shorter_times() {
+    both_checkers_reject_fields_start_out_of_range(shortest_times);
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_fields_start_at_the_length_of_longer_times() {
+    both_checkers_accept_fields_start_at_the_value_length(longest_times);
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_fields_start_at_the_length_of_shorter_times() {
+    both_checkers_accept_fields_start_at_the_value_length(shortest_times);
 }
 
 /// One option field of the inode at `path` in default.img set to `value`,
