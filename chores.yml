@@ -139,7 +139,8 @@ tasks:
       # tmp/logs/unit.log.
       # #506 adds one boundary case to the 130 measured on 2026-11-03.
       # #505 adds three never-started superblock cases to that 131.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 134'
+      # #507 adds two unit cases; 132 executed locally on 2026-11-03.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 136'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -184,7 +185,9 @@ tasks:
       # passing (#131), and a merge queue group that moves the lockfile would
       # be refused the same way.
       - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 720 45000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
+      # MEASURED 2026-11-03 (#507): 293 passing cases, 721 lines / 38,410
+      # bytes, including the new four-case binary. Keep room for another binary.
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 760 45000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
@@ -208,7 +211,8 @@ tasks:
       # #487 adds six oracle cases to that 283: 289 measured 2026-11-03,
       # tmp/logs/oracle.log.
       # #506 adds two value-size regressions to the measured 289.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 291'
+      # #507 adds four host cases to the measured 289-case baseline.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 295'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -265,6 +269,10 @@ tasks:
     # MEASURED AGAIN locally for #505 on main fea78fa (2026-11-03): 1267 lines /
     # 67636 bytes, 581 executed, with no room left for a runner's longer paths.
     # About 30% over that is 1650 / 88000.
+    # MEASURED AGAIN in merge-queue run 41722012507 (#524 on main cf55e31,
+    # 2026-11-03): 1285 lines / 68089 bytes, 89 bytes over 68000, 579 executed,
+    # every test passed. 72000 bytes leaves about 6%, because this budget exists to
+    # catch a noisy run. 1285 lines are inside 1650, so the line budget stays.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -278,7 +286,7 @@ tasks:
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
         # A lost guest is named, and its console kept, by guest-session.sh (#504).
         FS_CORE_CALLER="$(pwd -P)" bash scripts/guest-session.sh \
-          bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1650 88000 -- \
+          bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1650 72000 -- \
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test
       # Run 38997027177 executed the full 304 cases; #253/#254 add six.
@@ -341,7 +349,9 @@ tasks:
       # to that 540.
       # #506 adds one unit, two host oracle and two live-reference cases.
       # #505 adds three unit and nine live-reference never-started cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 574'
+      # #507 adds two unit, four host and four live-reference cases.
+      # Baseline: 564 executed on 2026-11-03, tmp/logs/vm.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 584'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -520,7 +530,8 @@ tasks:
       # The unit case of #422 runs in this tier too.
       # #506 adds its unit boundary case to this tier too.
       # #505 adds its three never-started unit cases to this tier too.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 215'
+      # #507 adds two default-feature unit cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 217'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

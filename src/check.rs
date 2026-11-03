@@ -103,7 +103,9 @@ const SNAP_STATE: usize = 56;
 const SNAP_MIN_BYTES: usize = 24;
 /// The state words the reference key editor stores for each name it accepts.
 const SUBVOL_LIVE: u32 = 0x4ad5_447e;
-const SUBVOL_STATES: [u32; 3] = [SUBVOL_LIVE, 0x2d35_8e8f, 0x3c6b_2d4c];
+const SUBVOL_UNLINKED: u32 = 0x2d35_8e8f;
+const SUBVOL_DELETED: u32 = 0x3c6b_2d4c;
+const SUBVOL_STATES: [u32; 3] = [SUBVOL_LIVE, SUBVOL_UNLINKED, SUBVOL_DELETED];
 const SNAP_LIVE: u32 = 0x757c_47a2;
 const SNAP_WILL_DELETE: u32 = 0x3316_a8d2;
 const SNAP_NO_KEYS: u32 = 0x372b_5a01;
@@ -410,9 +412,12 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     }
     // A snapshot's state against the rest of the filesystem (#487). Clean
     // only, as above.
-    if sb.is_clean() && sb.version >= STATE_REQUIRED_FROM {
+    let unavailable_subvolumes = if sb.is_clean() && sb.version >= STATE_REQUIRED_FROM {
         snapshot_states(&trees, &mut r);
-    }
+        subvolume_states(&trees, &mut r)
+    } else {
+        BTreeSet::new()
+    };
     // The reconcile btrees' keys against the extents waiting on background
     // work (#163). Clean only, as above.
     if sb.is_clean() {
@@ -698,7 +703,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             // target (S3 + S4: the kernel oracle's `sv` and `snap`).
             if d.d_type == DT_SUBVOL {
                 let id = d.inum as u32;
-                if !subvolumes.contains_key(&id) {
+                if !subvolumes.contains_key(&id) || unavailable_subvolumes.contains(&id) {
                     add(
                         "dirent_to_missing_subvolume",
                         format!("{name:?} in {} names subvolume {id}", d.dir),
@@ -1527,6 +1532,9 @@ fn subvolume_children(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
         .into_iter()
         .flatten()
         .filter(|k| k.key_type == KEY_SUBVOLUME && k.value.len() >= SUBVOL_FS_PARENT + 4)
+        .filter(|key| {
+            key.value.len() < SUBVOL_STATE + 4 || le32(&key.value, SUBVOL_STATE) != SUBVOL_DELETED
+        })
         .map(|k| (k.pos.offset, le32(&k.value, SUBVOL_FS_PARENT)))
         .collect();
     let entries = trees.get(&SUBVOLUME_CHILDREN).into_iter().flatten();
@@ -2586,6 +2594,64 @@ fn check_state_words(version: Version, id: u8, k: &Bkey, r: &mut Report) {
     }
 }
 
+fn subvolume_states(trees: &BTreeMap<u8, Vec<Bkey>>, report: &mut Report) -> BTreeSet<u32> {
+    let mut unavailable = BTreeSet::new();
+    for subvolume in trees
+        .get(&SUBVOLUMES)
+        .into_iter()
+        .flatten()
+        .filter(|key| key.key_type == KEY_SUBVOLUME && key.value.len() >= SUBVOL_STATE + 4)
+    {
+        let state = le32(&subvolume.value, SUBVOL_STATE);
+        if !matches!(state, SUBVOL_UNLINKED | SUBVOL_DELETED) {
+            continue;
+        }
+        let Ok(id) = u32::try_from(subvolume.pos.offset) else {
+            continue;
+        };
+        unavailable.insert(id);
+        if id == 1 {
+            report.add(
+                "root_subvol_missing",
+                format!("root subvolume {} is not live", subvolume.pos),
+            );
+        }
+        if state != SUBVOL_DELETED {
+            continue;
+        }
+        for snapshot in trees.get(&SNAPSHOTS).into_iter().flatten().filter(|key| {
+            key.key_type == KEY_SNAPSHOT
+                && key.value.len() >= SNAP_STATE + 4
+                && le32(&key.value, SNAP_SUBVOL) == id
+                && le32(&key.value, SNAP_STATE) == SNAP_LIVE
+        }) {
+            report.add(
+                "snapshot_subvol_state_mismatch",
+                format!(
+                    "snapshot {} is live but its subvolume {id} is deleted",
+                    snapshot.pos
+                ),
+            );
+        }
+        for tree in trees
+            .get(&SNAPSHOT_TREES)
+            .into_iter()
+            .flatten()
+            .filter(|key| {
+                key.key_type == KEY_SNAPSHOT_TREE
+                    && key.value.len() >= 8
+                    && le32(&key.value, 0) == id
+            })
+        {
+            report.add(
+                "snapshot_tree_to_missing_subvol",
+                format!("snapshot tree {} names deleted subvolume {id}", tree.pos),
+            );
+        }
+    }
+    unavailable
+}
+
 /// A snapshot in a state other than live, against the rest of the filesystem
 /// (the guest probes of 2026-11-03, #487): `will_delete` on one whose subvolume
 /// is live, or with two live children, and `no_keys` or `deleted` on one with
@@ -3469,6 +3535,83 @@ mod tests {
             }
             assert!(field_kinds(tree, &key(KEY_SET, 1, Vec::new())).is_empty());
             assert!(field_kinds(btree_id::INODES, &key(key_type, 1, Vec::new())).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_deleted_subvolume_is_not_a_subvolume_children_target() {
+        for state in SUBVOL_STATES {
+            let mut value = vec![0; 48];
+            value[SUBVOL_FS_PARENT..SUBVOL_FS_PARENT + 4].copy_from_slice(&1u32.to_le_bytes());
+            value[SUBVOL_STATE..SUBVOL_STATE + 4].copy_from_slice(&state.to_le_bytes());
+            let mut entry = key(KEY_SET, 2, Vec::new());
+            entry.pos.inode = 1;
+            let trees = BTreeMap::from([
+                (SUBVOLUMES, vec![key(KEY_SUBVOLUME, 2, value)]),
+                (SUBVOLUME_CHILDREN, vec![entry]),
+            ]);
+            let mut report = Report::default();
+            subvolume_children(&trees, &mut report);
+            let kinds: Vec<_> = report.problems.iter().map(|problem| problem.kind).collect();
+            assert_eq!(
+                kinds,
+                if state == SUBVOL_STATES[2] {
+                    vec!["subvol_children_entry_wrong"]
+                } else {
+                    Vec::new()
+                },
+                "state {state:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn subvolume_states_are_judged_only_against_references() {
+        for state in [SUBVOL_LIVE, SUBVOL_UNLINKED, SUBVOL_DELETED, 0, u32::MAX] {
+            let mut value = vec![0; 48];
+            value[SUBVOL_STATE..SUBVOL_STATE + 4].copy_from_slice(&state.to_le_bytes());
+            let mut snapshot = vec![0; 64];
+            snapshot[SNAP_SUBVOL..SNAP_SUBVOL + 4].copy_from_slice(&2u32.to_le_bytes());
+            snapshot[SNAP_STATE..SNAP_STATE + 4].copy_from_slice(&SNAP_LIVE.to_le_bytes());
+            let mut tree = vec![0; 8];
+            tree[..4].copy_from_slice(&2u32.to_le_bytes());
+            let mut trees = BTreeMap::from([
+                (SUBVOLUMES, vec![key(KEY_SUBVOLUME, 2, value)]),
+                (SNAPSHOTS, vec![key(KEY_SNAPSHOT, 10, snapshot)]),
+                (SNAPSHOT_TREES, vec![key(KEY_SNAPSHOT_TREE, 20, tree)]),
+            ]);
+            let mut report = Report::default();
+            let unavailable = subvolume_states(&trees, &mut report);
+            assert_eq!(
+                unavailable.contains(&2),
+                matches!(state, SUBVOL_UNLINKED | SUBVOL_DELETED)
+            );
+            let kinds: Vec<_> = report.problems.iter().map(|problem| problem.kind).collect();
+            assert_eq!(
+                kinds,
+                if state == SUBVOL_DELETED {
+                    vec![
+                        "snapshot_subvol_state_mismatch",
+                        "snapshot_tree_to_missing_subvol",
+                    ]
+                } else {
+                    Vec::new()
+                }
+            );
+            trees.remove(&SNAPSHOTS);
+            trees.remove(&SNAPSHOT_TREES);
+            let mut report = Report::default();
+            subvolume_states(&trees, &mut report);
+            assert!(report.clean());
+            trees.get_mut(&SUBVOLUMES).unwrap()[0].pos.offset = 1;
+            subvolume_states(&trees, &mut report);
+            assert_eq!(
+                report
+                    .problems
+                    .iter()
+                    .any(|problem| problem.kind == "root_subvol_missing"),
+                matches!(state, SUBVOL_UNLINKED | SUBVOL_DELETED)
+            );
         }
     }
 

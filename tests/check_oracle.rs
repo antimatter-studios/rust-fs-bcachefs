@@ -21,6 +21,9 @@ mod key_field_bytes;
 #[cfg(feature = "write")]
 #[path = "common/replicas_accounting.rs"]
 mod replicas_accounting;
+#[cfg(feature = "write")]
+#[path = "common/subvolume_states.rs"]
+mod subvolume_states;
 #[path = "common/superblock_copy.rs"]
 mod superblock_copy;
 #[path = "common/superblock_field.rs"]
@@ -36,6 +39,121 @@ use fs_bcachefs::btree::{btree_id, NodePtr};
 use fs_bcachefs::check::check;
 use fs_bcachefs::superblock::Superblock;
 use fs_core::FileDevice;
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_non_live_root_subvolume() {
+    for set in subvolume_states::SETS {
+        for state in [subvolume_states::LIVE, subvolume_states::UNLINKED] {
+            let (image, position) = subvolume_states::plant(set, 1, state, false);
+            let (status, text) = reference_on_key_field(&image);
+            let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+            if state == subvolume_states::LIVE {
+                assert_eq!(status, 0, "{set}: {text}");
+                assert!(ours.clean(), "{set}: {ours:?}");
+            } else {
+                assert_eq!(status, 1, "{set}: {text}");
+                assert!(text.contains("root subvol missing"), "{set}: {text}");
+                assert!(
+                    ours.problems
+                        .iter()
+                        .any(|problem| problem.kind == "root_subvol_missing"
+                            && problem.detail.contains(&position.to_string())),
+                    "{set} {state:#x}: {ours:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_dirent_to_a_non_live_subvolume() {
+    for (set, id) in subvolume_states::CHILDREN {
+        for state in [
+            subvolume_states::LIVE,
+            subvolume_states::UNLINKED,
+            subvolume_states::DELETED,
+        ] {
+            let (image, _) = subvolume_states::plant(set, id, state, false);
+            let (status, text) = reference_on_key_field(&image);
+            let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+            if state == subvolume_states::LIVE {
+                assert_eq!(status, 0, "{set}: {text}");
+                assert!(ours.clean(), "{set}: {ours:?}");
+            } else {
+                assert_eq!(
+                    status,
+                    if state == subvolume_states::UNLINKED {
+                        9
+                    } else {
+                        13
+                    },
+                    "{set} {id}: {text}"
+                );
+                assert!(
+                    text.contains("dirent points to missing subvolume"),
+                    "{set} {id}: {text}"
+                );
+                assert!(
+                    ours.problems
+                        .iter()
+                        .any(|problem| problem.kind == "dirent_to_missing_subvolume"
+                            && problem.detail.contains(&format!("subvolume {id}"))),
+                    "{set} {id}: {ours:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_live_references_to_a_deleted_subvolume() {
+    for (set, id) in subvolume_states::CHILDREN {
+        let (image, _) = subvolume_states::plant(set, id, subvolume_states::DELETED, false);
+        let (status, text) = reference_on_key_field(&image);
+        let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+        assert_ne!(status, 0, "{set} {id}: {text}");
+        for (needed, printed, kind) in [
+            (
+                true,
+                "snapshot live but its subvolume is deleted",
+                "snapshot_subvol_state_mismatch",
+            ),
+            (
+                id == 1 || (set == "kernel" && id == 2),
+                "snapshot tree points to missing subvolume",
+                "snapshot_tree_to_missing_subvol",
+            ),
+            (
+                id != 1,
+                "incorrect entry in subvolume_children btree",
+                "subvol_children_entry_wrong",
+            ),
+        ] {
+            if needed {
+                assert!(text.contains(printed), "{set} {id}: {text}");
+                assert!(
+                    ours.problems.iter().any(|problem| problem.kind == kind),
+                    "{set} {id} {kind}: {ours:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_an_unreferenced_deleted_subvolume() {
+    for set in subvolume_states::SETS {
+        let (image, _) = subvolume_states::plant(set, 1, subvolume_states::DELETED, true);
+        let (status, text) = reference_on_key_field(&image);
+        let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+        assert_eq!(status, 0, "{set}: {text}");
+        assert!(ours.clean(), "{set}: {ours:?}");
+    }
+}
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
