@@ -77,6 +77,24 @@ fn judged_as_measured(sets: &[&str], table: &[WordCase], plant: Plant) {
 }
 
 #[test]
+fn a_short_snapshot_value_is_named_as_the_reference_names_it() {
+    judged_as_measured(
+        &key_field_bytes::VALUE_SIZE_SETS,
+        key_field_bytes::SNAPSHOT_VALUE_SIZES,
+        plant_snapshot,
+    );
+}
+
+#[test]
+fn a_short_subvolume_value_is_named_as_the_reference_names_it() {
+    judged_as_measured(
+        &key_field_bytes::VALUE_SIZE_SETS,
+        key_field_bytes::SUBVOLUME_VALUE_SIZES,
+        plant_subvolume,
+    );
+}
+
+#[test]
 fn a_snapshot_state_word_is_judged_as_the_reference_judges_it() {
     judged_as_measured(&SNAPSHOT_SETS, SNAPSHOT_STATE_WORDS, plant_snapshot);
 }

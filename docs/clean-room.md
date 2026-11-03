@@ -2778,6 +2778,39 @@ allocation-pass prefix and without one. A value-size check cannot report
 those clock-field refusals. Both measured signatures therefore remain in
 the baseline; their disappearance is still unfinished work for #452.
 
+## Snapshot and subvolume fixed-field value sizes (#506)
+
+Black-box probes on 2026-11-03 used reference checker 1.39.7 inside the
+harness guest, on private copies of `default.img`, `aged.img`, `kernel.img`
+and `kernel-rootsnap.img` from fixtures artifact 13159750269 (CI run
+41476138017). The archive SHA-256 is
+`7d2625fd939cc994df96ac49c87059baa0317ea36b281dded7e8e4278465205a`.
+Only the tool's printed verdict and exit status were consulted; no reference
+source was read.
+
+The writer replaced the first snapshot or subvolume key with a shortened
+copy of its value, leaving its type and position unchanged. Across all four
+fixtures, the 44 probes gave these results:
+
+| Value | Bytes retained | Reference verdict |
+|---|---|---|
+| Snapshot | 0, 8, 16 | `invalid bkey` naming the key, `bad val size (N < 24)`, exit 13 |
+| Snapshot | 24, 32 | No value-size refusal; the absent state word is reported as unset |
+| Snapshot | 64, unchanged | Clean, exit 0 |
+| Subvolume | 0, 8 | `invalid bkey` naming the key, `bad val size (N < 16)`, exit 13 |
+| Subvolume | 16, 24 | No value-size refusal; the absent state word is reported as unset |
+| Subvolume | 48, unchanged | Clean, exit 0 |
+
+These are lower bounds, not exact lengths. The checker reports
+`bkey_val_size_too_small` with the key's btree, position, actual size and
+minimum, before the separate state-word checks. The new unit case covers
+both sides of each byte boundary and unrelated tree/type pairs. The host
+and live-reference regressions repeat all 20 undersized cases and eight
+unchanged controls; the existing state-word regressions retain the minimum
+length controls. The existing position-only unit test now supplies values
+of these minimum lengths instead of empty values; its expected position
+verdicts are unchanged. The new red regressions are unchanged.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
