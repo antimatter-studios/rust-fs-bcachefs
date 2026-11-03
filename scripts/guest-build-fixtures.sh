@@ -87,7 +87,20 @@ cleanup() {
             sleep 0.1
         done
         kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true
-        wait "$tool_pid" 2>/dev/null || true
+        # Never wait for it here. If the signal landed as the tool exited, bash
+        # collected the status and jumped out of run_owned's wait before noting
+        # it, so it thinks the tool still runs, and a wait would then block on
+        # every other child, the FUSE daemon among them, for ever. Once the
+        # tool is gone it has been reaped; kill -0 sees that either way.
+        for _ in {1..50}; do
+            kill -0 "$tool_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$tool_pid" 2>/dev/null; then
+            echo "fixtures: owned tool $tool_pid did not stop; retained $scratch" >&2
+            unmounted=no
+            status=1
+        fi
     fi
     if [ -n "${mnt:-}" ] && ! fuse_kill; then
         echo "fixtures: owned mount is still busy; retained $scratch" >&2
