@@ -2570,9 +2570,8 @@ counts `subvol_state_bad`, for exactly two things:
 | Word 1 to 8, or all ones | "has invalid state", with its nearest codeword |
 
 A word with any bit set is therefore not unset, whatever the other verdict is:
-those verdicts are not judged by this rule. All the fixtures were written by
-the 1.39 format version, so whether an older version's subvolume, which has no
-such word, is held to this is not observed.
+those verdicts are not judged by this rule. The next section measures them, and
+what an older format version does with an unset word.
 
 **Dirent type (#473).** All 256 values of a dirent's type byte were written to a
 regular file on `default.img`, `lz4.img` and `kernel.img`, a directory on
@@ -2596,8 +2595,102 @@ The decoder therefore reads the type as the byte's low five bits.
 
 Both the snapshot's state word at bytes 56..60 (`a2 47 7c 75` in every fixture)
 and the subvolume's pad word at bytes 44..48 were also seen to be judged during
-these probes. Neither is judged by this checker yet, and no differential
-baseline line covers them.
+these probes. The next section measures them, and no differential baseline line
+covers them.
+
+## State and pad words of snapshots and subvolumes (#487)
+
+Black-box guest probes on 2026-11-03 used reference checker 1.39.7 and copies
+of the reference-made fixtures from CI run 41476138017 (fixtures artifact
+13159750269, the digest above). The writer's raw insert committed each changed
+key to a sparse copy, and only the printed verdict and exit status of
+`bcachefs-ref fsck -n`, and of the reference formatter and key editor, were
+consulted, over 841 cases in run 41608314979 and 703 in run 41613109770. No
+reference source was read.
+
+**The states.** The reference key editor's refusal of a state name lists the
+names it accepts, and storing each shows its word. The subvolume's were checked
+another way: walking the checker's printed distance from the nearest codeword
+down one bit at a time reached `unlinked` from `0x3`, all ones and `0x0f0f0f0f`,
+and `live` from `0x80000000`.
+
+| Key | State | Word |
+|---|---|---|
+| Subvolume | live | `0x4ad5447e` |
+| Subvolume | unlinked | `0x2d358e8f` |
+| Subvolume | deleted | `0x3c6b2d4c` |
+| Snapshot | live | `0x757c47a2` |
+| Snapshot | will_delete | `0x3316a8d2` |
+| Snapshot | no_keys | `0x372b5a01` |
+| Snapshot | deleted | `0x7cd4a225` |
+
+**The word.** A word is judged by its Hamming distance from the nearest state,
+with three samples at each distance from 1 to 10 and one at each of 12, 14, 16,
+18, 20 and 24, from every state of both keys. It is the little-endian word at
+value bytes 56..60 of a snapshot and 40..44 of a subvolume:
+
+| Distance | Snapshot | Subvolume |
+|---|---|---|
+| 0 | a state, see below | a state, see below |
+| 1 or 2 | "is a N-bit flip of *state*", `snapshot_state_bitflip` | the same, `subvol_state_bitflip` |
+| 3 to 6 | "is N bits from *state*", `snapshot_state_bad` | the same, `subvol_state_bad` |
+| 7 or more | "is garbage, but the node is referenced - marking live", `snapshot_state_bad` | "has invalid state ... (nearest codeword *state* is N bits away)", `fsck_repair_unimplemented` and exit 1; no counter names it, and the checker calls it `subvol_state_invalid` |
+
+Thirty random words gave the last row on each key. A zero word, or a value that
+ends before the word, is "state unset, recovering from legacy flags" and
+`snapshot_state_bad` for a snapshot of 24 bytes or more, as the section above
+has it for a subvolume of 16 or more. Below those lengths the value is refused
+for its size (#506). A zero word, a word at one and at seven bits from live, the
+word 1 and all ones gave these verdicts on every snapshot and subvolume of
+`default.img`, `aged.img`, `kernel.img` and `kernel-rootsnap.img`.
+
+**The other states.** A word that is exactly a state is no finding of the word
+alone. On a live, used key the reference finds the rest of the filesystem at
+odds with it:
+
+- A snapshot at `will_delete` whose `subvol` is a live subvolume: "snapshot
+  marked will_delete but its subvolume is live",
+  `snapshot_deleted_but_subvol_live`.
+- A snapshot at `will_delete` with two live children: "snapshot marked
+  will_delete but has two live children",
+  `snapshot_deleted_has_live_children`.
+- A snapshot at `no_keys` or `deleted` with keys accounted to it:
+  "has data accounted" or "child pointer N is deleted but has N keys",
+  `snapshot_deleted_but_has_data`. The checker reads this from the snapshot's
+  per-snapshot counters, on clean images.
+- A subvolume at `unlinked` or `deleted`: #507.
+
+Every snapshot of every fixture is one of the first three, so these are all the
+snapshot rules a probe of the fixtures can show. Such a state with nothing at
+odds with it is not observed, and not judged (#507).
+
+**The pad.** Every bit of a subvolume's bytes 44..48 is "reserved pad field
+nonzero, deleting", in an `invalid bkey` line naming the key, and exit 13. A
+value lengthened by 8 or 16 bytes is refused for the same word, so the field is
+fixed there, and trailing bytes of ones are not read. The checker calls it
+`subvol_pad_nonzero`.
+
+**Older format versions.** Formatting at `--version=1.N` writes no key until
+the first start. A first start with `version_upgrade=none` kept the version at
+1.33, 1.35, 1.36, 1.37 and 1.38, and went to 1.39 from 1.0, 1.5, 1.15, 1.20,
+1.25, 1.26 and 1.30. In every case the subvolume and the snapshot hold their
+state words at the same bytes. These tools therefore make no older subvolume
+without the word, and whether an older tool's image is treated alike stays
+unobserved: there is no older tool here.
+
+What the word means at an older version was measured by lowering the version
+words of every superblock copy of a `default.img` copy (bytes 0x10, 0x12, 0xb8,
+0xbc and 0xbe, restamped). At 1.0, 1.5, 1.10, 1.15, 1.20, 1.25, 1.26, 1.27, 1.30,
+1.33, 1.35, 1.36, 1.37 and 1.38 the output for a zero word and a value ending
+before the word (subvolume at 40 and 16 bytes, snapshot at 56) is the same as the
+unchanged copy's at that version. So it is for a snapshot word near no state.
+The reference prints "Doing compatible version upgrade" and has no finding for
+them: an older subvolume is not held to the unset rule. At 1.39 it reports each.
+At 1.0, 1.20, 1.33, 1.35, 1.36 and 1.38 the same holds for a word three or six
+bits from a state, on either key. There too, a word one or two bits from a state,
+a subvolume's word more than six bits from one and the pad word are judged as at
+1.39. The checker follows that line, and judges a state against the rest of the
+filesystem only from 1.39, the one version it was measured at.
 
 ## No comparison against the reference source
 
