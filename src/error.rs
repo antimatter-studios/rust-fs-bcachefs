@@ -26,13 +26,14 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// Whether this is the volume's current state refusing a change to its
-    /// names, not damage or a limit of this crate: a name that is not
-    /// there, or one of the writer's own refusals of a name already taken,
-    /// a directory that is not empty, and a name that is not a directory
-    /// where one is needed (src/write.rs reports those three as `Corrupt`,
-    /// in these words, which the C ABI maps to EEXIST and ENOTEMPTY). The
-    /// CLI's exit 4 (#394).
+    /// Whether this is the volume's current state refusing a change, not
+    /// damage or a limit of this crate: a name that is not there, or one of
+    /// the writer's own refusals of a name already taken, a directory that
+    /// is not empty, and a name that is not a directory where one is needed
+    /// (src/write.rs reports those three as `Corrupt`, in these words, which
+    /// the C ABI maps to EEXIST and ENOTEMPTY), or too few free buckets for
+    /// a write (src/write_alloc.rs reports that as `Unsupported`, in these
+    /// words, which the C ABI maps to ENOSPC). The CLI's exit 4 (#394, #456).
     pub fn is_state_refusal(&self) -> bool {
         match self {
             Error::NotFound(_) => true,
@@ -41,6 +42,7 @@ impl Error {
                     || m == "the directory is not empty"
                     || m.ends_with(" is not a directory")
             }
+            Error::Unsupported(m) => m.contains(" free buckets are needed"),
             _ => false,
         }
     }
@@ -91,6 +93,7 @@ mod tests {
             Error::Corrupt("the directory is not empty".into()),
             Error::Corrupt(format!("{:?} is not a directory", "x")),
             Error::Corrupt("inode 4096 is not a directory".into()),
+            Error::Unsupported("128 free buckets are needed and only 105 are free".into()),
         ] {
             assert!(refusal.is_state_refusal(), "{refusal}");
         }

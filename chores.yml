@@ -199,19 +199,26 @@ tasks:
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
+    # Every guard runs and the tier fails at the end if any did: one host
+    # problem must not hide what the guards after it say (#411).
     # By glob, so a test added later needs no edit here: a guard that has
     # to be registered somewhere else is a guard that gets silently
-    # skipped. They test the scripts that drive the fuzzer (sandboxed
-    # stand-ins for cargo, no toolchain needed). BUDGET: two tests, one
-    # PASS line each, plus the tier's own lines.
+    # skipped. They test the scripts that drive the fuzzer and the fixture
+    # builds (sandboxed stand-ins, no toolchain needed). They need python3
+    # with PyYAML. BUDGET MEASURED: main's run 41523503315 printed 40 lines /
+    # 2410 bytes against 40 / 2500. With the two guards of #411 and #445,
+    # macOS arm64 (2026-11-03) printed 45 lines / 2776 bytes. About 30% over
+    # that is 60 / 3700, as the other tiers keep for a merge queue group.
     cmds:
       - |
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 40 2500 -- bash -c '
-          set -eu
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 60 3700 -- bash -c '
+          set -u
+          failed=0
           for t in tests/scripts/*.sh; do
             echo "== $t"
-            bash "$t"
+            bash "$t" || { echo "FAIL  $t"; failed=1; }
           done
+          exit "$failed"
         '
 
   test:vm:

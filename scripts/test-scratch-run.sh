@@ -93,7 +93,9 @@ run_is_active() {
 }
 
 remove_root() {
-    chmod -R u+rwX -- "$1" 2>/dev/null || true
+    # No `--`: BSD chmod takes one after the mode for a file name, and every
+    # root here is an absolute path.
+    chmod -R u+rwX "$1" 2>/dev/null || true
     rm -rf -- "$1"
 }
 
@@ -182,7 +184,9 @@ recover_orphans
 
 run="$(mktemp -d "$base/run.XXXXXXXX")" ||
     { echo "test-scratch-run: cannot create a scratch root under $base" >&2; exit 70; }
-chmod 700 -- "$run"
+# Applied and then read back: what follows is written into this root.
+chmod 700 "$run" && [ "$(ls -ld "$run" | cut -c1-10)" = drwx------ ] ||
+    { remove_root "$run"; echo "test-scratch-run: cannot make $run private" >&2; exit 70; }
 write_marker || { remove_root "$run"; echo "test-scratch-run: cannot write the marker in $run" >&2; exit 70; }
 mkdir -p -- "$run/scratch" "$run/tmp" || { remove_root "$run"; exit 70; }
 

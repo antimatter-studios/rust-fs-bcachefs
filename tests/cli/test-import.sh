@@ -87,4 +87,24 @@ check 'the container around the device is untouched' offset_extract "$SANDBOX/em
 fs.bcachefs "$SANDBOX/extracted.img" read /d/big.bin >"$SANDBOX/back" 2>/dev/null
 check 'the offset import reads back whole' cmp -s "$SANDBOX/big" "$SANDBOX/back"
 
+# An import that cannot fit is refused for space (#456): the image is filled
+# in place first, because a source larger than the device stops at a journal
+# limit before space is asked. tests/write_oracle.rs has the reference's view.
+img="$SANDBOX/full.img"
+cp "$base" "$img"
+head -c 4194304 /dev/zero | tr '\0' 'f' >"$SANDBOX/fill"
+for n in $(seq 1 64); do
+    fs.bcachefs "$img" put "/d/fill-$n" --from "$SANDBOX/fill" >/dev/null 2>"$SANDBOX/err" || break
+done
+check "the image filled ($(cat "$SANDBOX/err"))" jq -e '.error | contains("free buckets are needed")' "$SANDBOX/err" >/dev/null
+fs.bcachefs "$img" read /d/existing >"$SANDBOX/before" 2>/dev/null
+fs.bcachefs "$img" import --replace "$SANDBOX/fill" /d/existing >"$SANDBOX/out" 2>"$SANDBOX/err"
+status=$?
+check "an import that cannot fit exits 4 (got $status: $(cat "$SANDBOX/err"))" test "$status" -eq 4
+check 'the refusal names the space it lacks' jq -e '.code == 4 and (.error | contains("free buckets are needed")) and (.error | contains("not implemented") | not)' "$SANDBOX/err" >/dev/null
+check 'the refusal has no report' test ! -s "$SANDBOX/out"
+fs.bcachefs "$img" read /d/existing >"$SANDBOX/after" 2>/dev/null
+check 'the refused import keeps the old bytes' cmp -s "$SANDBOX/before" "$SANDBOX/after"
+check 'the refused import leaves nothing staged' test -z "$(staged "$img")"
+
 finish

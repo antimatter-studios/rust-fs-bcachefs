@@ -1,0 +1,67 @@
+#!/usr/bin/env perl
+# timeout [-k SECONDS] [-s SIGNAL] SECONDS COMMAND [ARGS...] -- the part of
+# GNU timeout(1) the scripts here use, for a host that has none. The guards put
+# this directory LAST on PATH, so a host with the real tool uses it. The status
+# is GNU's: 124 for a command stopped at its limit, 128+9 when SIGKILL stopped
+# it, 125 for a bad command line, 126 or 127 when the command cannot start.
+use strict;
+use warnings;
+use POSIX ();
+
+sub usage { print STDERR "usage: timeout [-k SECONDS] [-s SIGNAL] SECONDS COMMAND [ARGS...]\n"; exit 125; }
+sub seconds {
+    my ($text) = @_;
+    defined $text && $text =~ /^(\d+)s?$/ or usage();
+    return $1;
+}
+
+my ($kill_after, $signal) = (0, 'TERM');
+while (@ARGV && $ARGV[0] =~ /^-/) {
+    my $option = shift @ARGV;
+    if ($option eq '--') { last; }
+    elsif ($option eq '-k') { $kill_after = seconds(shift @ARGV); }
+    elsif ($option =~ /^--kill-after=(.*)$/) { $kill_after = seconds($1); }
+    elsif ($option eq '-s') { $signal = shift @ARGV; defined $signal or usage(); }
+    elsif ($option =~ /^--signal=(.*)$/) { $signal = $1; }
+    else { usage(); }
+}
+$signal =~ s/^SIG//;
+my $limit = seconds(shift @ARGV);
+@ARGV or usage();
+
+my $pid = fork;
+defined $pid or exit 125;
+if ($pid == 0) {
+    # Its own process group, so what it starts is stopped with it.
+    POSIX::setpgid(0, 0);
+    { no warnings 'exec'; exec { $ARGV[0] } @ARGV; }
+    print STDERR "timeout: $ARGV[0]: $!\n";
+    POSIX::_exit($!{ENOENT} ? 127 : 126);
+}
+POSIX::setpgid($pid, $pid);
+
+my $timed_out = 0;
+$SIG{ALRM} = sub {
+    if ($timed_out) {
+        kill '-KILL', $pid;
+        return;
+    }
+    $timed_out = 1;
+    kill "-$signal", $pid;
+    alarm $kill_after if $kill_after;
+};
+for my $name (qw(HUP INT TERM)) {
+    $SIG{$name} = sub {
+        kill "-$name", $pid;
+        alarm $kill_after if $kill_after;
+    };
+}
+alarm $limit;
+while (waitpid($pid, 0) == -1) { last unless $!{EINTR}; }
+my $status = $?;
+alarm 0;
+if ($status & 127) {
+    my $by = $status & 127;
+    exit($timed_out && $by != POSIX::SIGKILL ? 124 : 128 + $by);
+}
+exit($timed_out ? 124 : $status >> 8);

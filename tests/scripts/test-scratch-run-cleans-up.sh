@@ -37,7 +37,10 @@ fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
 sandbox="$(mktemp -d)"
 trap 'chmod -R u+rwX "$sandbox" 2>/dev/null; rm -rf -- "$sandbox"' EXIT
 export CARGO_TARGET_DIR="$sandbox/target"
-base="$CARGO_TARGET_DIR/test-scratch"
+mkdir -p "$CARGO_TARGET_DIR/test-scratch"
+# The script names its roots canonically, and $sandbox need not be canonical:
+# macOS's default temporary directory is under the symlink /var.
+base="$(cd "$CARGO_TARGET_DIR/test-scratch" && pwd -P)"
 
 no_runs_left() { ! ls -d "$base"/run.* >/dev/null 2>&1; }
 
@@ -59,6 +62,71 @@ case "$root" in "$base"/run.*/scratch) ;; *) fail "the scratch root $root is not
 [ "$(sed -n 2p "$out")" = "$(sed -n 3p "$out")" ] && [ "$(sed -n 3p "$out")" = "$(sed -n 4p "$out")" ] ||
     fail "TMP and TEMP do not match TMPDIR"
 [ ! -e "$(dirname "$root")" ] || fail "the root of a passing run was left behind"
+
+# --- a target directory reached through a symlink: the root is canonical.
+mkdir -p "$sandbox/real-target"
+ln -s real-target "$sandbox/link-target"
+CARGO_TARGET_DIR="$sandbox/link-target" bash "$RUN" sh -c 'echo "$FS_BCACHEFS_TEST_SCRATCH_ROOT" >"$1"' sh "$out"
+status=$?
+[ "$status" = 0 ] || fail "a run through a symlinked target directory exited $status"
+canonical="$(cd "$sandbox/real-target/test-scratch" && pwd -P)"
+case "$(cat "$out")" in "$canonical"/run.*/scratch) ;; *) fail "the root $(cat "$out") is not under the canonical $canonical" ;; esac
+
+# --- permissions: the root is private, with the tools BSD and GNU both have.
+# chmod here takes the mode and then file names, as BSD's does: a `--` after
+# the mode is a file name, which fails. GNU's chmod accepts that form, so only
+# this stand-in shows on Linux what a Mac does.
+real_chmod="$(command -v chmod)"
+modes="$sandbox/bsd-chmod"
+mkdir -p "$modes"
+cat >"$modes/chmod" <<STUB
+#!/usr/bin/env bash
+options=()
+while [ "\$#" -gt 0 ]; do
+    case "\$1" in -*) options+=("\$1"); shift ;; *) break ;; esac
+done
+mode="\$1"; shift
+status=0
+for file in "\$@"; do
+    if [ "\$file" = -- ]; then
+        echo "chmod: --: No such file or directory" >&2
+        echo "\$mode" >>"\$CHMOD_LOG"
+        status=1
+    else
+        "$real_chmod" \${options[@]+"\${options[@]}"} "\$mode" "\$file" || status=1
+    fi
+done
+exit "\$status"
+STUB
+"$real_chmod" +x "$modes/chmod"
+: >"$sandbox/chmod.log"
+CHMOD_LOG="$sandbox/chmod.log" PATH="$modes:$PATH" bash "$RUN" sh -c \
+    'ls -ld "$(dirname "$FS_BCACHEFS_TEST_SCRATCH_ROOT")" >"$1"; mkdir "$FS_BCACHEFS_TEST_SCRATCH_ROOT/ro"
+     : >"$FS_BCACHEFS_TEST_SCRATCH_ROOT/ro/f"; "$2" 500 "$FS_BCACHEFS_TEST_SCRATCH_ROOT/ro"' \
+    sh "$out" "$real_chmod" 2>"$sandbox/bsd.err"
+status=$?
+[ "$status" = 0 ] || fail "a run with BSD chmod's argument order exited $status"
+[ ! -s "$sandbox/chmod.log" ] || fail "the script passed -- after a mode to chmod, which BSD takes for a file: $(tr '\n' ' ' <"$sandbox/chmod.log")"
+[ ! -s "$sandbox/bsd.err" ] || fail "a passing run printed: $(cat "$sandbox/bsd.err")"
+case "$(cut -c1-10 "$out")" in drwx------) ;; *) fail "the root is not private: $(cat "$out")" ;; esac
+no_runs_left || fail "a run with a read-only directory was left under $base"
+
+# A chmod that fails, or that leaves the root open, stops the run: nothing
+# runs in a root the script could not make private, and the root goes.
+for broken in fails ignored; do
+    if [ "$broken" = fails ]; then
+        printf '#!/usr/bin/env bash\nexit 1\n' >"$modes/chmod"
+    else
+        printf '#!/usr/bin/env bash\n[ "$1" = 700 ] && exec "%s" 755 "$2"\nexec "%s" "$@"\n' \
+            "$real_chmod" "$real_chmod" >"$modes/chmod"
+    fi
+    rm -f "$sandbox/ran"
+    PATH="$modes:$PATH" bash "$RUN" touch "$sandbox/ran" 2>"$sandbox/$broken.err"
+    status=$?
+    [ "$status" = 70 ] || fail "chmod $broken: the script exited $status, not 70"
+    [ ! -e "$sandbox/ran" ] || fail "chmod $broken: the command ran in a root that is not private"
+    no_runs_left || fail "chmod $broken: the root was left under $base"
+done
 
 # --- failure and abort: the status is preserved, the root removed.
 bash "$RUN" sh -c 'echo "$FS_BCACHEFS_TEST_SCRATCH_ROOT" >"$1"; : >"$FS_BCACHEFS_TEST_SCRATCH_ROOT/x.img"; exit 3' sh "$out"

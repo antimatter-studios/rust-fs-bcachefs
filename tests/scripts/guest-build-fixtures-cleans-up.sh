@@ -14,6 +14,7 @@ import tempfile
 import time
 
 script = Path(sys.argv[1])
+support = script.parent.parent / 'tests/scripts/support'
 stub = r'''import json, os, shutil, signal, sys, tempfile, time
 from pathlib import Path
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
@@ -24,7 +25,7 @@ mode = os.environ['FIXTURE_MODE']
 state = case / 'mount.json'
 def record(kind, **kw):
     with (case / 'events').open('a') as f:
-        f.write(json.dumps(dict(kind=kind, pid=os.getpid(), **kw)) + '\n')
+        f.write(json.dumps(dict(kind=kind, pid=os.getpid(), sid=os.getsid(0), **kw)) + '\n')
 def hold(kind):
     if mode == kind + '-hold':
         (case / 'ready').write_text(str(os.getpid()))
@@ -48,6 +49,20 @@ elif name == 'bcachefs-ref':
                 src = image(a.split('=', 1)[1])
                 assert src.is_dir(), 'formatter source is not visible inside chroot'
         if mode == 'format-fail': sys.exit(31)
+        if mode == 'format-descendant-hold':
+            # A child of the tool that ignores TERM and is not the supervisor's
+            # to name: only the tool's session's process group can reach it.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            child = os.fork()
+            if child == 0:
+                # Bounded, so a guard stopped part way leaves nothing behind.
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline: time.sleep(.01)
+                os._exit(0)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            record('descendant', child=child)
+            (case / 'ready').write_text(str(os.getpid()))
+            while not (case / 'release').exists(): time.sleep(.01)
         hold('format')
     elif op == 'fusemount':
         img, mnt = image(args[-2].split(':')[0]), image(args[-1])
@@ -241,11 +256,14 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
     old_work.mkdir()
     (old_work / 'keep').touch()
     processes = []
+    # How many cases of each kind ran: a run cut short has fewer, and fails.
+    ran = dict(status=0, signal=0, descendant=0)
 
     def start(label, mode):
         case = sandbox / label
         case.mkdir()
-        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+        # The host's own setsid wins; tests/scripts/support is for a host with none.
+        env = dict(os.environ, PATH=os.pathsep.join((str(tools), os.environ['PATH'], str(support))),
                    BCACHEFS_REF_ROOT=str(root), BCACHEFS_FIXTURE_OUT=str(fixtures),
                    BCACHEFS_FIXTURE_WATCHDOG=str(watchdog), BCACHEFS_FIXTURE_STUDY=str(study),
                    FIXTURE_CASE=str(case), FIXTURE_MODE=mode, WATCHDOG_PID='inherited-not-owned')
@@ -286,13 +304,23 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
         assert (case / 'mount.json').exists() == retained, ('mount lifecycle', diagnostic)
         for e in records:
             if e['kind'] in ('reference', 'copy'):
+                assert e['sid'] == e['pid'], ('owned child does not lead its own session', e)
                 try: os.kill(e['pid'], 0)
                 except ProcessLookupError: pass
                 else: raise AssertionError('owned child survived cleanup')
+            if e['kind'] == 'descendant':
+                end = time.monotonic() + 10
+                while True:
+                    try: os.kill(e['child'], 0)
+                    except ProcessLookupError: break
+                    assert time.monotonic() < end, ('descendant survived cleanup', e)
+                    time.sleep(.01)
+                ran['descendant'] += 1
         assert (legacy / 'keep.img').read_text() == 'unmarked legacy image'
         assert (old_work / 'keep').exists()
         assert cached.read_text() == 'published manifest from another job'
         if not retained: assert any(e['kind'] == 'remove' for e in records)
+        ran['signal' if status > 128 else 'status'] += 1
         return scratch
 
     try:
@@ -327,7 +355,8 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
         assert 'mount identity changed; refusing to detach' in (case / 'log').read_text()
         assert not any(e['kind'] == 'unmount' for e in events(case))
         for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-            for mode in ('format-hold', 'mount-hold', 'mount-unrecorded-hold', 'copy-hold'):
+            for mode in ('format-hold', 'format-descendant-hold', 'mount-hold',
+                         'mount-unrecorded-hold', 'copy-hold'):
                 proc, case = start(f'{sig.name}-{mode}', mode)
                 await_ready(proc, case)
                 if mode == 'mount-hold':
@@ -363,6 +392,7 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
             assert (fixtures / name).exists(), f'published fixture lost: {name}'
         proc, case = start('busy-unmount', 'unmount-fail')
         finish(proc, case, 1, retained=True)
+        assert ran == dict(status=10, signal=16, descendant=3), ('cases that ran', ran)
     finally:
         for proc in processes:
             if proc.poll() is None:
