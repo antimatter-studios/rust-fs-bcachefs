@@ -229,6 +229,28 @@ fn agree_on_words(
 
 #[cfg(feature = "write")]
 #[test]
+fn both_checkers_agree_on_a_short_snapshot_value() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::VALUE_SIZE_SETS,
+        key_field_bytes::SNAPSHOT_VALUE_SIZES,
+        key_field_bytes::plant_snapshot,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_short_subvolume_value() {
+    let mismatches = agree_on_words(
+        &key_field_bytes::VALUE_SIZE_SETS,
+        key_field_bytes::SUBVOLUME_VALUE_SIZES,
+        key_field_bytes::plant_subvolume,
+    );
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[cfg(feature = "write")]
+#[test]
 fn both_checkers_agree_on_a_snapshot_state_word() {
     let mismatches = agree_on_words(
         &key_field_bytes::SNAPSHOT_SETS,

@@ -84,6 +84,34 @@ pub const SUBVOLUME_STATE: &[(&[Edit], bool)] = &[
 /// crate reports. `None` is a value neither of them has a finding for.
 pub type WordCase = (&'static [Edit], Option<(&'static str, &'static str)>);
 
+pub const VALUE_SIZE_SETS: [&str; 4] = ["default", "aged", "kernel", "kernel-rootsnap"];
+pub const SNAPSHOT_VALUE_SIZES: &[WordCase] = &[
+    (&[], None),
+    (
+        &[Edit::Truncate(0)],
+        Some(("bad val size (0 < 24)", "bkey_val_size_too_small")),
+    ),
+    (
+        &[Edit::Truncate(8)],
+        Some(("bad val size (8 < 24)", "bkey_val_size_too_small")),
+    ),
+    (
+        &[Edit::Truncate(16)],
+        Some(("bad val size (16 < 24)", "bkey_val_size_too_small")),
+    ),
+];
+pub const SUBVOLUME_VALUE_SIZES: &[WordCase] = &[
+    (&[], None),
+    (
+        &[Edit::Truncate(0)],
+        Some(("bad val size (0 < 16)", "bkey_val_size_too_small")),
+    ),
+    (
+        &[Edit::Truncate(8)],
+        Some(("bad val size (8 < 16)", "bkey_val_size_too_small")),
+    ),
+];
+
 /// The words the reference key editor stores for each name it accepts: a
 /// snapshot's state is live, will_delete, no_keys or deleted, and a subvolume's
 /// live, unlinked or deleted.

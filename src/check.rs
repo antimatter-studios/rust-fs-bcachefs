@@ -2294,11 +2294,17 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         );
     }
     // "bad val size (24 < 32)", seen on user data and on a btree node (#426).
-    if (id, k.key_type) == (BACKPOINTERS, KEY_BACKPOINTER) && k.value.len() < 32 {
+    let minimum_value = match (id, k.key_type) {
+        (BACKPOINTERS, KEY_BACKPOINTER) => Some(("backpointer", 32)),
+        (SNAPSHOTS, KEY_SNAPSHOT) => Some(("snapshot", SNAP_MIN_BYTES)),
+        (SUBVOLUMES, KEY_SUBVOLUME) => Some(("subvolume", SUBVOL_MIN_BYTES)),
+        _ => None,
+    };
+    if let Some((kind, minimum)) = minimum_value.filter(|(_, minimum)| k.value.len() < *minimum) {
         r.add(
             "bkey_val_size_too_small",
             format!(
-                "btree {name}: backpointer {} has {} bytes, not 32",
+                "btree {name}: {kind} {} has {} bytes, not {minimum}",
                 k.pos,
                 k.value.len()
             ),
@@ -3435,6 +3441,29 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_and_subvolume_value_sizes_are_checked() {
+        for (tree, key_type, minimum) in [
+            (SNAPSHOTS, KEY_SNAPSHOT, SNAP_MIN_BYTES),
+            (SUBVOLUMES, KEY_SUBVOLUME, SUBVOL_MIN_BYTES),
+        ] {
+            for bytes in 0..=minimum + 1 {
+                let expected = if bytes < minimum {
+                    vec!["bkey_val_size_too_small"]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(
+                    field_kinds(tree, &key(key_type, 1, vec![0; bytes])),
+                    expected,
+                    "tree {tree}, {bytes} bytes, minimum {minimum}"
+                );
+            }
+            assert!(field_kinds(tree, &key(KEY_SET, 1, Vec::new())).is_empty());
+            assert!(field_kinds(btree_id::INODES, &key(key_type, 1, Vec::new())).is_empty());
+        }
+    }
+
+    #[test]
     fn a_subvolume_state_the_reference_calls_unset_is_named() {
         // The guest probe of 2026-11-02 (#469): a zero word at bytes 40..44,
         // or a value of 16 bytes or more that ends before it. Other words
@@ -3765,7 +3794,7 @@ mod tests {
     #[test]
     fn subvolume_snapshot_and_indirect_extent_positions_are_judged() {
         // Nightly differential runs (#463).
-        let subvolume = |offset| key(KEY_SUBVOLUME, offset, Vec::new());
+        let subvolume = |offset| key(KEY_SUBVOLUME, offset, vec![0; SUBVOL_MIN_BYTES]);
         assert_eq!(field_kinds(SUBVOLUMES, &subvolume(1)), Vec::<&str>::new());
         assert_eq!(
             field_kinds(SUBVOLUMES, &subvolume(u64::from(u32::MAX))),
@@ -3775,7 +3804,7 @@ mod tests {
             field_kinds(SUBVOLUMES, &subvolume(u64::MAX)),
             ["subvol_pos_bad"]
         );
-        let snapshot = |offset| key(KEY_SNAPSHOT, offset, Vec::new());
+        let snapshot = |offset| key(KEY_SNAPSHOT, offset, vec![0; SNAP_MIN_BYTES]);
         assert_eq!(
             field_kinds(SNAPSHOTS, &snapshot(u64::from(u32::MAX))),
             Vec::<&str>::new()
