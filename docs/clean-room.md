@@ -2136,6 +2136,28 @@ nonzero version word, and 8 zero bytes after the value; mode type bits
 were refused by later passes, not as an invalid key. This is black-box
 output only; no reference source was read.
 
+M belongs to the value in hand and not to the file (#495). The times are
+varints, so the same file's value was 14 u64s in the fixture of one CI run
+(41560732761) and 15 in another's (41560703940), and the reference printed
+that M each time. A guest run on 2026-11-03 (reference checker 1.39.7)
+encoded the times again, moved the inodes btree's byte counter with the
+value, and read each copy with `bcachefs-ref fsck -n`. The lengths in u64s:
+
+| inode | as made | first varint of each time 1 << 60 | all times zero |
+|---|---|---|---|
+| `/many/file-0200.txt`, `default.img` | 14 | 15 | 11 |
+| `/`, `default.img` | 11 | 14 | 10 |
+| `/`, `kernel.img` | 12 | 14 | 10 |
+
+At every length the reference and this checker agreed on the out-of-range
+values tried: n 2 on the file, the smallest n past M on the file and on
+`default.img`'s root, and n 0 and 15 on `kernel.img`'s root, each printed
+with the changed key's length as M. fields_start is even, so a value of odd
+length has no fields_start equal to it: the file's 15 and 11 took 8 zero
+bytes, and fields_start at the new end, 16 and 12, was clean to both. So
+was fields_start at the end of the file's 14 and of `kernel.img`'s root at
+10, 12 and 14. This is black-box output only; no reference source was read.
+
 ### The key types a btree holds (S3, #163)
 
 `tests/check_oracle_key_types.rs` plants a key of every type into a copy
