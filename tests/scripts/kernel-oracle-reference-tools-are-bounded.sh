@@ -42,6 +42,7 @@ mkdir "$stubs"
 # the status KO_BOOT names, which for a first boot `boot` passes on. 124 is
 # what a guest stopped at its limit returns; the real limit is 300 seconds,
 # and tests/scripts/kernel-oracle-boot-is-bounded.sh already holds `boot` to it.
+# A first boot's console is KO_CONSOLE, when that names a file.
 cat >"$stubs/qemu-system-x86_64" <<'EOF'
 #!/usr/bin/env bash
 : >"$KO_STATE/booted"
@@ -55,6 +56,11 @@ done
 if [ -n "$judge" ]; then
     : >"$KO_STATE/judge-booted"
     exit 0
+fi
+if [ -n "${KO_CONSOLE:-}" ]; then
+    for arg in "$@"; do
+        case "$arg" in file:*/console.log) cp "$KO_CONSOLE" "${arg#file:}" ;; esac
+    done
 fi
 exit "$KO_BOOT"
 EOF
@@ -298,6 +304,37 @@ if [ -n "$fin" ]; then
     recorded "fsck: clean"
     recorded "prealloc-fsck: clean"
     named "first boot"
+fi
+
+# Its console says nothing about the module, so nobody is accused.
+if [ -n "$fin" ]; then
+    named "no report from the reference kernel module"
+    recorded "boot: .*no report from the reference kernel module"
+fi
+
+# The module's own hang fails the build just the same, and says it is the
+# module's (#514): naming it must not turn a hang into a pass.
+module_console="$tmp/module-console"
+{
+    echo '[   15.353711] bcachefs (vdb): Journal stuck? Waited for 10s, err journal_full'
+    echo '[   15.353711] seq:                       66'
+    echo '[   15.353711] seq_ondisk:                66'
+    echo '[  243.002633] INFO: task rm:1697 blocked for more than 120 seconds.'
+    echo '[  243.012531]  some_module_function+0x528/0x590 [bcachefs]'
+    echo '[  243.051753]  </TASK>'
+} >"$module_console"
+export KO_CONSOLE="$module_console"
+scenario hung-module 124 answers none
+unset KO_CONSOLE
+if [ -n "$fin" ]; then
+    exits 1
+    named "first boot"
+    named "reference kernel module hung"
+    named "vdb"
+    recorded "boot: .*reference kernel module hung"
+    recorded "judge: not booted"
+    recorded "fsck: clean"
+    [ -e "$state/judge-booted" ] && fail "$name: the judge boot ran after a hung first boot"
 fi
 
 # A guest killed after ignoring its limit returns 137 and is the same hang.
