@@ -217,9 +217,12 @@ tasks:
     # 2410 bytes against 40 / 2500. With the two guards of #411 and #445,
     # macOS arm64 (2026-11-03) printed 45 lines / 2776 bytes. About 30% over
     # that is 60 / 3700, as the other tiers keep for a merge queue group.
+    # MEASURED 2026-11-03 (#515): the three added lifecycle guards print
+    # 58 lines / 3694 bytes on macOS arm64, up from 53 / 3287 at #513.
+    # The same 30% headroom, rounded up, is 80 lines / 4900 bytes.
     cmds:
       - |
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 60 3700 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 80 4900 -- bash -c '
           set -u
           failed=0
           for t in tests/scripts/*.sh; do

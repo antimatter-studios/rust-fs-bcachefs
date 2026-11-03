@@ -37,6 +37,14 @@ scratch='' owner='' fuse_pid='' tool_pid=''
 stop_fuse() {
     if [ -n "$fuse_pid" ]; then
         kill -KILL -- "-$fuse_pid" "$fuse_pid" 2>/dev/null || true
+        for _ in {1..50}; do
+            kill -0 "$fuse_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$fuse_pid" 2>/dev/null; then
+            echo "write-study: owned FUSE process $fuse_pid did not stop" >&2
+            return 1
+        fi
         wait "$fuse_pid" 2>/dev/null || true
         fuse_pid=
     fi
@@ -54,7 +62,15 @@ cleanup() {
     trap '' HUP INT TERM
     if [ -n "$tool_pid" ]; then
         kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true
-        wait "$tool_pid" 2>/dev/null || true
+        for _ in {1..50}; do
+            kill -0 "$tool_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$tool_pid" 2>/dev/null; then
+            echo "write-study: owned tool $tool_pid did not stop; retained $scratch" >&2
+            unmounted=no
+            cleanup_status=1
+        fi
     fi
     if [ -n "${mnt:-}" ] && ! stop_fuse; then
         echo "write-study: owned mount is still busy; retained $scratch" >&2

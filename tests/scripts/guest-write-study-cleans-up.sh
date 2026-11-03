@@ -3,7 +3,7 @@
 # No reference source, VM, mount privileges, or filesystem fixtures are used.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 - "$repo/scripts/guest-write-study.sh" <<'PY'
+python3 - "${STUDY_GUARD_SUPERVISOR:-$repo/scripts/guest-write-study.sh}" "$repo" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -15,22 +15,33 @@ import tempfile
 import time
 
 script = Path(sys.argv[1])
-support = script.parent.parent / 'tests/scripts/support'
+support = Path(sys.argv[2]) / 'tests/scripts/support'
+sys.path.insert(0, str(support))
+from supervisor_guard import SupervisorProgress, events, in_session, signals_at_default, trace_progress_into
+
+selected = os.environ.get('STUDY_GUARD_CASES')
+def wanted(label):
+    return not selected or label in selected.split(',')
 # These stand-ins model tool boundaries, not the reference filesystem format.
 # Persistent trees make the script's unchanged fixture operations executable.
-stub = r'''import json, os, shutil, subprocess, sys, time
+stub = r'''import json, os, signal, sys, time
 from pathlib import Path
+time.sleep(float(os.environ.get('STUDY_TOOL_DELAY', 0)))
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 case = Path(os.environ['STUDY_CASE'])
 root = Path(os.environ['BCACHEFS_REF_ROOT'])
 mode = os.environ['STUDY_MODE']
 state = case / 'mount.json'
+bound = float(os.environ['STUDY_STAND_IN_BOUND'])
 def record(kind, **kw):
     with (case / 'events').open('a') as f:
         f.write(json.dumps(dict(kind=kind, pid=os.getpid(), sid=os.getsid(0), **kw)) + '\n')
 def pause():
-    while not (case / 'release').exists(): time.sleep(.02)
+    deadline = time.monotonic() + bound
+    while not (case / 'release').exists():
+        assert time.monotonic() < deadline, 'stand-in hold exceeded its bound'
+        time.sleep(.02)
 def tree(img): return Path(str(img) + '.tree')
 def image(arg): return root / arg.lstrip('/')
 if name == 'bcachefs-ref':
@@ -39,11 +50,18 @@ if name == 'bcachefs-ref':
         img = image(args[-1])
         record('format', image=str(img), scratch=str(img.parent))
         if mode == 'format-fail': sys.exit(31)
-        if mode == 'hold':
+        if mode in ('hold', 'descendant-hold'):
+            if mode == 'descendant-hold':
+                child = os.fork()
+                if child == 0:
+                    pause()
+                    os._exit(0)
+                record('descendant', child=child)
             (case / 'ready').write_text(str(os.getpid()))
             pause()
         tree(img).mkdir(exist_ok=True)
     elif op == 'fusemount':
+        import shutil
         img, mnt = image(args[-2]), image(args[-1])
         record('fuse', mount=str(mnt), image=str(img))
         if mode == 'mount-fail': sys.exit(32)
@@ -53,7 +71,8 @@ if name == 'bcachefs-ref':
         state.write_text(json.dumps(dict(image=str(img), mount=str(mnt), pid=os.getpid())))
         if mode == 'mount-hold':
             (case / 'ready').write_text(str(os.getpid()))
-        while True: time.sleep(1)
+        deadline = time.monotonic() + bound
+        while time.monotonic() < deadline: time.sleep(1)
     elif op == 'fsck' and mode == 'check-fail': sys.exit(33)
     elif op == 'kvdb':
         # Model the printed CLI result from completed CI run 38763620048,
@@ -78,6 +97,7 @@ elif name == 'mountpoint':
         sys.exit(1)
     sys.exit(0 if mounted else 1)
 elif name in ('fusermount3', 'umount'):
+    import shutil
     if not state.exists(): sys.exit(1)
     data = json.loads(state.read_text())
     assert args[-1] == data['mount'], 'attempt to unmount another invocation'
@@ -91,6 +111,7 @@ elif name in ('fusermount3', 'umount'):
     shutil.copytree(mnt, tree(data['image']))
     state.unlink()
 elif name == 'cp':
+    import shutil
     src, dst = map(Path, args[-2:])
     record('copy', source=str(src), destination=str(dst))
     if mode == 'copy-fail': sys.exit(34)
@@ -116,6 +137,7 @@ elif name == 'stat':
         st = os.stat(path)
         print(args[1].replace('%i', str(st.st_ino)).replace('%s', str(st.st_size)).replace('%n', path))
 elif name == 'rm':
+    import subprocess
     # The obsolete script's blanket fixture deletion must fail safely, too.
     for arg in args:
         if not arg.startswith('-'):
@@ -147,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
     tools = sandbox / 'bin'
     tools.mkdir()
     executable = tools / 'stand-in'
-    executable.write_text('#!' + sys.executable + '\n' + stub)
+    executable.write_text('#!' + sys.executable + ' -IS\n' + stub)
     executable.chmod(0o755)
     for name in ('bcachefs-ref', 'mountpoint', 'fusermount3', 'umount', 'cp',
                  'truncate', 'seq', 'sleep', 'sync', 'python3', 'stat', 'rm', 'pkill', 'pgrep'):
@@ -163,6 +185,13 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
     cached = fixtures / 'cached.txt'
     cached.write_text('cached oracle output')
     processes = []
+    cases = []
+    IDLE_LIMIT = float(os.environ.get('STUDY_GUARD_IDLE_LIMIT', 60))
+    CASE_LIMIT = 900
+    progress = SupervisorProgress(sandbox, IDLE_LIMIT, CASE_LIMIT)
+    wait_for = progress.wait_for
+    await_ready = progress.await_ready
+    ran = dict(status=0, signal=0, descendant=0)
 
     def start(label, mode):
         case = sandbox / label
@@ -172,28 +201,19 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
                    BCACHEFS_REF_ROOT=str(root), BCACHEFS_STUDY_OUT=str(fixtures),
                    BCACHEFS_STUDY_WATCHDOG=str(watchdog), STUDY_CASE=str(case),
                    STUDY_MODE=mode, STUDY_REAL_RM=shutil.which('rm'),
-                   WATCHDOG_PID='inherited-not-owned')
-        log = (case / 'log').open('w')
-        proc = subprocess.Popen(['bash', str(script)], env=env, stdout=log,
-                                stderr=log, start_new_session=True)
-        log.close()
+                   WATCHDOG_PID='inherited-not-owned', STUDY_STAND_IN_BOUND=str(CASE_LIMIT))
+        with (case / 'log').open('w') as log:
+            trace_progress_into(env, log)
+            proc = subprocess.Popen(['bash', str(script)], env=env, stdout=log,
+                                    stderr=log, pass_fds=(log.fileno(),), start_new_session=True,
+                                    preexec_fn=signals_at_default)
         processes.append(proc)
+        cases.append(case)
         return proc, case
 
-    def events(case):
-        p = case / 'events'
-        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
-
-    def await_ready(proc, case):
-        end = time.monotonic() + 10
-        while time.monotonic() < end:
-            if (case / 'ready').exists(): return
-            assert proc.poll() is None, (case / 'log').read_text()
-            time.sleep(.02)
-        raise AssertionError('stand-in child did not become ready')
-
     def finish(proc, case, status):
-        actual = proc.wait(timeout=120)
+        wait_for(case, f'the supervisor to exit with status {status}', lambda: proc.poll() is not None)
+        actual = proc.returncode
         assert actual == status, (actual, status, (case / 'log').read_text())
         records = events(case)
         allocations = {e['scratch'] for e in records if e['kind'] == 'format'}
@@ -203,13 +223,19 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
         for event in records:
             if event['kind'] in ('format', 'fuse', 'copy'):
                 assert event['sid'] == event['pid'], ('owned child does not lead its own session', event)
-                try: os.kill(event['pid'], 0)
-                except ProcessLookupError: pass
-                else: raise AssertionError('owned child survived')
+                assert not in_session(event['pid'], event['sid']), ('owned child survived cleanup', event)
+            if event['kind'] == 'descendant':
+                end = time.monotonic() + float(os.environ.get('STUDY_GUARD_REAP_LIMIT', 60))
+                while in_session(event['child'], event['sid']):
+                    assert time.monotonic() < end, ('descendant survived cleanup', event)
+                    time.sleep(.01)
+                ran['descendant'] += 1
         assert (old / 'keep.img').read_text() == 'unmarked old work'
         assert cached.read_text() == 'cached oracle output'
+        ran['signal' if status > 128 else 'status'] += 1
         return allocations
 
+    passed = False
     try:
         # A directory named like the real failed mount must survive rm -f.
         # This control would fail with the old recursively-deleting stand-in.
@@ -221,7 +247,7 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
         payload.write_text('directory contents')
         env = dict(os.environ, STUDY_CASE=str(control), BCACHEFS_REF_ROOT=str(root),
                    BCACHEFS_STUDY_OUT=str(fixtures), STUDY_MODE='rm-control',
-                   STUDY_REAL_RM=shutil.which('rm'), LC_ALL='C')
+                   STUDY_REAL_RM=shutil.which('rm'), STUDY_STAND_IN_BOUND=str(CASE_LIMIT), LC_ALL='C')
         refusal = subprocess.run([str(tools / 'rm'), '-f', '--', str(mount)],
                                  env=env, text=True, capture_output=True)
         assert refusal.returncode == 1, (refusal.returncode, refusal.stderr)
@@ -233,60 +259,74 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
         assert not mount.parent.exists(), 'recursive rm control did not remove its root'
         for mode, status in [('format-fail', 31), ('mount-fail', 1),
                              ('check-fail', 1), ('copy-fail', 34)]:
+            if not wanted(mode): continue
             proc, case = start(mode, mode)
             finish(proc, case, status)
         for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-            for mode in ('hold', 'mount-hold', 'copy-hold'):
+            for mode in ('hold', 'descendant-hold', 'mount-hold', 'copy-hold'):
+                if not wanted(f'{sig.name}-{mode}'): continue
                 proc, case = start(f'{sig.name}-{mode}', mode)
                 await_ready(proc, case)
                 # Signal only the supervisor; it must kill/reap its child.
                 (case / 'signalled').touch()
                 proc.send_signal(sig)
                 finish(proc, case, 128 + sig)
-        first, a = start('concurrent-a', 'hold')
-        second, b = start('concurrent-b', 'hold')
-        await_ready(first, a)
-        await_ready(second, b)
-        a_root = events(a)[0]['scratch']
-        b_root = events(b)[0]['scratch']
-        assert a_root != b_root
-        first.send_signal(signal.SIGTERM)
-        finish(first, a, 143)
-        assert second.poll() is None and Path(b_root).exists(), 'other invocation was touched'
-        (b / 'release').touch()
-        finish(second, b, 0)
-        assert (fixtures / 'base.img').read_bytes() == b'stand-in image\n'
-        assert (fixtures / 'xcollide-reset.img').exists(), 'success stopped before the last fixture'
-        assert (fixtures / 'xcollide-reset.fsck.txt').read_text().strip() == 'stand-in oracle output'
-        commands = [e['command'] for e in events(b) if e['kind'] == 'kvdb']
-        assert len(commands) == 2, ('offline editor probe was not completed', commands)
-        position = commands[0].removeprefix('get inodes ')
-        assert commands == [f'get inodes {position}',
-                            f'update inodes {position} bi_compression=2'], commands
-        transcript = (fixtures / 'kvdb-options.txt').read_text()
-        assert f'## get inodes {position}\n  bi_compression=0\n' in transcript, transcript
-        assert (f'## update inodes {position} bi_compression=2\n'
-                "Error: bch_inode_v3 has no field 'bi_compression'\nexit 1\n") in transcript, transcript
-        assert sorted(p.name for p in (root / 'var/tmp').iterdir()) == ['write-study']
+        if wanted('concurrent'):
+            first, a = start('concurrent-a', 'hold')
+            second, b = start('concurrent-b', 'hold')
+            await_ready(first, a)
+            await_ready(second, b)
+            a_root = events(a)[0]['scratch']
+            b_root = events(b)[0]['scratch']
+            assert a_root != b_root
+            first.send_signal(signal.SIGTERM)
+            finish(first, a, 143)
+            assert second.poll() is None and Path(b_root).exists(), 'other invocation was touched'
+            (b / 'release').touch()
+            finish(second, b, 0)
+            assert (fixtures / 'base.img').read_bytes() == b'stand-in image\n'
+            assert (fixtures / 'xcollide-reset.img').exists(), 'success stopped before the last fixture'
+            checker_output = (fixtures / 'xcollide-reset.fsck.txt').read_text().strip()
+            assert checker_output == 'stand-in oracle output', checker_output
+            commands = [e['command'] for e in events(b) if e['kind'] == 'kvdb']
+            assert len(commands) == 2, ('offline editor probe was not completed', commands)
+            position = commands[0].removeprefix('get inodes ')
+            assert commands == [f'get inodes {position}',
+                                f'update inodes {position} bi_compression=2'], commands
+            transcript = (fixtures / 'kvdb-options.txt').read_text()
+            assert f'## get inodes {position}\n  bi_compression=0\n' in transcript, transcript
+            assert (f'## update inodes {position} bi_compression=2\n'
+                    "Error: bch_inode_v3 has no field 'bi_compression'\nexit 1\n") in transcript, transcript
+            assert sorted(p.name for p in (root / 'var/tmp').iterdir()) == ['write-study']
         # All existing lifecycle and refusal controls above must finish before
         # this red case. A completed producer must also clean up when rm reports
         # the observed mount-directory error; status 1 or surviving scratch fails.
-        proc, case = start('cleanup-directory-refusal', 'cleanup-directory-refusal')
-        actual = proc.wait(timeout=120)
-        records = events(case)
-        assert any(e['kind'] == 'directory-refusal' for e in records), records
-        assert any(e['kind'] == 'copy' and
-                   e['destination'] == str(fixtures / 'xcollide-reset.img')
-                   for e in records), 'cleanup failed before publishing the final fixture'
-        assert (fixtures / 'xcollide-reset.img').exists()
-        assert (fixtures / 'xcollide-reset.fsck.txt').read_text().strip() == 'stand-in oracle output'
-        assert actual == 0, ('mount-directory cleanup failed', actual, (case / 'log').read_text())
-        finish(proc, case, 0)
+        if wanted('cleanup-directory-refusal'):
+            proc, case = start('cleanup-directory-refusal', 'cleanup-directory-refusal')
+            finish(proc, case, 0)
+            records = events(case)
+            assert any(e['kind'] == 'directory-refusal' for e in records), records
+            assert any(e['kind'] == 'copy' and
+                       e['destination'] == str(fixtures / 'xcollide-reset.img')
+                       for e in records), 'cleanup failed before publishing the final fixture'
+            assert (fixtures / 'xcollide-reset.img').exists()
+            checker_output = (fixtures / 'xcollide-reset.fsck.txt').read_text().strip()
+            assert checker_output == 'stand-in oracle output', checker_output
+        if not selected:
+            assert ran == dict(status=6, signal=13, descendant=3), ('cases that ran', ran)
+        passed = True
     finally:
         # The regression itself owns only these process groups and this sandbox.
         for proc in processes:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-print('PASS  write-study removes only owned scratch after success, failure and signals')
+        if not passed:
+            for case in cases:
+                for sid in {event['sid'] for event in events(case)
+                            if event['kind'] in ('format', 'fuse', 'copy')}:
+                    try: os.killpg(sid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError): pass
+if selected: print('PARTIAL  ran only', selected)
+else: print('PASS  write-study removes only owned scratch after success, failure and signals')
 PY
