@@ -2811,6 +2811,115 @@ length controls. The existing position-only unit test now supplies values
 of these minimum lengths instead of empty values; its expected position
 verdicts are unchanged. The new red regressions are unchanged.
 
+## Images formatted and never started (#505, 2026-11-03)
+
+Black-box guest probes used the reference tools 1.39.7 on images made by the
+reference formatter with `--version=1.N`, and copies of them with bytes of the
+superblock changed. Only the tools' printed output and exit status, and the
+bytes of what they wrote, were consulted; no reference source was read.
+
+**What one is.** At every version but 1.39 the formatter says the filesystem
+"will be initialized when it is first mounted". The image then holds its three
+superblock copies and the layout at sector 7, and no other nonzero byte. Its
+superblock has sequence 0, checksum type 0 and only the `members_v1`,
+`members_v2` and `ext` fields. The reference checker exits 0 and prints
+"initializing new filesystem". At 1.39 the formatter starts the filesystem
+itself, and it holds keys.
+
+**What the reference goes by.** Bit 0 of the first flag word, in the copy it
+believes (the highest sequence, the later copy on a tie). With it clear, every
+other mark of a start changes nothing: sequence 26, the compat features of a
+started image, the clean bit, a `journal_v2` or `clean` field added, the
+freespace bit, or a started image with only this bit cleared. With it set on a
+formatted image the reference reports the missing filesystem, exit 1. What the
+device holds outside the copies is not read: noise in the buckets a start would
+use, or a started image's nodes, change nothing.
+
+**Where this checker says more, on purpose.** A `journal_v2`, `journal` or
+`clean` field is what a start leaves. A superblock with bit 0 clear that holds
+one is damaged rather than new, so this checker reads it as the started
+filesystem it records. The reference starts it anew and exits 0. On a started
+image whose bit 0 and clean bit are cleared and whose journal is zeroed, the
+reference exits 0 and this checker reports the journal. With those fields gone
+as well, nothing in the superblock says it started, and both accept it.
+
+**What the reference reports on one.** A walk changed every byte of the header
+up to the layout's copies and of the member, to its complement and to zero, and
+every bit of the flag words, 1,695 images. Values at the edges of each field
+followed. These are the rules in `src/check/never_started.rs`; the name of an
+option is what the reference printer calls those bits.
+
+| Where | Reported |
+|---|---|
+| version | major above 1, or below 0.9 |
+| minimum version | below 0.9, or above the version |
+| incompatible version in use, bytes 0xbc..0xbe | above 1.39 |
+| offset, bytes 0x68..0x70 | not the sector the copy was read from |
+| internal or user UUID | zero |
+| device index and count | index not below the count, or no devices |
+| time precision | 0, or above 1e9 |
+| checksum type, six bits | any type the bytes do not satisfy, unknown types among them |
+| features | bit 21 or above, or any of the second word |
+| layout | type not 0, no copies, more than 61, size bits above 19, smaller than the superblock, or copies that overlap |
+| fields | a field of no size or past the end; no member field at all |
+| block size | not a power of two, above 64 sectors, or above the bucket |
+| btree node size | not a power of two, or above the bucket |
+| `errors` | above 3 |
+| `gc_reserve_percent` | outside 5..=20 |
+| `root_reserve_percent` | above 100 |
+| `metadata_checksum`, `data_checksum` | above 3 |
+| `metadata_replicas` | not 1, on one device at any durability |
+| `data_replicas` | outside 1..=4 |
+| `str_hash` | above 2 |
+| `compression`, `background_compression` | above 3, or a level (flag word 4, bits 56..64) with no type |
+| flag word 1, bits 10..14 | nonzero, "attempting to encrypt without encryption key" or a refused journal entry |
+| `encoded_extent_max` | its log2 outside 3..=12 |
+| `gc_reserve_bytes` | 97% of the device or more |
+| `erasure_code` | above 1 |
+| `version_upgrade`, `scrub_recent_journal_entries`, `write_degraded` | 3 |
+| `shard_inode_numbers_bits` | above 8, which the reference reports on some runs of one image (below) |
+| `write_error_timeout` | above 300 |
+| `checksum_err_retry_nr` | above 32 |
+| `ec_max_data_blocks` | above 15 |
+| `ec_stripe_buf_limit`, in `ext` | above 25 |
+| `scrub_journal_max_rewind_secs`, `missing_dev_timeout`, in `ext` | above 3600 |
+| `journal_rewind_discard_buffer_percent`, in `ext` | above 10 |
+| member size | below 56, or larger than its field |
+| member UUID | zero |
+| buckets | below 512, 2^31 - 64 or more, or past the device |
+| first bucket | not 0 |
+| bucket size | below the block or the btree node size |
+| btree bitmap shift | 58 or above |
+| member state | not rw |
+| member data allowed | without journal and btree |
+| member durability | 0 |
+
+The reference reads `members_v1` only where there is no `members_v2`. It accepts
+`members_v1` holding anything beside `members_v2`, and an absent `ext`.
+
+**The rule for `gc_reserve_bytes` is the one measured rather than derived.** On
+a 256 MiB device 96.9% is accepted and 97.3% reported; on a 512 MiB device
+93.8% is accepted and 97.7% reported. It is otherwise an open question where
+that edge sits on a device of another size.
+
+**The agreement measured.** On the walk's 1,689 images the reference judged,
+this checker reports all that the reference reports. One image the reference
+accepts it reports: `shard_inode_numbers_bits` 14. That option shards new inode
+numbers by the CPU a run happens to be on, and at 9 bits the same image was
+reported twice, for no room, and accepted once, so above 8 this checker reports
+what may fail and the guest does not hold the reference to one verdict. The rest
+of the disagreements are the ones above, and a superblock copy that does not
+read, which this checker reports on every image (#261) while the reference goes
+on with another copy. An encrypted image is refused as every
+encrypted image is, though the reference starts one made with `--no_passphrase`.
+
+The verdicts are in `tests/common/never_started.rs`, and
+`tests/check_oracle_never_started.rs` holds both checkers to them in the guest,
+with each version, each formatter option, and smaller devices. The superblock in
+`tests/data/never-started-superblock-1.38.bin` was written by the formatter at
+`--version=1.38` on a 256 MiB image. 17 cases where the reference crashed, hung
+or faulted across these probes were counted and not kept.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

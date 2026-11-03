@@ -295,14 +295,14 @@ impl Report {
 /// problem it can name is in the report.
 pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     let mut r = Report::default();
-    let sb = match Superblock::read_copies(dev) {
-        Ok((sb, failed)) => {
+    let (sb, sector) = match Superblock::read_selected(dev) {
+        Ok((sb, sector, failed)) => {
             // A copy that does not read is damage even when another copy
             // does: the next torn write has one fewer to fall back on.
             for (sector, e) in failed {
                 r.add("superblock_copy", format!("copy at sector {sector}: {e}"));
             }
-            sb
+            (sb, sector)
         }
         Err(e @ (Error::BadChecksum { .. } | Error::BadMagic { .. } | Error::Corrupt(_))) => {
             r.add("superblock", format!("no usable superblock: {e}"));
@@ -315,6 +315,11 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     }
     if sb.nr_devices != 1 {
         return Err(Error::Unsupported(format!("{} devices", sb.nr_devices)));
+    }
+    // Nothing but superblocks yet: nothing else to read (#505).
+    if sb.never_started() {
+        never_started::judge(&sb, sector, dev, &mut r);
+        return Ok(r);
     }
     // Through the journal after an unclean shutdown, and after a clean one
     // whose superblock records a root that will not read (#166).
@@ -2900,6 +2905,10 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
         }
     }
 }
+
+mod never_started;
+#[cfg(test)]
+mod never_started_tests;
 
 #[cfg(test)]
 mod tests {

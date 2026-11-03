@@ -53,6 +53,10 @@ pub const FIELD_NAMES: &[&str] = &[
 
 pub const FIELD_CRYPT: u32 = 2;
 pub const FIELD_CLEAN: u32 = 6;
+const FIELD_JOURNAL_V1: u32 = 0;
+
+/// The copies that could not be read, by sector, with why.
+type FailedCopies = Vec<(u64, Error)>;
 pub const FIELD_JOURNAL_SEQ_BLACKLIST: u32 = 8;
 pub const FIELD_MEMBERS_V2: u32 = 11;
 
@@ -356,6 +360,12 @@ impl Superblock {
     /// could not be read, by sector, for the checker. Invalid optional
     /// fields in the selected copy are an error.
     pub fn read_copies(dev: &dyn BlockRead) -> Result<(Self, Vec<(u64, Error)>)> {
+        Self::read_selected(dev).map(|(sb, _, failed)| (sb, failed))
+    }
+
+    /// [`Superblock::read_copies`], also returning the sector the chosen copy
+    /// was read from, which the copy's own `offset` may have wrong.
+    pub(crate) fn read_selected(dev: &dyn BlockRead) -> Result<(Self, u64, FailedCopies)> {
         let mut failed: Vec<(u64, Error)> = Vec::new();
         let primary = Self::read_header_at(dev, SB_OFFSET / 512);
         let layout = match &primary {
@@ -385,7 +395,7 @@ impl Superblock {
             }
         }
         match best {
-            Some((sector, _)) => Self::read_at(dev, sector).map(|sb| (sb, failed)),
+            Some((sector, _)) => Self::read_at(dev, sector).map(|sb| (sb, sector, failed)),
             None => Err(failed
                 .into_iter()
                 .next()
@@ -453,6 +463,23 @@ impl Superblock {
     /// other bit of flags[0] differs between those two.
     pub fn is_clean(&self) -> bool {
         self.flags[0] & 0b10 != 0
+    }
+
+    /// Whether the reference formatter wrote this and nothing has started it
+    /// (#505). The reference goes by flags[0] bit 0 alone, and with it clear
+    /// starts the filesystem anew whatever else is there (docs/clean-room.md,
+    /// "Images formatted and never started"). A start also leaves a `clean`
+    /// or journal field, so a superblock holding one has been damaged, and is
+    /// read as the started filesystem it says it is.
+    pub(crate) fn never_started(&self) -> bool {
+        self.flags[0] & 1 == 0
+            && ![
+                FIELD_JOURNAL_V1,
+                FIELD_CLEAN,
+                crate::journal::FIELD_JOURNAL_V2,
+            ]
+            .iter()
+            .any(|&t| self.field(t).is_some())
     }
 
     /// Checksum type of the superblock itself. INFERRED: flags[0] bits
