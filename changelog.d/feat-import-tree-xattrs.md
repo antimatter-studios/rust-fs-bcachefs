@@ -1,0 +1,4 @@
+### Added
+
+- `fs.bcachefs TARGET import --recursive SOURCE PATH` copies a local tree through the shared tree import: directories are made or merged, every regular file is staged and published as a single import is, and each item is reported completed, skipped, refused or failed. A name bcachefs cannot store, or that is not UTF-8, and an existing file without `--replace` are reported per item, their siblings still go in, and the import exits nonzero (#440).
+- `fs.bcachefs TARGET import --preserve=xattrs SOURCE PATH`, for one file or a tree, sets each host file's and directory's extended attributes, name and value, after its contents are published. A namespace other than `user.*` or `trusted.*`, or a value one key cannot hold, refuses its item by name with a nonzero exit; nothing is dropped (#443).

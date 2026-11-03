@@ -2289,3 +2289,258 @@ fn cli_import_killed_before_publish_keeps_the_old_file() {
         eprintln!("killed between persist and publish: staged names left: {staged:?}");
     });
 }
+
+/// The JSON report of a tree import holds `"KEY": VALUE`, however it is spaced.
+#[cfg(feature = "cli")]
+fn report_has(report: &str, key: &str, value: &str) -> bool {
+    report.contains(&format!("\"{key}\": {value}"))
+        || report.contains(&format!("\"{key}\":{value}"))
+}
+
+/// A local tree 32 directories deep (#440), imported with `--recursive`: the
+/// reference mount reads every file with the source's SHA-256, computed here
+/// from the source, and the reference checker passes the image. Importing
+/// into the same place again reports the existing file and a name this tool
+/// cannot store per item, with a nonzero exit, and leaves the image clean.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_tree_imports_are_read_by_the_reference() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let img = scratch("write-study/base.img", "cli-import-tree");
+    let src = img.with_extension("src");
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut rel = String::new();
+    for level in 1..=32u8 {
+        rel.push_str(&format!("level{level:02}/"));
+        std::fs::create_dir_all(src.join(&rel)).unwrap();
+        files.push((
+            format!("{rel}file"),
+            pattern(1 + 509 * usize::from(level), level),
+        ));
+    }
+    // Larger than one transfer chunk, and larger than one journal entry holds
+    // on this image's journal buckets, so it commits in several runs (#485).
+    files.push((format!("{rel}large.bin"), pattern(8 << 20, 71)));
+    files.push(("empty".into(), Vec::new()));
+    std::fs::create_dir(src.join("empty-dir")).unwrap();
+    for (name, bytes) in &files {
+        std::fs::write(src.join(name), bytes).unwrap();
+    }
+
+    let out = cli_import(
+        &img,
+        &["--recursive".as_ref(), src.as_ref(), "/d/tree".as_ref()],
+    );
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{report}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The root, the 32 levels, the empty directory, and every file.
+    let items = (1 + 32 + 1 + files.len()).to_string();
+    assert!(report_has(&report, "completed", &items), "{report}");
+    assert!(report_has(&report, "failed", "0"), "{report}");
+    assert!(report_has(&report, "refused", "0"), "{report}");
+
+    assert_fsck_clean(&img);
+    replay(&img);
+    with_reference_mount(&img, |m| {
+        let tree = m.join("d/tree");
+        for (name, bytes) in &files {
+            let back = std::fs::read(tree.join(name)).unwrap();
+            assert_eq!(
+                sha256_hex(&back),
+                sha256_hex(bytes),
+                "{name}: not the source's SHA-256"
+            );
+        }
+        assert!(tree.join("empty-dir").is_dir());
+        assert_eq!(staged_names(m, "d/tree"), Vec::<String>::new());
+    });
+    assert_fsck_clean(&img);
+
+    // One name of bytes that are not UTF-8, one existing file, one new file.
+    let again = img.with_extension("again");
+    std::fs::create_dir(&again).unwrap();
+    std::fs::write(again.join("empty"), b"not the old bytes").unwrap();
+    std::fs::write(again.join("fresh"), b"fresh").unwrap();
+    let refused = std::ffi::OsStr::from_bytes(b"not-utf8-\xff");
+    std::fs::write(again.join(refused), b"refused").unwrap();
+    let out = cli_import(
+        &img,
+        &["--recursive".as_ref(), again.as_ref(), "/d/tree".as_ref()],
+    );
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{report}");
+    assert!(report_has(&report, "refused", "1"), "{report}");
+    assert!(report_has(&report, "failed", "1"), "{report}");
+    assert!(report_has(&report, "merged_directories", "1"), "{report}");
+    assert!(report.contains("--replace"), "{report}");
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(
+        &img,
+        &[("d/tree/empty", b""), ("d/tree/fresh", b"fresh")]
+    ));
+    assert_fsck_clean(&img);
+}
+
+/// `getfattr`'s dump of `path`'s attributes in the reference tools' chroot,
+/// without its line naming the path, sorted: every name, every value in hex.
+#[cfg(feature = "cli")]
+fn listed_by_the_reference(path: &str) -> Vec<String> {
+    let out = Command::new("chroot")
+        .args([
+            REF_ROOT,
+            "getfattr",
+            "-d",
+            "-m",
+            "-",
+            "-e",
+            "hex",
+            "--absolute-names",
+            path,
+        ])
+        .output()
+        .expect("chroot into the reference tools' root");
+    assert!(
+        out.status.success(),
+        "getfattr {path}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with("# file:"))
+        .map(str::to_owned)
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// Set an attribute on a host file with the reference tools' chroot's
+/// `setfattr`, not this crate: `value` as `setfattr -v` reads it, and an
+/// empty one with no `-v`, which is how it sets an empty value.
+#[cfg(feature = "cli")]
+fn set_on_host(path: &Path, name: &str, value: &str) {
+    let mut set = Command::new("chroot");
+    set.args([REF_ROOT, "setfattr", "-n", name]);
+    if !value.is_empty() {
+        set.args(["-v", value]);
+    }
+    let out = set
+        .arg(path)
+        .output()
+        .expect("chroot into the reference tools' root");
+    assert!(
+        out.status.success(),
+        "setfattr {name} on {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Attributes set on host files and directories (#443), imported with
+/// `--preserve=xattrs`, one file and a tree: the reference mount lists the
+/// same names with the same values as the source lists, the reference
+/// checker passes the image, and a namespace bcachefs cannot hold refuses
+/// its item by name with its contents published.
+#[cfg(feature = "cli")]
+#[test]
+fn cli_imported_attributes_are_listed_by_the_reference() {
+    // Both an image that holds attributes and one that makes their first.
+    for (fixture_name, test) in [
+        ("aged.img", "cli-import-xattrs-aged"),
+        ("write-study/base.img", "cli-import-xattrs-base"),
+    ] {
+        let img = scratch(fixture_name, test);
+        let long_name = format!("user.{}", "n".repeat(120));
+
+        let one = img.with_extension("one");
+        std::fs::write(&one, b"one attributed file").unwrap();
+        set_on_host(&one, "user.colour", "blue");
+        set_on_host(&one, "user.empty", "");
+        set_on_host(&one, "user.binary", "0x00ff0001");
+        set_on_host(&one, &long_name, &format!("0x{}", "ab".repeat(1500)));
+        set_on_host(&one, "trusted.marker", "kept");
+
+        let out = cli_import(
+            &img,
+            &[
+                "--preserve=xattrs".as_ref(),
+                one.as_ref(),
+                "/imported-one".as_ref(),
+            ],
+        );
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{report}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let tree = img.with_extension("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("sub/file"), b"in a tree").unwrap();
+        std::fs::write(tree.join("kept"), b"beside a refusal").unwrap();
+        std::fs::write(tree.join("refused"), b"refused namespace").unwrap();
+        set_on_host(&tree, "user.where", "root");
+        set_on_host(&tree.join("sub"), "user.where", "directory");
+        set_on_host(&tree.join("sub/file"), "user.where", "file");
+        set_on_host(&tree.join("kept"), "user.kept", "yes");
+        // Root may set this on a host file; bcachefs's writer holds user.*
+        // and trusted.* only.
+        let refused_name = "security.fs-bcachefs-test";
+        set_on_host(&tree.join("refused"), refused_name, "no");
+
+        let out = cli_import(
+            &img,
+            &[
+                "--recursive".as_ref(),
+                "--preserve=xattrs".as_ref(),
+                tree.as_ref(),
+                "/imported-tree".as_ref(),
+            ],
+        );
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert!(!out.status.success(), "{report}");
+        assert!(report_has(&report, "refused", "1"), "{report}");
+        assert!(report_has(&report, "failed", "0"), "{report}");
+        assert!(report.contains(refused_name), "{report}");
+
+        assert_fsck_clean(&img);
+        replay(&img);
+        let on_host = |path: &Path| listed_by_the_reference(path.to_str().unwrap());
+        let expected = [
+            ("imported-one", on_host(&one)),
+            ("imported-tree", on_host(&tree)),
+            ("imported-tree/sub", on_host(&tree.join("sub"))),
+            ("imported-tree/sub/file", on_host(&tree.join("sub/file"))),
+            ("imported-tree/kept", on_host(&tree.join("kept"))),
+        ];
+        assert_eq!(expected[0].1.len(), 5, "{:?}", expected[0].1);
+        with_reference_mount(&img, |_| {
+            for (name, want) in &expected {
+                let got = listed_by_the_reference(&format!("{MNT}/{name}"));
+                assert_eq!(&got, want, "{fixture_name} {name}");
+            }
+            let got = listed_by_the_reference(&format!("{MNT}/imported-tree/refused"));
+            assert!(
+                !got.iter().any(|l| l.contains(refused_name)),
+                "{fixture_name}: {got:?}"
+            );
+        });
+        assert!(reference_mount_reads(
+            &img,
+            &[
+                ("imported-one", b"one attributed file"),
+                ("imported-tree/sub/file", b"in a tree"),
+                ("imported-tree/kept", b"beside a refusal"),
+                ("imported-tree/refused", b"refused namespace"),
+            ]
+        ));
+        assert_fsck_clean(&img);
+    }
+}

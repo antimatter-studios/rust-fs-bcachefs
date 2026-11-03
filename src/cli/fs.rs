@@ -127,12 +127,14 @@ fn read_command() -> Cmd {
         )
         .subcommand(
             Cmd::new("import")
-                .about("Stream a local file or stdin into the image, published only when complete")
-                .args(transfer::import_args_with_verify())
+                .about("Copy a local file, stdin or with --recursive a local tree into the image")
+                .args(super::import::args())
                 .after_help(
                     "Examples:\n  fs.bcachefs disk.img import hello.txt /hello.txt\n  \
                      cat big.bin | fs.bcachefs disk.img import - /big.bin\n  \
-                     fs.bcachefs disk.img import --replace --verify hello.txt /hello.txt\n\n\
+                     fs.bcachefs disk.img import --replace --verify hello.txt /hello.txt\n  \
+                     fs.bcachefs disk.img import --recursive etc /etc\n  \
+                     fs.bcachefs disk.img import --preserve=xattrs hello.txt /hello.txt\n\n\
                      The bytes go to a staged file beside PATH in bounded runs, committed \
                      through the journal, and are published by one rename. An existing PATH \
                      is refused unless --replace is given; the rename replaces it in the \
@@ -142,7 +144,18 @@ fn read_command() -> Cmd {
                      removes the staged file and leaves PATH as it was. --replace is \
                      refused when removing the old file does not fit one journal entry, \
                      about 1.9 MiB of extents on 32 KiB journal buckets, and PATH is left \
-                     as it was.",
+                     as it was.\n\n\
+                     --recursive imports a tree with the shared tree transfer, merging into \
+                     directories already there, --max-depth bounding the walk, and reports \
+                     every item: a name bcachefs cannot store or an existing file without \
+                     --replace is reported, its siblings still go in, and the import exits \
+                     nonzero. --preserve=xattrs sets each file's and directory's extended \
+                     attributes, name and value, after its contents are published; a single \
+                     file goes through the tree transfer and gets its report. A namespace \
+                     other than user.* or trusted.*, or a value too large for one key, \
+                     refuses its item by name and the import exits nonzero; nothing is \
+                     dropped. --preserve=links,times,sparse are refused per item. --verify \
+                     applies only to one file without --preserve.",
                 ),
         )
         .subcommand(
