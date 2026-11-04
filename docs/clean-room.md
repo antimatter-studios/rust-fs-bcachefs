@@ -1180,12 +1180,24 @@ has settled yet. Each needs a fixture that exercises it, not a guess.
    buckets, carries the generation its bucket's `alloc_v4` key records
    (`tests/oracle_pointers.rs`); the device bits are only ever 0. The
    reader refuses a pointer whose generation is not the bucket's (stale,
-   S1 9.1.3.1), one for another device, or one with a flag bit set other
-   than unwritten (bits 1..3; cached pointers, never observed). Unwritten
+   S1 9.1.3.1), one for another device, or a cached pointer. The black-box
+   observation recorded in #575 distinguishes the three pointer flag bits
+   (word bits 1..3): flag values 1, 3, 5 and 7 produce the reference
+   checker's `extent_ptrs_all_invalid_but_cached` finding, exit 9, while
+   values 2 and 6 are accepted, exit 0, on three runs each. Thus flag bit
+   0b001 is cached; 0b010 is not cached, and **its meaning remains an open
+   question**. The checker must not refuse it merely for being set.
+   `both_checkers_agree_on_every_extent_pointer_flag_value` in
+   `tests/check_oracle.rs` judges all eight values on private copies of
+   `default` and `block4k`, checks the stored changed extent and unchanged
+   backpointer, and uses the shared reference runner. Unwritten
    is SETTLED (#158): flags 0b100, on the extents the reference module
    made for `fallocate` in a `nocow` file, which the lister prints
    `unwritten` and which read as zeros; `fallocate` in another file makes
-   `reservation` keys. Btree node pointers are not yet judged the same way.
+   `reservation` keys. The unwritten bit is tested independently of the
+   other flags, so value 6 still marks unwritten space. Btree node pointers
+   are not yet judged the same way. No backpointer check is removed or
+   relaxed; #230 remains a separate unresolved disagreement.
 3. **Btree node flags**: what bit 8 and bit 32 mean. The btree id and
    level are settled (question 13); the reader does not need them (it
    trusts the parent), and the writer copies the other bits from an

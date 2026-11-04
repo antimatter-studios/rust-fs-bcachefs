@@ -3990,3 +3990,69 @@ fn both_checkers_reject_a_replicas_key_with_an_unknown_data_type() {
 fn both_checkers_accept_a_replicas_key_holding_nothing() {
     both_checkers_judge_replicas_accounting_keys(replicas_accounting::HOLDING_NOTHING);
 }
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_every_extent_pointer_flag_value() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::extent::{parse_entries, DataExtent, ExtentEntry};
+    use fs_bcachefs::write::Writer;
+
+    let mut mismatches = Vec::new();
+    for set in ["default", "block4k"] {
+        for flags in 0u8..8 {
+            let dir = ScratchDir::new("check-extent-pointer-flags");
+            assert_seen_by_reference(&dir);
+            let image = dir.into_image(format!("{set}-{flags}.img"));
+            common::copy_sparse(fixture(&format!("{set}.img")), &image);
+            let (control_status, control_text) = reference_on_key_field(&image);
+            assert_eq!(control_status, 0, "unchanged control: {control_text}");
+            assert!(check(&FileDevice::open(&image).unwrap()).unwrap().clean());
+
+            let (original, backpointer) = backpointer::pair(&image);
+            let mut changed = original.clone();
+            assert!(matches!(
+                parse_entries(&changed.value).unwrap().last(),
+                Some(ExtentEntry::Ptr(pointer)) if pointer.flags == 0
+            ));
+            let pointer_start = changed.value.len() - 8;
+            changed.value[pointer_start] = (changed.value[pointer_start] & !0b1110) | (flags << 1);
+            assert_eq!(DataExtent::from_key(&changed).unwrap().ptr.flags, flags);
+            {
+                let mut writer = Writer::open(FileDevice::open_rw(&image).unwrap()).unwrap();
+                writer
+                    .insert(btree_id::EXTENTS, vec![changed.clone()])
+                    .unwrap();
+            }
+            let device = FileDevice::open(&image).unwrap();
+            let superblock = Superblock::read(&device).unwrap();
+            assert!(btree::walk(&device, &superblock, btree_id::EXTENTS)
+                .unwrap()
+                .contains(&changed));
+            assert!(btree::walk(&device, &superblock, backpointer::TREE)
+                .unwrap()
+                .contains(&backpointer));
+
+            let (reference_status, reference_text) = reference_on_key_field(&image);
+            let cached = flags & 1 != 0;
+            assert_eq!(
+                reference_status,
+                if cached { 9 } else { 0 },
+                "{set} flags {flags:#05b}: {reference_text}"
+            );
+            assert_eq!(
+                reference_text.contains("extent_ptrs_all_invalid_but_cached"),
+                cached,
+                "{set} flags {flags:#05b}: {reference_text}"
+            );
+            let ours = check(&device).unwrap();
+            if ours.clean() == cached {
+                mismatches.push(format!(
+                    "{set} flags {flags:#05b}: reference {reference_status}, {:?}",
+                    ours.problems
+                ));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
