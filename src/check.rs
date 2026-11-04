@@ -323,6 +323,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         never_started::judge(&sb, sector, dev, &mut r);
         return Ok(r);
     }
+    // A superblock the reference refuses: it reads no further, and what the
+    // superblock says cannot be taken to read the rest by (#533).
+    let copies_failed = r.problems.len();
+    started_superblock::judge(&sb, sector, dev, &mut r);
+    if r.problems.len() > copies_failed {
+        return Ok(r);
+    }
     // Through the journal after an unclean shutdown, and after a clean one
     // whose superblock records a root that will not read (#166).
     let replay = match btree::journal_for(dev, &sb) {
@@ -2975,6 +2982,10 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
 mod never_started;
 #[cfg(test)]
 mod never_started_tests;
+mod started_superblock;
+#[cfg(test)]
+mod started_superblock_tests;
+mod superblock_rules;
 
 #[cfg(test)]
 mod tests {
