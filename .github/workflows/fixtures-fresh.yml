@@ -1,0 +1,92 @@
+name: fixtures fresh
+
+# What the kept fixtures must not hide (#386). Merge queue runs reuse a kept
+# build, so a change in the reference (a rebuilt package, a new kernel, a mirror)
+# would reach no run until a key changed. So each night builds the fixtures
+# fresh, runs the whole of ci.yml over them, as a queue run did before builds
+# were kept, and compares them with the kept build (scripts/fixtures-compare.py).
+# A failed night is filed, as the other nightly runs' are.
+#
+# When a difference is real and accepted, raise GENERATION in
+# scripts/fixture-key.sh: that pull request builds fresh, and landing it keeps
+# the new build.
+#
+# Never a required check: it runs on a schedule, not on a pull request.
+on:
+  schedule:
+    - cron: "45 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: the whole gate over a fresh build
+    uses: ./.github/workflows/ci.yml
+    with:
+      fresh_fixtures: true
+
+  compare:
+    name: the fresh build against the kept one
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # contents: write, to keep this build when no build is kept for this key;
+    # actions: read, for this run's artifact.
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}/fresh
+      - name: The kept build for this tree
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/kept-fixtures.sh select >> "$GITHUB_OUTPUT"
+      # No landing kept one (the commit had no queue run of its own). This build
+      # passed the gate above, so it is kept, and there is nothing to compare.
+      - name: Keep this build, as no build is kept for this key
+        if: steps.source.outputs.kept != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/kept-fixtures.sh publish "$RUNNER_TEMP/fresh/fixtures.tar.gz" "$GITHUB_RUN_ID"
+      - name: Fetch the kept build
+        if: steps.source.outputs.kept == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.source.outputs.tag }}
+          SHA256: ${{ steps.source.outputs.sha256 }}
+        run: bash scripts/kept-fixtures.sh fetch "$TAG" "$SHA256" "$RUNNER_TEMP/kept"
+      - name: Compare them
+        if: steps.source.outputs.kept == 'true'
+        run: python3 -I scripts/fixtures-compare.py "$RUNNER_TEMP/kept/fixtures.tar.gz" "$RUNNER_TEMP/fresh/fixtures.tar.gz"
+
+  file:
+    name: file a failed night
+    needs: [gate, compare]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File a failed scheduled run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="The nightly fresh fixtures run failed"
+          open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label ci-failure \
+              --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci-failure --title "$title" \
+              --body "The scheduled fresh fixtures run failed: $RUN_URL. A failed test over the fresh build, or a difference from the kept build that the compare job names, means the reference no longer makes what the merge queue is testing against. If it is accepted, raise GENERATION in scripts/fixture-key.sh."
+          fi

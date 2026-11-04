@@ -55,6 +55,9 @@ jobs:
   gate:
     name: branch gate
     uses: ./.github/workflows/ci.yml
+    # A release is judged over fixtures built now, not over a kept build.
+    with:
+      fresh_fixtures: true
 
   # THE COMMAND-LINE TOOLS, AS A DOWNLOADABLE PREFIX. The CLI rides the
   # library's release, at the same version: one tag, one CHANGELOG, and no

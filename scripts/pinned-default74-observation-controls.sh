@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Controls for how the pinned default-74 job reads its own test's log. They
+# Controls for how the pinned default-206 job reads its own test's log. They
 # run scripts/pinned-default74-reference.sh --observed-tuple, the same
 # function the live path uses, before any container starts: a well-formed
 # single observation must yield its complete key/stored/computed tuple, and
@@ -27,12 +27,12 @@ refuse() {
     fi
 }
 
-valid='default-74: extent_data key 2147483904:1:U32_MAX stored 0x11ba7 computed 0xa2f1ba7'
+valid='default-206: extent_data key 2147483653:2848:U32_MAX stored 0x0 computed 0x25134e43'
 printf 'running 1 test\n%s\ntest default74 ... ok\n' "$valid" >"$t/recorded.log"
-accept recorded "2147483904:1:U32_MAX 0x11ba7 0xa2f1ba7"
+accept recorded "2147483653:2848:U32_MAX 0x0 0x25134e43"
 
 # A different tuple parses to itself, so the parse is not the expected value.
-printf '%s\n' 'default-74: extent_data key 4096:2:U32_MAX stored 0x1 computed 0xdeadbeef' >"$t/other.log"
+printf '%s\n' 'default-206: extent_data key 4096:2:U32_MAX stored 0x1 computed 0xdeadbeef' >"$t/other.log"
 accept other "4096:2:U32_MAX 0x1 0xdeadbeef"
 
 refuse missing "$t/absent.log"
@@ -40,15 +40,15 @@ refuse missing "$t/absent.log"
 refuse empty
 printf 'running 1 test\ntest default74 ... ok\n' >"$t/no-observation.log"
 refuse no-observation
-printf '%s\n' 'default-74: extent_data key 2147483904:1:U32_MAX stored 0x11ba7' >"$t/no-computed.log"
+printf '%s\n' 'default-206: extent_data key 2147483653:2848:U32_MAX stored 0x0' >"$t/no-computed.log"
 refuse no-computed
-printf '%s\n' 'default-74: extent_data key 2147483904:1:U32_MAX stored 0x11ba7 computed ' >"$t/empty-computed.log"
+printf '%s\n' 'default-206: extent_data key 2147483653:2848:U32_MAX stored 0x0 computed ' >"$t/empty-computed.log"
 refuse empty-computed
-printf '%s\n' 'default-74: extent_data key 2147483904:1:U32_MAX stored 0x11BA7 computed 0xA2F1BA7' >"$t/uppercase.log"
+printf '%s\n' 'default-206: extent_data key 2147483653:2848:U32_MAX stored 0x0 computed 0x25134E43' >"$t/uppercase.log"
 refuse uppercase
 printf '%s extra\n' "$valid" >"$t/trailing.log"
 refuse trailing
-printf '%s\n%s\n' "$valid" 'default-74: extent_data key 4096:2:U32_MAX stored 0x1 computed 0x2' >"$t/ambiguous.log"
+printf '%s\n%s\n' "$valid" 'default-206: extent_data key 4096:2:U32_MAX stored 0x1 computed 0x2' >"$t/ambiguous.log"
 refuse ambiguous
 
 rm -r "$t"
