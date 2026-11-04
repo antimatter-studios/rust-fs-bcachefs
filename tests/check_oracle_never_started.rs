@@ -58,6 +58,26 @@ fn reference(image: &Path) -> (i32, String) {
     (status.unwrap(), text)
 }
 
+/// How many runs the reference gets on an image it is expected to accept. It
+/// reports such an image rarely, about once in 6,000 runs when it was seen at all,
+/// with "error creating lost+found Device or resource busy" (#548,
+/// docs/clean-room.md). One run that accepts settles it, and an image it reports
+/// every time still fails. An image expected to be reported gets one run: none of
+/// those ever accepted.
+const RUNS_TO_ACCEPT: usize = 3;
+
+/// [`reference`], for an image the reference is expected to accept.
+fn reference_expecting_acceptance(image: &Path) -> (i32, String) {
+    let mut last = reference(image);
+    for _ in 1..RUNS_TO_ACCEPT {
+        if last.0 == 0 {
+            break;
+        }
+        last = reference(image);
+    }
+    last
+}
+
 fn format(size: u64, args: &[&str]) -> ScratchImage {
     assert!(
         Path::new(REFERENCE).exists(),
@@ -112,7 +132,7 @@ fn written(ranges: &[(u64, Vec<u8>)]) -> ScratchImage {
 fn both_checkers_accept_every_version_the_formatter_leaves_to_its_first_start() {
     for minor in (0..=38).chain([40]) {
         let image = format(DEVICE_BYTES, &[&format!("--version=1.{minor}")]);
-        let (status, text) = reference(&image);
+        let (status, text) = reference_expecting_acceptance(&image);
         assert_eq!(status, 0, "1.{minor}");
         assert!(text.contains("initializing new filesystem"), "1.{minor}");
         let report = check(&FileDevice::open(&image).unwrap()).unwrap();
@@ -124,7 +144,7 @@ fn both_checkers_accept_every_version_the_formatter_leaves_to_its_first_start() 
 #[test]
 fn the_formatter_starts_the_current_version_itself() {
     let image = format(DEVICE_BYTES, &["--version=1.39"]);
-    let (status, text) = reference(&image);
+    let (status, text) = reference_expecting_acceptance(&image);
     assert_eq!(status, 0);
     assert!(!text.contains("initializing new filesystem"));
     let report = check(&FileDevice::open(&image).unwrap()).unwrap();
@@ -193,7 +213,11 @@ fn both_checkers_agree_on_what_every_formatter_option_leaves() {
                 .chain(args.iter().copied())
                 .collect();
             let image = format(DEVICE_BYTES, &all);
-            let (status, _) = reference(&image);
+            let (status, _) = if expected == 0 {
+                reference_expecting_acceptance(&image)
+            } else {
+                reference(&image)
+            };
             let reports = checker_reports(&image);
             if status != expected || reports != Ok(expected != 0) {
                 mismatches.push(format!("{all:?}: reference {status}, checker {reports:?}"));
@@ -207,7 +231,7 @@ fn both_checkers_agree_on_what_every_formatter_option_leaves() {
 fn both_checkers_accept_smaller_devices() {
     for size in [16u64 << 20, 64 << 20, 512 << 20] {
         let image = format(size, &["--version=1.38"]);
-        assert_eq!(reference(&image).0, 0, "{size}");
+        assert_eq!(reference_expecting_acceptance(&image).0, 0, "{size}");
         assert_eq!(checker_reports(&image), Ok(false), "{size}");
     }
 }
@@ -225,7 +249,11 @@ fn both_checkers_agree_on_every_superblock_edit() {
     let mut mismatches = Vec::new();
     for case in CASES {
         let image = written(&never_started::image(&sb, case.on, case.edit));
-        let (status, _) = reference(&image);
+        let (status, _) = if case.reported {
+            reference(&image)
+        } else {
+            reference_expecting_acceptance(&image)
+        };
         // An `Err` is a filesystem the checker cannot check: not a clean verdict.
         let reports = checker_reports(&image).unwrap_or(true);
         if (status != 0) != case.reported || reports != case.reported {
@@ -247,7 +275,7 @@ fn this_checker_reports_a_formatted_image_recording_a_start() {
     let sb = superblock_bytes(&formatted);
     for (name, edit) in CLAIMS_A_START {
         let image = written(&never_started::image(&sb, On::All, *edit));
-        assert_eq!(reference(&image).0, 0, "{name}");
+        assert_eq!(reference_expecting_acceptance(&image).0, 0, "{name}");
         assert_eq!(checker_reports(&image), Ok(true), "{name}");
     }
 }
@@ -267,7 +295,7 @@ fn what_the_device_holds_outside_the_superblocks_is_not_read() {
         file.write_all(&noise).unwrap();
     }
     drop(file);
-    assert_eq!(reference(&scribbled).0, 0);
+    assert_eq!(reference_expecting_acceptance(&scribbled).0, 0);
     assert_eq!(checker_reports(&scribbled), Ok(false));
 }
 
@@ -287,7 +315,7 @@ fn a_superblock_copy_that_does_not_read_is_reported() {
         // The reference reads another copy and goes on. A copy that does not
         // read is damage all the same, and this checker reports it on every
         // image, started or not (#261).
-        assert_eq!(reference(&image).0, 0, "{sector}");
+        assert_eq!(reference_expecting_acceptance(&image).0, 0, "{sector}");
         assert_eq!(checker_reports(&image), Ok(true), "{sector}");
     }
 }
@@ -435,7 +463,11 @@ fn both_checkers_on_a_started_image_that_claims_to_be_new() {
             zero_the_journal(&image);
         }
         edit_started(&image, case.edit);
-        let (status, _) = reference(&image);
+        let (status, _) = if case.reference_status == 0 {
+            reference_expecting_acceptance(&image)
+        } else {
+            reference(&image)
+        };
         let reports = checker_reports(&image);
         if status != case.reference_status || reports != Ok(case.checker_reports) {
             mismatches.push(format!(

@@ -320,12 +320,12 @@ pub const CASES: &[Case] = &[
     opt!("background compression 4", true, 2, 0, 4, 4),
     opt!("gc reserve bytes half the device", false, 2, 4, 55, 1 << 18),
     opt!(
-        "gc reserve bytes 96.9% of the device",
+        "gc reserve bytes 96.5% of the device",
         false,
         2,
         4,
         55,
-        508_000
+        505_937
     ),
     opt!(
         "gc reserve bytes 97.3% of the device",
@@ -485,11 +485,34 @@ pub const CASES: &[Case] = &[
     }),
 ];
 
-/// Reported by this checker, and by the reference on some runs of the same
-/// image only: it shards new inode numbers by the CPU it happens to run on, and
-/// above 8 bits some of them have no room. Measured at 9 bits: reported twice
-/// and accepted once.
-pub const REFERENCE_VARIES: &[Case] = &[opt!("inode shard bits 9", true, 6, 0, 4, 9)];
+/// Images on which the reference's own verdict varies from run to run, so the
+/// guest holds it to none: only this checker's verdict, in the unit tier, is held
+/// here (#548). Measured on one image each, and in docs/clean-room.md.
+///
+/// - A device reserve from 96.7% to 97.2% of 256 MiB: accepted 51 of 60 runs at
+///   96.9%, and reported 48 of 60 at 97.2%.
+/// - Inode shard bits above 8: it shards new inode numbers by the CPU it happens to
+///   run on, and some of them have no room. At 9 bits, reported twice and accepted
+///   once.
+pub const REFERENCE_VARIES: &[Case] = &[
+    opt!(
+        "gc reserve bytes 96.9% of the device",
+        false,
+        2,
+        4,
+        55,
+        508_000
+    ),
+    opt!(
+        "gc reserve bytes 97.2% of the device",
+        true,
+        2,
+        4,
+        55,
+        509_607
+    ),
+    opt!("inode shard bits 9", true, 6, 0, 4, 9),
+];
 
 /// A started image's journal field, naming buckets that hold nothing here.
 pub const JOURNAL_FIELD_BODY: [u8; 16] = [0x11, 0, 0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0];

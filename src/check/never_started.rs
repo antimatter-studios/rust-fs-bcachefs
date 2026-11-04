@@ -29,8 +29,9 @@ const NBUCKETS_MIN: u64 = 512;
 /// One past the most buckets the reference allows.
 const NBUCKETS_END: u64 = (1 << 31) - 64;
 const BITMAP_SHIFT_END: u8 = 58;
-/// The reference runs out of room between 96.9% and 97.3% of a 256 MiB device,
-/// and between 93.8% and 97.7% of a 512 MiB one.
+/// At or above this share of the device the checker reports the reserve. The
+/// reference accepts up to 96.6% of a 256 MiB device and reports from 97.3%, and
+/// between them its verdict varies from run to run, as at 97% of a 512 MiB one.
 const GC_RESERVE_PERCENT_OF_DEVICE: u128 = 97;
 
 const FIELD_MEMBERS_V1: u32 = 1;
