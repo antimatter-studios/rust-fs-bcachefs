@@ -875,6 +875,147 @@ fn both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent() {
     }
 }
 
+/// A data extent's pointer and backpointer, for #562's matrix.
+#[cfg(feature = "write")]
+struct GenerationPair {
+    pointer_gen: u8,
+    bucket: u64,
+    length: u32,
+    backpointer: fs_bcachefs::bkey::Bkey,
+}
+
+/// Each written data extent of `img` that has a backpointer at its own sector.
+#[cfg(feature = "write")]
+fn generation_pairs(img: &Path) -> Vec<GenerationPair> {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::extent::DataExtent;
+
+    let dev = FileDevice::open(img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let bucket_size = u64::from(sb.members().unwrap()[sb.dev_idx as usize].bucket_size);
+    let bps = btree::walk(&dev, &sb, backpointer::TREE).unwrap();
+    btree::walk(&dev, &sb, btree_id::EXTENTS)
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.key_type == key_type::EXTENT)
+        .filter_map(|k| {
+            let e = DataExtent::from_key(&k).ok()?;
+            let bp = bps.iter().find(|b| b.pos.offset == e.ptr.offset << 16)?;
+            (e.ptr.flags == 0 && bp.value.len() == 32).then(|| GenerationPair {
+                pointer_gen: e.ptr.gen,
+                bucket: e.ptr.offset / bucket_size,
+                length: u32::from_le_bytes(bp.value[8..12].try_into().unwrap()),
+                backpointer: bp.clone(),
+            })
+        })
+        .collect()
+}
+
+/// #562: a backpointer at another generation than its pointer's is damage to
+/// the reference only beside a backpointer of the same bucket at the pointer's.
+/// Measured in the guest with the reference checker 1.39.7 and recorded in
+/// docs/clean-room.md. `kernel-written` holds the writes this crate's writer
+/// made, so its stored generations depend on the build of the fixtures; every
+/// case below sets each key it judges, and holds on either.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_judge_a_backpointer_generation_beside_its_bucket() {
+    use fs_bcachefs::write::Writer;
+    use std::collections::BTreeMap;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let judged = |set: &str, case: &str, gens: &[u8], pairs: &[&GenerationPair], damage: bool| {
+        let dir = ScratchDir::new("check-backpointer-generation");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("{set}-{case}.img"));
+        common::copy_sparse(fixture(&format!("{set}.img")), &img);
+        let keys = pairs
+            .iter()
+            .zip(gens)
+            .map(|(pair, &gen)| {
+                let mut key = pair.backpointer.clone();
+                key.value[3] = gen;
+                key
+            })
+            .collect();
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(backpointer::TREE, keys).unwrap();
+        }
+        let (bad, text) = reference_finds_a_problem(&img);
+        assert_eq!(bad, damage, "{set}/{case}: reference verdict:\n{text}");
+        assert_eq!(
+            text.contains("backpointer doesn't match extent it points to:"),
+            damage,
+            "{set}/{case}: reference finding:\n{text}"
+        );
+        let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+        assert_eq!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "backpointer_to_missing_ptr"),
+            damage,
+            "{set}/{case}: {:?}\n{text}",
+            ours.problems
+        );
+        assert_eq!(ours.clean(), !damage, "{set}/{case}: {:?}", ours.problems);
+    };
+
+    for set in ["gzip", "default", "block4k", "kernel-written"] {
+        let pairs = generation_pairs(&fixture(&format!("{set}.img")));
+        let mut buckets: BTreeMap<u64, Vec<&GenerationPair>> = BTreeMap::new();
+        for pair in &pairs {
+            buckets.entry(pair.bucket).or_default().push(pair);
+        }
+        let bucket = buckets
+            .values()
+            .max_by_key(|bucket| bucket.len())
+            .expect("the fixture has data");
+        assert!(bucket.len() >= 3, "{set}: no bucket holds several extents");
+        let p = bucket[0].pointer_gen;
+        let (other, third) = (p.wrapping_add(1), p.wrapping_add(2));
+        let n = bucket.len();
+        let with_first = |first: u8, rest: u8| {
+            let mut gens = vec![rest; n];
+            gens[0] = first;
+            gens
+        };
+        for (case, gens, damage) in [
+            ("every-one-current", vec![p; n], false),
+            ("one-other", with_first(other, p), true),
+            ("every-one-other", vec![other; n], false),
+            ("every-one-0xff", vec![0xff; n], false),
+            ("one-current", with_first(p, other), true),
+            ("two-others", with_first(third, other), false),
+        ] {
+            judged(set, case, &gens, bucket, damage);
+        }
+    }
+    // A bucket with one extent, at generation 0 and at a reused bucket's.
+    for set in ["default", "kernel-reuse"] {
+        let pairs = generation_pairs(&fixture(&format!("{set}.img")));
+        let mut count: BTreeMap<u64, usize> = BTreeMap::new();
+        for pair in &pairs {
+            *count.entry(pair.bucket).or_default() += 1;
+        }
+        let only = pairs
+            .iter()
+            .find(|pair| count[&pair.bucket] == 1 && pair.length > 0)
+            .expect("the fixture has a bucket with one extent");
+        judged(
+            set,
+            "alone-other",
+            &[only.pointer_gen.wrapping_add(1)],
+            &[only],
+            false,
+        );
+    }
+}
+
 /// #471: a bucket_gens key whose type changed covers no bucket, so each bucket
 /// it held is at generation 0 to the reference.
 #[cfg(feature = "write")]
