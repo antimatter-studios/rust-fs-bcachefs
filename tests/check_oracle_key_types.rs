@@ -22,9 +22,10 @@
 //! type unresolved, and an unresolved type fails the test rather than
 //! passing as accepted.
 //!
-//! A case on which the reference crashes or hangs is counted and never
-//! described (#164's disclosure rule): the test fails naming only the
-//! count.
+//! A case on which the reference crashes is counted and never described (#164's
+//! disclosure rule): the test fails naming only the count. A run that reaches
+//! the deadline is repeated, and an image no run finishes on fails the same way
+//! (docs/oracle-reference-failures.md).
 #![cfg(feature = "write")]
 
 mod common;
@@ -32,7 +33,6 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::process::Command;
 
 use common::fixture;
 use common::plant::{self, LOGGED_OPS};
@@ -98,12 +98,6 @@ const REPLANTS: usize = 4;
 /// "The key types a btree holds"). Eight sectors; the planted position's
 /// offset, 0x100 or more past the btree's last key, is always past it.
 const PLANTED_SIZE: u32 = 8;
-
-/// How long the reference checker may take over one planted image. It took
-/// about 0.2 s an image across the three btrees judged before #305 (queue
-/// run 39895568461), so a minute is far beyond a judgement and well short
-/// of letting a few hangs among every btree's images run out the job.
-const REFERENCE_TIMEOUT_SECONDS: &str = "60";
 
 fn planted_types() -> Vec<u8> {
     (1..=plant::KEY_TYPES.len() as u8).collect()
@@ -361,11 +355,11 @@ fn replace_word(text: &str, word: &str, with: &str) -> String {
     out
 }
 
-/// Whether the reference crashed or hung rather than judged.
+/// Whether the reference crashed rather than judged.
 fn crashed(status: std::process::ExitStatus) -> bool {
     match status.code() {
         None => true,
-        Some(c) => c == 124 || c >= 128,
+        Some(c) => c >= 128,
     }
 }
 
@@ -457,11 +451,7 @@ fn plant_and_run(img: &Path, rooted: bool, id: u8, key: &Bkey) -> Result<Judged,
         Ok(Err(e)) => return Err(format!("this checker refused: {e}")),
         Err(_) => return Err("this checker panicked".into()),
     };
-    let out = Command::new("timeout")
-        .args([REFERENCE_TIMEOUT_SECONDS, "bcachefs-ref", "fsck", "-n"])
-        .arg(img)
-        .output()
-        .unwrap();
+    let out = common::reference_runs::output(&["fsck", "-n"], img);
     if crashed(out.status) {
         return Ok(Judged::Crashed);
     }
@@ -605,7 +595,7 @@ fn each_judged_btree_holds_the_key_types_the_reference_lets_it_hold() {
     }
     if crashes > 0 || !failures.is_empty() || !disagree.is_empty() || !unresolved.is_empty() {
         let mut msg = vec![format!(
-            "{} btrees disagree, {} hold key types left unresolved, {} planted images failed, the reference crashed or hung on {crashes}{}",
+            "{} btrees disagree, {} hold key types left unresolved, {} planted images failed, the reference crashed on {crashes}{}",
             disagree.len(),
             unresolved.len(),
             failures.len(),

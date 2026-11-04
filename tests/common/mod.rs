@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod plant;
+pub mod reference_runs;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
