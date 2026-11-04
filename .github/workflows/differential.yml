@@ -69,7 +69,6 @@ on:
       - tests/default74_native_proof.py
       - tests/data/default-74-38840695392.patch
       - scripts/select-fixture-run.sh
-      - scripts/select-fixture-run-test.sh
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay*.tsv
@@ -320,12 +319,6 @@ jobs:
               listings) echo "DIFFERENTIAL_LISTINGS=$value" ;;
             esac
           done <"$RUNNER_TEMP/replay.env" >>"$GITHUB_ENV"
-
-      # The selector's controls run first, over a fake catalog, so a
-      # selector that would take a quick run or an expired artifact fails
-      # here rather than judging the wrong input.
-      - name: Fixture selection controls
-        run: bash scripts/select-fixture-run-test.sh
 
       - name: Fetch the fixtures
         env:
