@@ -238,7 +238,14 @@ Capacity counts the member's usable buckets; free space counts the free
 bucket runs, both in bytes, as in the C ABI's filesystem statistics.
 `dirty` means the superblock is not marked clean, even after in-memory
 journal replay. The `bcachefs` object holds `uuid`, `version`,
-`btree_node_size`, `devices`, `encrypted` and `clean`.
+`btree_node_size`, `devices`, `encrypted`, `clean` and `started`.
+
+An image the reference formatter left to its first start, as it does below the
+newest format version, holds only its superblocks. `get` reports what they say,
+with `bcachefs.started` false, `dirty` true because the superblock is not marked
+clean, and `free_bytes` null because nothing records it until a start. Every verb
+that needs a directory, and every write verb, refuses by name with exit 4: `the
+filesystem has not been started`. The C ABI's mount refuses it with `ENOTSUP`.
 
 Selection returns an object such as `{"bcachefs.uuid": "..."}`; `--text`
 prints that value alone. Unknown keys return exit 2. `set KEY VALUE` and

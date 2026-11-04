@@ -233,10 +233,21 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
         }
     }
     match m.subcommand() {
-        Some(("get" | "info", sub)) => get(
-            &open(dev)?,
-            sub.get_one::<String>("key").map(String::as_str),
-        ),
+        Some(("get" | "info", sub)) => {
+            let key = sub.get_one::<String>("key").map(String::as_str);
+            let sb = Superblock::read(&dev).map_err(opening)?;
+            if sb.never_started() {
+                return get(&sb, capacity_of(&sb)?, None, key);
+            }
+            let fs = open(dev)?;
+            let usage = fs.usage().map_err(failed)?;
+            get(
+                fs.superblock(),
+                usage.total_bytes,
+                Some(usage.free_bytes),
+                key,
+            )
+        }
         Some((verb @ ("ls" | "tree"), sub)) if verb == "tree" || sub.get_flag("recursive") => {
             ls_recursive(
                 &open(dev)?,
@@ -303,9 +314,29 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
     }
 }
 
-fn get(fs: &Filesystem<Device>, key: Option<&str>) -> Result<Outcome, CliError> {
-    let sb = fs.superblock();
-    let usage = fs.usage().map_err(failed)?;
+/// This device's usable buckets in bytes, as the member says, for a filesystem
+/// with nothing but its superblock to read.
+fn capacity_of(sb: &Superblock) -> Result<u64, CliError> {
+    let member = sb
+        .members()
+        .map_err(opening)?
+        .into_iter()
+        .nth(sb.dev_idx as usize)
+        .ok_or_else(|| CliError::failed("corrupt: no member entry for this device"))?;
+    let buckets = member
+        .nbuckets
+        .saturating_sub(u64::from(member.first_bucket));
+    Ok(buckets.saturating_mul(u64::from(member.bucket_size) * 512))
+}
+
+/// `free_bytes` is `None` on a filesystem nothing has started: nothing records
+/// it until a start has made the freespace btree.
+fn get(
+    sb: &Superblock,
+    total_bytes: u64,
+    free_bytes: Option<u64>,
+    key: Option<&str>,
+) -> Result<Outcome, CliError> {
     let label = sb.label_str();
     let all = Json::object([
         ("fs", Json::Str("bcachefs".into())),
@@ -317,8 +348,8 @@ fn get(fs: &Filesystem<Device>, key: Option<&str>) -> Result<Outcome, CliError> 
                 Json::Str(label)
             },
         ),
-        ("total_bytes", Json::UInt(usage.total_bytes)),
-        ("free_bytes", Json::UInt(usage.free_bytes)),
+        ("total_bytes", Json::UInt(total_bytes)),
+        ("free_bytes", free_bytes.map_or(Json::Null, Json::UInt)),
         ("block_size", Json::UInt(u64::from(sb.block_size) * 512)),
         ("dirty", Json::Bool(!sb.is_clean())),
         (
@@ -336,6 +367,7 @@ fn get(fs: &Filesystem<Device>, key: Option<&str>) -> Result<Outcome, CliError> 
                 ("devices", Json::UInt(u64::from(sb.nr_devices))),
                 ("encrypted", Json::Bool(sb.is_encrypted())),
                 ("clean", Json::Bool(sb.is_clean())),
+                ("started", Json::Bool(!sb.never_started())),
             ]),
         ),
     ]);
@@ -947,19 +979,22 @@ fn ls_recursive(
 /// whatever the message says.
 fn failed(e: fs_bcachefs::Error) -> CliError {
     match e {
-        fs_bcachefs::Error::Unsupported(m) => CliError::not_implemented(m),
         fs_bcachefs::Error::NotFound(_) => CliError::not_found(e.to_string()),
-        e => CliError::failed(e.to_string()),
+        e => super::fs_write::failed(e),
     }
 }
 
 /// Opening looks nothing up by path, so a structure missing there is
 /// damage, an ordinary failure, not a missing path.
 fn open(dev: Device) -> Result<Filesystem<Device>, CliError> {
-    Filesystem::open(dev).map_err(|e| match e {
+    Filesystem::open(dev).map_err(opening)
+}
+
+fn opening(e: fs_bcachefs::Error) -> CliError {
+    match e {
         fs_bcachefs::Error::NotFound(_) => CliError::failed(e.to_string()),
         e => failed(e),
-    })
+    }
 }
 
 #[cfg(test)]
