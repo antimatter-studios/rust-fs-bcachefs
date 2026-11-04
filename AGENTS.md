@@ -351,4 +351,6 @@ before pushing its fix, then cite that run's URL and SHA:
 gh workflow run ci.yml -R antimatter-studios/rust-fs-bcachefs --ref <branch>
 ```
 
-A quick pull request pass is not oracle evidence.
+A quick pull request pass is not oracle evidence. Neither is a focused
+reproducer, which runs one job and no oracle, and only when its input is
+given: `-f reproducer=write-study-lifecycle` or `-f reproducer=crc128-native`.
