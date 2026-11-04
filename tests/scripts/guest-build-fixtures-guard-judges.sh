@@ -18,6 +18,12 @@ fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
 sandbox="$(mktemp -d)"
 trap 'rm -rf -- "$sandbox"' EXIT
 
+# Every run of the guard here keeps its logs under this judge's name. A failure
+# this judge intends must not replace what the guard's own failed run kept.
+kept="$repo/tmp/logs/guest-build-fixtures-guard-judges"
+guard_log="$repo/tmp/logs/guest-build-fixtures-cleans-up.log"
+guard_log_before="$(cksum "$guard_log" 2>/dev/null)"
+
 # break NAME OLD NEW [OLD NEW]...: a copy of the supervisor with each OLD
 # replaced. An OLD that is gone fails by name: the mutation would test nothing.
 break_supervisor() {
@@ -35,23 +41,27 @@ PY
 }
 
 # expect_failure NAME CASE TEXT...: the guard fails on that broken supervisor,
-# and what it says holds each TEXT.
+# and what it says holds each TEXT and where it kept its logs. Those stay only if
+# something it said was not expected.
 expect_failure() {
-    local name="$1" case="$2" output status=0 text
+    local name="$1" case="$2" output status=0 text missed=0 log="$kept-$1.log"
     shift 2
-    output="$(FIXTURE_GUARD_SUPERVISOR="$sandbox/$name.sh" FIXTURE_GUARD_CASES="$case" bash "$guard" 2>&1)" ||
+    output="$(FIXTURE_GUARD_DIAGNOSTIC_LOG="$log" FIXTURE_GUARD_SUPERVISOR="$sandbox/$name.sh" \
+        FIXTURE_GUARD_CASES="$case" bash "$guard" 2>&1)" ||
         status=$?
     if [ "$status" = 0 ]; then
         fail "$name: the guard passed"
         return
     fi
-    for text in "$@"; do
+    for text in "$@" "guest-build-fixtures-cleans-up: diagnostics: $log"; do
         case "$output" in
             *"$text"*) ;;
-            *) fail "$name: the guard's failure does not say: $text"
+            *) missed=1
+               fail "$name: the guard's failure does not say: $text"
                printf '%s\n' "$output" | tail -n 20 >&2 ;;
         esac
     done
+    [ "$missed" = 1 ] || rm -- "$log"
 }
 
 # Every mutation is built before any case runs, so a stale anchor is named at once.
@@ -73,13 +83,15 @@ break_supervisor leaks-descendant \
 
 # 0.15 s per stand-in is more than 15 s across the 124 tools that run before
 # the first mount is ready, as a host at a load of about 57 was measured to be.
-output="$(FIXTURE_TOOL_DELAY=0.15 FIXTURE_GUARD_CASES=SIGTERM-mount-hold bash "$guard" 2>&1)" ||
+output="$(FIXTURE_GUARD_DIAGNOSTIC_LOG="$kept-slow-host.log" FIXTURE_TOOL_DELAY=0.15 \
+    FIXTURE_GUARD_CASES=SIGTERM-mount-hold bash "$guard" 2>&1)" ||
     { fail "a slow host failed the guard"; printf '%s\n' "$output" | tail -n 20 >&2; }
 
 # Started in the background, or under nohup, the guard inherits a signal ignored,
 # and a shell cannot trap a signal ignored on entry. That is the host, not the
 # supervisor, so the guard hands its supervisors the signals it sends them.
-output="$( (trap '' HUP INT; FIXTURE_GUARD_CASES=SIGHUP-format-hold,SIGINT-format-hold bash "$guard") 2>&1)" ||
+output="$( (trap '' HUP INT; FIXTURE_GUARD_DIAGNOSTIC_LOG="$kept-ignored-signals.log" \
+    FIXTURE_GUARD_CASES=SIGHUP-format-hold,SIGINT-format-hold bash "$guard") 2>&1)" ||
     { fail "a guard started with its signals ignored failed"; printf '%s\n' "$output" | tail -n 20 >&2; }
 
 FIXTURE_GUARD_IDLE_LIMIT=3 expect_failure stuck-before-ready SIGTERM-format-hold \
@@ -101,6 +113,9 @@ case "$cleanup_body" in
     '') fail "the supervisor has no cleanup function to read" ;;
     *'wait "$tool_pid"'*) fail 'cleanup waits for the tool, which can block for ever: wait "$tool_pid"' ;;
 esac
+
+[ "$(cksum "$guard_log" 2>/dev/null)" = "$guard_log_before" ] ||
+    fail "a run of the guard here replaced what its own failed run kept: $guard_log"
 
 [ "$fails" = 0 ] || exit 1
 echo "PASS  the fixture cleanup guard passes on a slow host, and names a stuck supervisor and a leak"

@@ -18,6 +18,12 @@ esac
 sandbox="$(mktemp -d)"
 trap 'rm -r -- "$sandbox"' EXIT
 
+# Every run of the guard here keeps its logs under this judge's name. A failure
+# this judge intends must not replace what the guard's own failed run kept.
+kept="$repo/tmp/logs/guest-write-study-guard-judges"
+guard_log="$repo/tmp/logs/guest-write-study-cleans-up.log"
+guard_log_before="$(cksum "$guard_log" 2>/dev/null)"
+
 # A mutation that could not be built is one no case exercises: it fails by name.
 break_supervisor() {
     python3 - "$supervisor" "$sandbox/$1.sh" "${@:2}" <<'PY' ||
@@ -33,22 +39,27 @@ PY
         fail "$1: the mutation could not be built"
 }
 
+# The guard's failure says each TEXT and where it kept its logs. Those stay only
+# if something it said was not expected.
 expect_failure() {
-    local name="$1" case="$2" output status=0 text
+    local name="$1" case="$2" output status=0 text missed=0 log="$kept-$1.log"
     shift 2
-    output="$(STUDY_GUARD_SUPERVISOR="$sandbox/$name.sh" STUDY_GUARD_CASES="$case" bash "$guard" 2>&1)" ||
+    output="$(STUDY_GUARD_DIAGNOSTIC_LOG="$log" STUDY_GUARD_SUPERVISOR="$sandbox/$name.sh" \
+        STUDY_GUARD_CASES="$case" bash "$guard" 2>&1)" ||
         status=$?
     if [ "$status" = 0 ]; then
         fail "$name: the guard passed"
         return
     fi
-    for text in "$@"; do
+    for text in "$@" "guest-write-study-cleans-up: diagnostics: $log"; do
         case "$output" in
             *"$text"*) ;;
-            *) fail "$name: the guard's failure does not say: $text"
+            *) missed=1
+               fail "$name: the guard's failure does not say: $text"
                printf '%s\n' "$output" | tail -n 20 >&2 ;;
         esac
     done
+    [ "$missed" = 1 ] || rm -- "$log"
 }
 
 # Every mutation is built before any case runs, so a stale anchor is named at once.
@@ -63,10 +74,12 @@ break_supervisor leaks-descendant \
     'kill -KILL -- "-$tool_pid" "$tool_pid" 2>/dev/null || true' 'kill -KILL "$tool_pid" 2>/dev/null || true'
 [ "$fails" = 0 ] || exit 1
 
-output="$(STUDY_TOOL_DELAY=0.5 STUDY_GUARD_CASES=SIGTERM-copy-hold bash "$guard" 2>&1)" ||
+output="$(STUDY_GUARD_DIAGNOSTIC_LOG="$kept-slow-host.log" STUDY_TOOL_DELAY=0.5 \
+    STUDY_GUARD_CASES=SIGTERM-copy-hold bash "$guard" 2>&1)" ||
     { fail 'a slow host failed the guard'; printf '%s\n' "$output" | tail -n 20 >&2; }
 
-output="$( (trap '' HUP INT; STUDY_GUARD_CASES=SIGHUP-hold,SIGINT-hold bash "$guard") 2>&1)" ||
+output="$( (trap '' HUP INT; STUDY_GUARD_DIAGNOSTIC_LOG="$kept-ignored-signals.log" \
+    STUDY_GUARD_CASES=SIGHUP-hold,SIGINT-hold bash "$guard") 2>&1)" ||
     { fail 'a guard started with its signals ignored failed'; printf '%s\n' "$output" | tail -n 20 >&2; }
 
 STUDY_GUARD_IDLE_LIMIT=3 expect_failure stuck-before-ready SIGTERM-hold \
@@ -79,6 +92,9 @@ expect_failure leaks-tool SIGTERM-hold 'owned child survived cleanup'
 
 STUDY_GUARD_REAP_LIMIT=3 expect_failure leaks-descendant SIGTERM-descendant-hold \
     'descendant survived cleanup'
+
+[ "$(cksum "$guard_log" 2>/dev/null)" = "$guard_log_before" ] ||
+    fail "a run of the guard here replaced what its own failed run kept: $guard_log"
 
 [ "$fails" = 0 ] || exit 1
 echo 'PASS  the write-study cleanup guard passes on a slow host, and names a stuck supervisor and a leak'

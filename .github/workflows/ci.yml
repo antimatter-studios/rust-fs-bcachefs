@@ -63,6 +63,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run only the write-study lifecycle regression
         run: bash tests/scripts/guest-write-study-cleans-up.sh
+      - name: Keep the guard's diagnostic log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-write-study-diagnostics
+          path: tmp/logs/*.log
+          if-no-files-found: error
 
   crc128-native:
     if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'crc128-native'

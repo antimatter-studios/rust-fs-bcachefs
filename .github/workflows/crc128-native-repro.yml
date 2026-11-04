@@ -22,6 +22,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Owned FUSE lifecycle and refusal controls
         run: bash tests/scripts/guest-build-fixtures-cleans-up.sh
+      - name: Keep the guard's diagnostic log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-build-fixtures-diagnostics
+          path: tmp/logs/*.log
+          if-no-files-found: error
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings

@@ -82,6 +82,24 @@ def in_session(pid, sid):
         return False
 
 
+def keep_failed_logs(guard, path, cases):
+    """Keep what each case recorded, then name where, for a guard that failed.
+
+    A guard's temporary directory is deleted as its failure unwinds, and with
+    it every supervisor log no assertion happened to quote. The tier prints only
+    its verdict, so the log goes to a file its job uploads, not to the output.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as kept:
+        for case in cases:
+            for name in ("log", "events"):
+                part = case / name
+                kept.write(f"== {part}\n".encode())
+                if part.exists():
+                    kept.write(part.read_bytes())
+    print(f"{guard}: diagnostics: {path}", file=sys.stderr, flush=True)
+
+
 class SupervisorProgress:
     def __init__(self, sandbox, idle_limit, case_limit):
         self.sandbox = sandbox

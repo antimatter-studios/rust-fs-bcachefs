@@ -246,9 +246,17 @@ tasks:
     # MEASURED 2026-11-03 after rebasing #527 onto cf55e31: all 26 guards,
     # including #515, #523 and #525, print 69 lines / 4250 bytes on macOS
     # arm64. The existing 84 / 5000 budget covers this combined tree.
+    # MEASURED 2026-11-04 (#550) on 1a0f3a8 plus #552: all 30 guards pass and
+    # print 77 lines / 4865 bytes under Bash 5.3 and 79 / 5147 under stock macOS
+    # Bash 3.2, which 5000 refused. Without #552's 99 bytes that shell is still
+    # at 5048, and 282 of its bytes are one guard's job-control notice (#558).
+    # MEASURED 2026-11-04 on Linux CI, merge queue run 41781213276: main plus
+    # #546 and #542 print 89 lines / 5378 bytes, which 84 / 5000 refused with
+    # exit 65. About 30% headroom is 116 lines / 7000 bytes, which also holds
+    # this change's 99 bytes and Bash 3.2's 282.
     cmds:
       - |
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 84 5000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 116 7000 -- bash -c '
           set -u
           failed=0
           for t in tests/scripts/*.sh; do
