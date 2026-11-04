@@ -233,9 +233,16 @@ tasks:
     # MEASURED 2026-11-03 (#515): the three added lifecycle guards print
     # 58 lines / 3694 bytes on macOS arm64, up from 53 / 3287 at #513.
     # The same 30% headroom, rounded up, is 80 lines / 4900 bytes.
+    # MEASURED 2026-11-03 with #525's six stand-in cases: 61 lines / 3669
+    # bytes. #523's large-output guard adds 2 lines / 136 bytes, making
+    # 63 / 3805 together; stock macOS Bash 3.2 without GNU host tools prints
+    # 64 / 3843. About 30% headroom is 84 lines / 5000 bytes.
+    # MEASURED 2026-11-03 after rebasing #527 onto cf55e31: all 26 guards,
+    # including #515, #523 and #525, print 69 lines / 4250 bytes on macOS
+    # arm64. The existing 84 / 5000 budget covers this combined tree.
     cmds:
       - |
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 80 4900 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 84 5000 -- bash -c '
           set -u
           failed=0
           for t in tests/scripts/*.sh; do

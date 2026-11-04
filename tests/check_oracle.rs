@@ -181,7 +181,7 @@ fn reference_on_key_field(image: &Path) -> (i32, String) {
     let native = Command::new("sh")
         .args([
             "-c",
-            "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
+            "ulimit -c 0; export LC_ALL=C; exec timeout --verbose --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
             "reference",
         ])
         .arg(image)
@@ -200,9 +200,13 @@ fn reference_on_key_field(image: &Path) -> (i32, String) {
     .iter()
     .any(|fault| text.contains(fault));
     let status = native.status.code();
+    let timed_out = status == Some(124)
+        || String::from_utf8_lossy(&native.stderr).contains("timeout: sending signal ");
     assert!(
-        matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted,
-        "reference fault or timeout: 1; no case details retained"
+        matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted && !timed_out,
+        "reference crashes or internal faults: {}; reference timeouts (slow host): {}; no case details retained",
+        u8::from(!timed_out),
+        u8::from(timed_out)
     );
     (status.unwrap(), text)
 }
