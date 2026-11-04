@@ -2402,6 +2402,83 @@ reference regressions change the length and snapshot together and alone,
 with clean controls and unchanged extents. The digest-pinned CI job replays
 both exact seeds. Tests run in CI, not locally; no GPL source was read.
 
+### A backpointer's generation and its bucket's total (S3, S4, #562)
+
+`kernel-written.img` of the fixtures of CI run 41424418346 (artifact
+13132766753, image sha256
+`656016ded97fb6aee5cc5d102be063acadf98d43c56db4e9db1c1d3b1f8ad6a8`) has 16
+extents whose pointers are at generation 1 and whose backpointers are at
+generation 0. The reference checker 1.39.7 exits 0 on it, printing
+`scanning for missing backpointers in 0/2048 buckets, 2 buckets with no
+backpointers`; this crate reported `backpointer_to_missing_ptr`, from the
+comparison #427 added.
+
+**Where the shape came from.** Those two files are this crate's writes, not the
+module's: `scripts/kernel-oracle.sh` has `rust-fs-bcachefs` write them into the
+image the module mounted (#141), and before c7822d2 (#479) the writer gave every
+data backpointer generation 0. So the fixture build decides the shape, by commit
+and not by chance. Of 20 builds sampled from the unexpired `fixtures` artifacts
+(2026-10-29 to 2026-11-04), the 5 from before c7822d2, runs 40790826273 to
+41409832403, have it, as does 41424418346; the 15 from run 41444787753, which is
+c7822d2, on do not, and hold generation 1 on both sides. Every one has pointers
+at generation 1. The reference's own writes never showed the shape:
+`kernel-reuse.img` has 512 extents at generation 7 on both sides.
+
+**The matrix.** Measured on 2026-11-04 in the harness guest (reference checker
+1.39.7, `fsck -n`), on copies of `gzip`, `zstd`, `lz4`, `default`, `block4k`,
+`kernel`, `kernel-reuse` and `kernel-written` of that fixture build, one change
+committed through the writer's raw `insert` at a time. P is the pointer's
+generation, and the keys named are those of one bucket.
+
+| change | exit | the reference prints | this crate before |
+|---|---|---|---|
+| every key at P | 0 | nothing | clean |
+| one key at another generation, the rest at P (P 0: 1, 2, 127, 128, 254, 255) | 9 | `1/2048 buckets, 0 buckets with no backpointers`, `backpointer doesn't match extent it points to` | reported |
+| one key at P, the rest at another | 9 | `1/2048`, and the "found" key is a neighbour at the other generation | reported |
+| every key at another generation, or two others mixed; P 0 and P 1 | 0 | `0/2048 buckets, 1 buckets with no backpointers` | reported |
+| the only key of a bucket at another generation; P 0 and P 7, each of 0, 1, 2, P-1, P+1, P+2, 127, 128, 254, 255 | 0 | `0/2048 buckets, 1 buckets with no backpointers` | reported |
+| one key's length changed, the rest unchanged | 9 | `1/2048`, `backpointer doesn't match` | reported |
+| the only key's length changed, at P | 9 | `1/2048` | reported |
+| the only key's length changed to 0, at P | 0 | `0/2048 buckets, 1 buckets with no backpointers` | reported |
+| the only key's length changed, at another generation | 0 | `0/2048 buckets, 1 buckets with no backpointers` | reported |
+| one key at another generation, and a neighbour at P carrying its length | 0 | nothing | reported |
+| one key's length up by 1 and a neighbour's down by 1, at P | 0 | nothing | reported |
+| one key's target inode, target offset, btree id, level or data type changed, at P | 0 | nothing | reported |
+| one key's target snapshot changed, at P (#348) | 0 | nothing | clean |
+| one key deleted | 9 | `1/2048`, `missing backpointer` | `missing_backpointer` |
+| every key of a bucket deleted | 0 | `0/2048 buckets, 1 buckets with no backpointers` | `missing_backpointer` |
+
+**The rule these fit.** Let T be the sectors of a bucket's backpointers at the
+bucket's generation, and S its alloc key's `dirty_sectors` (`kernel-written`
+bucket 82: the lister prints gen 1 and 23, its keys' lengths total 23). Where
+T == S the reference compares nothing further. Where T == 0 it counts the bucket
+under "buckets with no backpointers" and passes it. Otherwise it scans the bucket
+and compares each extent's backpointer with what it wants, generation included.
+This is an inference from black-box output: every row above fits it, and no
+reference source was read.
+
+**What the checker does.** The generation is compared only where T != 0, and a
+bucket size is known. The T == S case needs a second change to reach: a neighbour's
+length has to move too, and this checker reports that length itself, so the verdict
+is the same with or without that half of the rule. #427's case stays reported: both
+checkers still reject it (`both_checkers_reject_a_backpointer_value_that_disagrees_with_its_extent`).
+The other fields are compared as before, which leaves the rows where the reference
+exits 0 and this crate reports something: see #574.
+
+The replay #562 reported, seeds 1660720 on at 80 cases a fixture over those
+fixtures, judged in the guest with `fsck -n` and this fix, had all 8 controls clean
+to both and none of its six `ours-only` classes of `check:backpointer_to_missing_ptr`.
+What it did find outside the baseline is tracked already, in #449, #569, #570 and
+#571.
+
+`tests/data/kernel-written-41424418346.bin` is that image, packed: a raw deflate
+stream (sha256
+`a078dce2d02776e6acfe7a0705bf6c91b250278b538ffca5b33aee8642b39a26`) of the number
+of non-zero 4096-byte blocks, each block's number, as little-endian u32s, and then
+those 92 blocks. `src/check/backpointer_generation_tests.rs` reads it in the unit
+tier, and `both_checkers_judge_a_backpointer_generation_beside_its_bucket` holds
+the reference to the rule in the guest.
+
 ### A pinned extent checksum and the reference's data read (S3, S8, #219)
 
 [Run 38783376400](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/38783376400)

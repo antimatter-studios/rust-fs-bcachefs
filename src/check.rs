@@ -1302,7 +1302,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 }
             }
             if let Some(bps) = &backpointers {
-                data_backpointer(k, &e, bps, &mut r);
+                data_backpointer(k, &e, bucket_size, bps, &mut r);
                 extent_sectors
                     .entry((k.pos.inode, k.pos.offset))
                     .or_default()
@@ -1949,8 +1949,28 @@ fn unclaimed_backpointers(
     }
 }
 
+/// The sectors `sector`'s bucket's backpointers at generation `gen` cover.
+fn sectors_at_generation(
+    bps: &BTreeMap<u64, &Bkey>,
+    sector: u64,
+    bucket_size: u64,
+    gen: u8,
+) -> u64 {
+    let start = sector - sector % bucket_size;
+    bps.range(start << 16..(start + bucket_size) << 16)
+        .filter(|(_, bp)| bp.value.len() >= 12 && bp.value[3] == gen)
+        .map(|(_, bp)| u64::from(le32(&bp.value, 8)))
+        .sum()
+}
+
 /// The observed backpointer lookup for a written data extent (#163).
-fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mut Report) {
+fn data_backpointer(
+    k: &Bkey,
+    e: &DataExtent,
+    bucket_size: Option<u64>,
+    bps: &BTreeMap<u64, &Bkey>,
+    r: &mut Report,
+) {
     // The aged image's piece at offset 136 of the region at sector 26880
     // has its backpointer at 26880 << 16 | 136. Only uncompressed pieces
     // and whole compressed regions have an observed lookup rule.
@@ -1989,8 +2009,13 @@ fn data_backpointer(k: &Bkey, e: &DataExtent, bps: &BTreeMap<u64, &Bkey>, r: &mu
     let v = &bp.value;
     let matches = v.len() >= 32
         && v[..3] == [btree_id::EXTENTS, 0, DATA_USER]
-        // Its generation is the pointer's (#427).
-        && v[3] == e.ptr.gen
+        // Its generation is the pointer's (#427), where the bucket has a
+        // backpointer at that generation. With none, the reference prints the
+        // bucket under "buckets with no backpointers" and passes it (#562,
+        // docs/clean-room.md). With no bucket size there is no bucket to total.
+        && (v[3] == e.ptr.gen
+            || bucket_size
+                .is_some_and(|b| sectors_at_generation(bps, e.ptr.offset, b, e.ptr.gen) == 0))
         && u64::from(le32(v, 8)) == length
         && Bpos::parse(&v[12..32])
             .is_ok_and(|pos| pos.inode == k.pos.inode && pos.offset == k.pos.offset);
@@ -2979,6 +3004,8 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
     }
 }
 
+#[cfg(test)]
+mod backpointer_generation_tests;
 mod never_started;
 #[cfg(test)]
 mod never_started_tests;
@@ -3195,7 +3222,13 @@ mod tests {
         let bp = key(KEY_BACKPOINTER, 1116733440, value);
         let findings = |bp: &Bkey, e: &DataExtent| {
             let mut r = Report::default();
-            data_backpointer(&extent, e, &BTreeMap::from([(bp.pos.offset, bp)]), &mut r);
+            data_backpointer(
+                &extent,
+                e,
+                None,
+                &BTreeMap::from([(bp.pos.offset, bp)]),
+                &mut r,
+            );
             r.problems
         };
         assert!(findings(&bp, &e).is_empty());
@@ -3238,7 +3271,7 @@ mod tests {
             );
         }
         let mut missing = Report::default();
-        data_backpointer(&extent, &e, &BTreeMap::new(), &mut missing);
+        data_backpointer(&extent, &e, None, &BTreeMap::new(), &mut missing);
         assert_eq!(missing.problems[0].kind, "missing_backpointer");
 
         // Whole compressed regions use their physical length; an
