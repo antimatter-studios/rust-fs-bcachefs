@@ -34,7 +34,22 @@ command -v timeout >/dev/null || {
 WATCHDOG=30
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ko-tools.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+    local status=$? diagnostic scenario_log
+    if [ "$status" -ne 0 ]; then
+        diagnostic="$REPO/tmp/logs/kernel-oracle-reference-tools-are-bounded.log"
+        mkdir -p "$REPO/tmp/logs"
+        for scenario_log in "$tmp"/*/log; do
+            [ -f "$scenario_log" ] || continue
+            printf '== %s\n' "$scenario_log"
+            cat "$scenario_log"
+        done >"$diagnostic"
+        echo "kernel-oracle-reference-tools-are-bounded: diagnostics: $diagnostic" >&2
+    fi
+    rm -r -- "$tmp"
+    exit "$status"
+}
+trap cleanup EXIT
 stubs="$tmp/stubs"
 mkdir "$stubs"
 
