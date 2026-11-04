@@ -491,11 +491,49 @@ fi
 # sizes is the offset is not seen there. An extent partly overwritten keeps
 # its entry and starts its live part further in (S1 9.1.3.2), so a file is
 # written through the mount with the crc128 set's options, settled, and 4K
-# of it overwritten. crc128-overwrite.txt records the steps; nothing here
-# fails the build.
+# of it overwritten. crc128-overwrite.txt records the steps.
+#
+# Reading a partly overwritten extent through a writable mount can make the
+# reference narrow it: its parts get crc entries of their own, at offset 0. The
+# narrowing reaches the image only if the journal is written before the mount
+# is killed, so a read just before the kill left the offset in some builds and
+# removed it in others (#577, docs/clean-room.md). So the image is settled and
+# listed before anything reads the file, and the manifest is read through a
+# read-only mount of a copy. A build without the entry fails here, because
+# every later job that reads the fixtures would fail on it.
 echo "== crc128-overwrite (a crc128 extent partly overwritten, through the mount)"
+# Says why on its output and returns 1 when the step did not make what
+# tests/oracle_extent_entries.rs reads.
+crc128_overwrite_judge() {
+    local written="$out/crc128-overwrite.written.extents.txt"
+    local final="$out/crc128-overwrite.extents.txt"
+    if grep -q 'crc128:.* offset [1-9]' "$final" 2>/dev/null; then
+        python3 - "$out/crc128-overwrite.json" <<'PY' && return 0
+import hashlib, json, random, sys
+data = bytearray(random.Random(128).randbytes(1 << 20))
+data[4096:8192] = b"overwritten\n" * 341 + b"end\n"
+entries = json.load(open(sys.argv[1]))["entries"]
+entry = next(e for e in entries if e["path"] == "/f")
+sys.exit(entry["sha256"] != hashlib.sha256(data).hexdigest())
+PY
+        echo "the reference mount read back other bytes than the two writes wrote, or wrote no manifest"
+        return 1
+    fi
+    if [ ! -s "$final" ]; then
+        echo "no crc128 entry with a nonzero offset: the steps stopped before the last listing"
+    elif ! grep -q 'crc128:' "$written" 2>/dev/null; then
+        echo "no crc128 entry with a nonzero offset: the first write left no crc128 entry to overwrite"
+    else
+        echo "no crc128 entry with a nonzero offset: the crc128 entries after the overwrite are all at offset 0"
+    fi
+    grep -h 'crc[0-9]*:' "$written" 2>/dev/null | sed 's/^/after the first write:/' || true
+    grep -h 'crc[0-9]*:' "$final" 2>/dev/null | sed 's/^/after the overwrite:/' || true
+    grep -hE 'replaying entries|Journal keys' "$out/crc128-overwrite.replay.txt" 2>/dev/null || true
+    return 1
+}
 img="$age_dir/crc128-overwrite.img"
-rm -f "$ROOT$img"
+rm -f "$ROOT$img" "$out/crc128-overwrite.img" "$out/crc128-overwrite.json" \
+    "$out/crc128-overwrite.extents.txt" "$out/crc128-overwrite.written.extents.txt"
 truncate -s 1G "$ROOT$img"
 bcachefs-ref format -q --encoded_extent_max=1M "$img" >"$out/crc128-overwrite.format.txt" 2>&1
 {
@@ -520,7 +558,6 @@ with open(os.path.join(sys.argv[1], "f"), "r+b") as f:
 PY
             sync
             sleep 2
-            manifest "$ROOT$mnt" "$out/crc128-overwrite.json" live
             fuse_kill
             bcachefs-ref fsck -y "$img" >"$out/crc128-overwrite.replay.txt" 2>&1 ||
                 echo "settle overwritten: exit $?"
@@ -530,12 +567,24 @@ PY
             bcachefs-ref fsck -n "$img" >"$out/crc128-overwrite.fsck.txt" 2>&1 &&
                 echo "fsck -n: clean" || echo "fsck -n: exit $?"
             grep -c 'crc128:' "$out/crc128-overwrite.extents.txt" | sed 's/$/ crc128 entries/'
-            grep 'crc128:.* offset [1-9]' "$out/crc128-overwrite.extents.txt" || echo "no crc128 offset above 0"
+            grep 'crc128:.* offset [1-9]' "$out/crc128-overwrite.extents.txt" || true
             cp --sparse=always "$ROOT$img" "$out/crc128-overwrite.img"
+            cp --sparse=always "$ROOT$img" "$ROOT$age_dir/crc128-overwrite-read.img"
+            if fuse_mount "$age_dir/crc128-overwrite-read.img" ro,noatime "$work/fuse-crc128-read.log"; then
+                manifest "$ROOT$mnt" "$out/crc128-overwrite.json" live
+                fuse_kill
+            fi
+            rm -f "$ROOT$age_dir/crc128-overwrite-read.img"
         fi
     fi
 } >"$out/crc128-overwrite.txt" 2>&1 || echo "the steps stopped: exit $?" >>"$out/crc128-overwrite.txt"
+crc128_overwrite_status=0
+crc128_overwrite_judge >>"$out/crc128-overwrite.txt" 2>&1 || crc128_overwrite_status=$?
 sed 's/^/crc128-overwrite: /' "$out/crc128-overwrite.txt"
+if [ "$crc128_overwrite_status" != 0 ]; then
+    echo "fixtures: crc128-overwrite did not make what its oracle test reads; crc128-overwrite.txt says why" >&2
+    exit 1
+fi
 
 # POISONED EXTENTS. S1 (5.5.5, 9.1.2.1): an extent whose data fails its
 # checksum, with no good copy, is marked poisoned -- when it is read, or

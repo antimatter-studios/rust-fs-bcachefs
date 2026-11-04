@@ -252,6 +252,16 @@ jobs:
             tmp/kernel-oracle/judge.log
           if-no-files-found: warn
           retention-days: 7
+      # A failed build packs no fixtures, so its record of why (#577) goes up
+      # on its own: the steps' transcript and the listings. No image.
+      - name: Keep the crc128-overwrite record of a build that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crc128-overwrite-record
+          path: .vm-share/fixtures/crc128-overwrite*.txt
+          if-no-files-found: warn
+          retention-days: 7
 
   # This crate reads every fixture and must agree with what the reference
   # tools recorded about it, field by field and byte by byte.
