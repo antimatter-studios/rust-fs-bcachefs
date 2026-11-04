@@ -25,19 +25,7 @@ const REFERENCE: &str = "/usr/local/bin/bcachefs-ref";
 /// The reference checker's exit status and printed text. Nothing of a fault
 /// is kept.
 fn reference(image: &Path) -> (i32, String) {
-    assert!(
-        Path::new(REFERENCE).exists(),
-        "the reference checker is required: run `chore test:vm`"
-    );
-    let out = Command::new("sh")
-        .args([
-            "-c",
-            "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
-            "reference",
-        ])
-        .arg(image)
-        .output()
-        .expect("chore test:vm provides the reference checker");
+    let out = common::reference_runs::output(&["fsck", "-n"], image);
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     let faulted = [
@@ -53,7 +41,7 @@ fn reference(image: &Path) -> (i32, String) {
     let status = out.status.code();
     assert!(
         matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted,
-        "reference fault or timeout: 1; no case details retained"
+        "reference fault: 1; no case details retained"
     );
     (status.unwrap(), text)
 }

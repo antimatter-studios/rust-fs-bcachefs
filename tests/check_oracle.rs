@@ -174,19 +174,7 @@ const REF_ROOT: &str = "/srv/ref-trixie";
 /// A crash, a hang or an internal fault stays private: it fails with no output.
 #[cfg(feature = "write")]
 fn reference_on_key_field(image: &Path) -> (i32, String) {
-    assert!(
-        Path::new("/usr/local/bin/bcachefs-ref").exists(),
-        "the reference checker is required: run `chore test:vm`"
-    );
-    let native = Command::new("sh")
-        .args([
-            "-c",
-            "ulimit -c 0; export LC_ALL=C; exec timeout --verbose --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
-            "reference",
-        ])
-        .arg(image)
-        .output()
-        .expect("chore test:vm provides the reference checker");
+    let native = common::reference_runs::output(&["fsck", "-n"], image);
     let text = String::from_utf8_lossy(&native.stdout).into_owned()
         + &String::from_utf8_lossy(&native.stderr);
     let faulted = [
@@ -200,13 +188,9 @@ fn reference_on_key_field(image: &Path) -> (i32, String) {
     .iter()
     .any(|fault| text.contains(fault));
     let status = native.status.code();
-    let timed_out = status == Some(124)
-        || String::from_utf8_lossy(&native.stderr).contains("timeout: sending signal ");
     assert!(
-        matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted && !timed_out,
-        "reference crashes or internal faults: {}; reference timeouts (slow host): {}; no case details retained",
-        u8::from(!timed_out),
-        u8::from(timed_out)
+        matches!(status, Some(0 | 1 | 9 | 12 | 13)) && !faulted,
+        "reference crashes or internal faults: 1; reference timeouts: 0; no case details retained"
     );
     (status.unwrap(), text)
 }
@@ -427,18 +411,11 @@ fn both_checkers_agree_on_a_subvolume_pad_word() {
 }
 
 /// A lowered copy's verdict, without what differs between two runs on the
-/// same image: where it is kept, the journal sequence and how long a pass took.
+/// same image.
 #[cfg(feature = "write")]
 fn reference_verdict(image: &Path) -> (i32, Vec<String>) {
     let (status, text) = reference_on_key_field(image);
-    let lines = text
-        .lines()
-        .filter(|line| {
-            !line.contains(".img") && !line.contains("journal seq") && !line.contains("seconds)")
-        })
-        .map(str::to_string)
-        .collect();
-    (status, lines)
+    (status, common::reference_runs::comparable_lines(&text))
 }
 
 #[cfg(feature = "write")]
@@ -562,18 +539,10 @@ fn both_checkers_reject_alloc_v4_values_that_do_not_fit_their_fields() {
     for set in ["default", "lz4"] {
         for &case in alloc_v4::CASES {
             let (image, position) = alloc_v4::plant(set, case);
-            let native = Command::new("sh")
-                .args([
-                    "-c",
-                    "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref fsck -n \"$1\"",
-                    "reference",
-                ])
-                .arg(&*image)
-                .output()
-                .expect("chore test:vm provides the reference checker");
+            let native = common::reference_runs::output(&["fsck", "-n"], &image);
             assert!(
                 matches!(native.status.code(), Some(0 | 9)),
-                "reference fault or timeout: 1; no case details retained"
+                "reference fault: 1; no case details retained"
             );
             let text = String::from_utf8_lossy(&native.stdout).into_owned()
                 + &String::from_utf8_lossy(&native.stderr);
@@ -626,11 +595,7 @@ fn the_reference_reports_an_oversized_stale_journal_entry() {
         let img = dir.join(format!("{oversized}-{unknown_version}.img"));
         common::copy_sparse(fixture("aged-unclean.img"), &img);
         journal_length::plant(&img, oversized, unknown_version);
-        let native = Command::new("timeout")
-            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
-            .arg(&img)
-            .output()
-            .expect("chore test:vm provides the reference checker");
+        let native = common::reference_runs::output(&["fsck", "-n"], &img);
         let text = String::from_utf8_lossy(&native.stdout).into_owned()
             + &String::from_utf8_lossy(&native.stderr);
         assert!(
@@ -648,7 +613,7 @@ fn the_reference_reports_an_oversized_stale_journal_entry() {
                 ]
                 .iter()
                 .any(|s| text.contains(s)),
-            "reference fault or timeout: no case details retained"
+            "reference fault: no case details retained"
         );
         assert_eq!(
             native.status.code(),
@@ -690,11 +655,7 @@ fn the_reference_validates_only_the_selected_copys_optional_fields() {
         for index in indexes {
             superblock_field::zero_field_length(&img, sb.layout.sb_offsets[index], newer, true);
         }
-        let native = Command::new("timeout")
-            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
-            .arg(&img)
-            .output()
-            .expect("chore test:vm provides the reference checker");
+        let native = common::reference_runs::output(&["fsck", "-n"], &img);
         let text = String::from_utf8_lossy(&native.stdout).into_owned()
             + &String::from_utf8_lossy(&native.stderr);
         assert!(
@@ -712,7 +673,7 @@ fn the_reference_validates_only_the_selected_copys_optional_fields() {
                 ]
                 .iter()
                 .any(|s| text.contains(s)),
-            "reference fault or timeout: no case details retained"
+            "reference fault: no case details retained"
         );
         assert_eq!(native.status.code(), Some(expected), "{name}: {text}");
         if expected == 1 {
@@ -1164,11 +1125,7 @@ fn both_checkers_agree_on_btree_backpointer_field_mutations() {
             assert!(btree::walk(&dev, &sb, backpointer::TREE)
                 .unwrap()
                 .contains(&bp));
-            let out = Command::new("timeout")
-                .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
-                .arg(&*img)
-                .output()
-                .unwrap();
+            let out = common::reference_runs::output(&["fsck", "-n"], &img);
             let text = String::from_utf8_lossy(&out.stdout).into_owned()
                 + &String::from_utf8_lossy(&out.stderr);
             assert!(
@@ -1185,7 +1142,7 @@ fn both_checkers_agree_on_btree_backpointer_field_mutations() {
                     ]
                     .iter()
                     .any(|s| text.contains(s)),
-                "reference fault or timeout: no case details retained"
+                "reference fault: no case details retained"
             );
             let ours = check(&dev).unwrap();
             let rejected = byte == 8;
@@ -1342,11 +1299,7 @@ fn both_checkers_agree_when_superblock_bucket_sizes_differ() {
         for sector in sectors {
             superblock_copy::change_bucket_size(&img, sector, 8448, newer);
         }
-        let native = Command::new("timeout")
-            .args(["--kill-after=5", "60", "bcachefs-ref", "fsck", "-n"])
-            .arg(&img)
-            .output()
-            .expect("the guest provides timeout and the reference checker");
+        let native = common::reference_runs::output(&["fsck", "-n"], &img);
         let text = String::from_utf8_lossy(&native.stdout).into_owned()
             + &String::from_utf8_lossy(&native.stderr);
         // A fault's output can quote GPL source. Keep no observation or

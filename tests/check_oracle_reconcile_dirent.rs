@@ -5,7 +5,6 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::plant::{empty_root, move_root, RECONCILE_WORK_PHYS};
 use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
@@ -31,20 +30,11 @@ fn keys(img: &Path, id: u8) -> Vec<Bkey> {
 }
 
 fn reference(img: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new("sh")
-        .args([
-            "-c",
-            "ulimit -c 0; exec timeout --kill-after=5 60 bcachefs-ref \"$@\"",
-            "reference",
-        ])
-        .args(args)
-        .arg(img)
-        .output()
-        .expect("the guest needs the reference tools and timeout (`chore test:vm`)");
-    if out.status.code().is_none_or(|c| c == 124 || c >= 128) {
+    let out = common::reference_runs::output(args, img);
+    if out.status.code().is_none_or(|c| c >= 128) {
         // No output, image, seed or diagnostic from a crashing reference.
         std::fs::remove_file(img).unwrap();
-        panic!("reference crashes or hangs: 1");
+        panic!("reference crashes: 1");
     }
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
