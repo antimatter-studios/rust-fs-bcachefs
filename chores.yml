@@ -38,18 +38,23 @@ tasks:
           fs-linux-test-harness '{{.LINUX_HARNESS_URL}}' '{{.LINUX_HARNESS_REF}}' \
         | while IFS="$(printf '\t')" read -r name url ref; do
             dir="$siblings_root/$name"
+            fetch_ref() {
+              git -C "$dir" fetch --quiet origin tag "$ref" 2>/dev/null ||
+                git -C "$dir" fetch --quiet origin "$ref"
+            }
             if [ ! -e "$dir/.git" ]; then
               echo "siblings: cloning $name at $ref"
               git init --quiet "$dir"
               git -C "$dir" remote add origin "$url"
-              git -C "$dir" fetch --quiet origin "$ref"
+              fetch_ref
               git -C "$dir" checkout --quiet FETCH_HEAD
               continue
             fi
-            git -C "$dir" fetch --quiet origin "$ref" || true
-            if git -C "$dir" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then
+            resolved_ref="$ref"
+            if fetch_ref; then resolved_ref=FETCH_HEAD; fi
+            if git -C "$dir" merge-base --is-ancestor "$resolved_ref" HEAD 2>/dev/null; then
               echo "siblings: $name at or ahead of $ref"
-              if ! git -C "$dir" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then
+              if ! git -C "$dir" merge-base --is-ancestor HEAD "$resolved_ref" 2>/dev/null; then
                 echo "siblings: $name is ahead of $ref; use a detached worktree of $ref at ~/projects/worktrees/rust-fs-bcachefs-<id>/$name."
                 echo "siblings: put this repository beside it at ~/projects/worktrees/rust-fs-bcachefs-<id>/rust-fs-bcachefs; see AGENTS.md: Pinned siblings beside a worktree."
               fi
