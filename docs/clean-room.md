@@ -2658,11 +2658,13 @@ odds with it:
   "has data accounted" or "child pointer N is deleted but has N keys",
   `snapshot_deleted_but_has_data`. The checker reads this from the snapshot's
   per-snapshot counters, on clean images.
-- A subvolume at `unlinked` or `deleted`: #507.
+- A subvolume at `unlinked` or `deleted`: the contextual observations below
+  settle #507, including a consistent deleted-subvolume control.
 
 Every snapshot of every fixture is one of the first three, so these are all the
 snapshot rules a probe of the fixtures can show. Such a state with nothing at
-odds with it is not observed, and not judged (#507).
+odds with it is not observed, and not judged. The consistent non-live control
+below concerns a subvolume, not a snapshot.
 
 **The pad.** Every bit of a subvolume's bytes 44..48 is "reserved pad field
 nonzero, deleting", in an `invalid bkey` line naming the key, and exit 13. A
@@ -2810,6 +2812,42 @@ unchanged controls; the existing state-word regressions retain the minimum
 length controls. The existing position-only unit test now supplies values
 of these minimum lengths instead of empty values; its expected position
 verdicts are unchanged. The new red regressions are unchanged.
+
+## Non-live subvolumes and their references (#507, 2026-11-03)
+
+Black-box guest probes used reference checker 1.39.7 and sparse copies of
+the reference-made default, aged, kernel and kernel-rootsnap fixtures from
+run 41476138017, artifact 13159750269. The downloaded fixture archive has
+SHA-256 `7d2625fd939cc994df96ac49c87059baa0317ea36b281dded7e8e4278465205a`.
+Only key bytes and printed reference-checker verdicts were consulted; no
+reference source was read.
+
+Setting root subvolume 1 to unlinked (`0x2d358e8f`) produces "root subvol
+missing", exit 1, in all four fixtures. Setting non-root subvolumes 2 and 3
+in kernel, or 2 in kernel-rootsnap, to unlinked produces "dirent points to
+missing subvolume", exit 9. Setting those same non-root subvolumes to deleted
+(`0x3c6b2d4c`) produces "snapshot live but its subvolume is deleted",
+"incorrect entry in subvolume_children btree" and the missing-subvolume
+dirent finding, exit 13. Kernel subvolume 2 is also a snapshot-tree master
+and produces "snapshot tree points to missing subvolume". Live controls
+remain clean, exit 0.
+
+A consistent non-live control copies the reference-made root subvolume to
+unused id 4096, clears its creation_parent and fs_parent bytes 16..24, and
+sets its state to deleted, leaving the original root untouched. No live
+reference names the new key. The reference checker and this checker accept
+it on all four fixtures, exit 0. This is not a blanket refusal of non-live
+keys: unlinked keys cannot serve as roots or dirent targets, while deleted
+keys additionally cannot satisfy live snapshot, snapshot-tree-master or
+subvolume-children references. The existing live and unlinked duplicate
+snapshot-claim gap is tracked separately in #521.
+
+The regressions are in `tests/common/subvolume_states.rs`,
+`tests/oracle_subvolume_states.rs` and `tests/check_oracle.rs`. Contextual
+root, snapshot and dirent state checks require a clean image of version
+1.39 or later, matching the existing snapshot-state scope. No existing
+assertion was changed. One reference fault was counted and kept private;
+no reproducer or identifying case details are published.
 
 ## Images formatted and never started (#505, 2026-11-03)
 
