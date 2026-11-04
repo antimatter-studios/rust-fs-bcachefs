@@ -246,6 +246,60 @@ a fragment until it ships and a line of `CHANGELOG.md` after, never both.
   application in the README, the source, or CLI help.
 <!-- END SHARED BLOCK: agent-core v8 -->
 
+## Pinned siblings beside a worktree
+
+`chore siblings` accepts a sibling at or ahead of its pin and never moves an
+existing shared checkout. Ahead does not mean lockfile-compatible:
+`Cargo.toml` uses `../rust-fs-core`, and an ahead checkout can require a
+different `Cargo.lock`. Then `cargo build --locked`, the cargo test tiers,
+CLI installation and the pre-commit `cargo clippy --locked` guard refuse it.
+Do not bypass the hook or move the shared sibling to get past that refusal.
+
+The supported layout is a worktree of this repository beside a detached
+worktree of the pinned sibling, each owned by this change:
+
+```text
+~/projects/worktrees/rust-fs-bcachefs-<id>/rust-fs-bcachefs
+~/projects/worktrees/rust-fs-bcachefs-<id>/rust-fs-core
+```
+
+Choose a unique ID and branch name below. Read the pin from the new
+repository worktree, not from the shared checkout or a remembered release.
+These commands fetch objects and the pinned tag and add worktrees; neither
+shared checkout's HEAD, branch, index nor working files move:
+
+```sh
+set -e
+checkout="$HOME/projects/rust-fs-bcachefs"
+layout="$HOME/projects/worktrees/rust-fs-bcachefs-my-change"
+git -C "$checkout" fetch origin
+git -C "$checkout" worktree add "$layout/rust-fs-bcachefs" -b fix/my-change origin/main
+core_ref="$(awk '$1 == "FS_CORE_REF:" { print $2 }' "$layout/rust-fs-bcachefs/chores.yml")"
+git -C "$HOME/projects/rust-fs-core" fetch origin tag "$core_ref"
+git -C "$HOME/projects/rust-fs-core" worktree add --detach "$layout/rust-fs-core" "$core_ref"
+cd "$layout/rust-fs-bcachefs"
+cargo build --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+Build, stage and commit normally from that repository worktree. Its installed
+Git hooks run against the pinned sibling through the same relative path;
+`--locked` stays enabled and `--no-verify` is unnecessary. The shared
+`~/projects/rust-fs-core` may remain ahead for other work.
+
+For tasks needing the harness, add its pinned detached worktree to the same
+layout before running `chore siblings` or the relevant tier:
+
+```sh
+harness_ref="$(awk '$1 == "LINUX_HARNESS_REF:" { print $2 }' "$layout/rust-fs-bcachefs/chores.yml")"
+git -C "$HOME/projects/fs-linux-test-harness" fetch origin tag "$harness_ref"
+git -C "$HOME/projects/fs-linux-test-harness" worktree add --detach "$layout/fs-linux-test-harness" "$harness_ref"
+```
+
+When the changes are committed and pushed and the worktrees are clean, remove
+each change-owned worktree with `git worktree remove`, run from its original
+checkout. Never remove or reset the shared sibling checkout.
+
 ## Clean room: the rule that outranks every other here
 
 bcachefs's kernel code and its userspace tools are GPL-2.0. This crate is MIT

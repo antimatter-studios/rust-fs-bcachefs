@@ -49,6 +49,10 @@ tasks:
             git -C "$dir" fetch --quiet origin "$ref" || true
             if git -C "$dir" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then
               echo "siblings: $name at or ahead of $ref"
+              if ! git -C "$dir" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then
+                echo "siblings: $name is ahead of $ref; use a detached worktree of $ref at ~/projects/worktrees/rust-fs-bcachefs-<id>/$name."
+                echo "siblings: put this repository beside it at ~/projects/worktrees/rust-fs-bcachefs-<id>/rust-fs-bcachefs; see AGENTS.md: Pinned siblings beside a worktree."
+              fi
             else
               echo "siblings: $name is below $ref; this task will not move a shared checkout -- move it yourself." >&2
               exit 1
