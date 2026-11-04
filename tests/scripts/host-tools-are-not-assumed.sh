@@ -74,9 +74,11 @@ for guard in kernel-oracle-boot-is-bounded; do
     status=$?
     last="$(printf '%s\n' "$out" | tail -n 1)"
     if [ "$status" -ne 0 ]; then
-        fail "$guard exited $status with no setsid or timeout on PATH: $(printf '%s\n' "$out" | tail -n 3 | cut -c1-300)"
+        fail "$guard exited $status with no setsid or timeout on PATH:"
+        printf '%s\n' "$out" >&2
     elif [ "${last#PASS}" = "$last" ]; then
         fail "$guard exited 0 without its PASS line: it stopped early"
+        printf '%s\n' "$out" >&2
     fi
 done
 
