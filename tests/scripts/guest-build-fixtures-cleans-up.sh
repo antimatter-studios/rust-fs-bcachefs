@@ -10,6 +10,8 @@
 #   FIXTURE_TOOL_DELAY        seconds each stand-in sleeps before it starts
 #   FIXTURE_GUARD_IDLE_LIMIT  seconds without progress that mean stuck
 #   FIXTURE_GUARD_REAP_LIMIT  seconds a killed descendant may take to disappear
+#   FIXTURE_GUARD_DIAGNOSTIC_LOG  where a failed run keeps its supervisor logs,
+#                             in place of tmp/logs/guest-build-fixtures-cleans-up.log
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "$repo/tests/scripts/support/supervisor_guard.py"
@@ -24,9 +26,10 @@ import tempfile
 import time
 
 script = Path(sys.argv[1])
-support = Path(sys.argv[2]) / 'tests/scripts/support'
+repo = Path(sys.argv[2])
+support = repo / 'tests/scripts/support'
 sys.path.insert(0, str(support))
-from supervisor_guard import SupervisorProgress, events, in_session, signals_at_default, trace_progress_into
+from supervisor_guard import SupervisorProgress, events, in_session, keep_failed_logs, signals_at_default, trace_progress_into
 
 selected = os.environ.get('FIXTURE_GUARD_CASES')
 def wanted(label):
@@ -445,6 +448,11 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                 proc.wait()
         # A failure must not leave held stand-ins behind to load the next run.
         if not passed:
+            # Before anything else can fail: the sandbox goes with this scope.
+            keep_failed_logs('guest-build-fixtures-cleans-up',
+                             Path(os.environ.get('FIXTURE_GUARD_DIAGNOSTIC_LOG',
+                                                 repo / 'tmp/logs/guest-build-fixtures-cleans-up.log')),
+                             cases)
             for case in cases:
                 for sid in {e['sid'] for e in events(case) if e['kind'] in ('reference', 'copy')}:
                     try: os.killpg(sid, signal.SIGKILL)

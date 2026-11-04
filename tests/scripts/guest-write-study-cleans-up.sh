@@ -16,9 +16,10 @@ import tempfile
 import time
 
 script = Path(sys.argv[1])
-support = Path(sys.argv[2]) / 'tests/scripts/support'
+repo = Path(sys.argv[2])
+support = repo / 'tests/scripts/support'
 sys.path.insert(0, str(support))
-from supervisor_guard import SupervisorProgress, events, in_session, signals_at_default, trace_progress_into
+from supervisor_guard import SupervisorProgress, events, in_session, keep_failed_logs, signals_at_default, trace_progress_into
 
 selected = os.environ.get('STUDY_GUARD_CASES')
 def wanted(label):
@@ -323,6 +324,11 @@ with tempfile.TemporaryDirectory(prefix='guest-write-study-test.') as tmp:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
         if not passed:
+            # Before anything else can fail: the sandbox goes with this scope.
+            keep_failed_logs('guest-write-study-cleans-up',
+                             Path(os.environ.get('STUDY_GUARD_DIAGNOSTIC_LOG',
+                                                 repo / 'tmp/logs/guest-write-study-cleans-up.log')),
+                             cases)
             for case in cases:
                 for sid in {event['sid'] for event in events(case)
                             if event['kind'] in ('format', 'fuse', 'copy')}:
