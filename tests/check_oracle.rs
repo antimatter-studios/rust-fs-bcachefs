@@ -1198,6 +1198,274 @@ fn both_checkers_report_a_backpointer_its_extent_does_not_point_at() {
     );
 }
 
+/// Overwrite the first `bytes` of the file with inode `ino` through the
+/// reference's read-write mount, and unmount. This leaves the image not shut
+/// down cleanly, which is what #563 needs. Nothing the daemon prints is kept,
+/// and its exit status is not judged: the reference checker judges what it left.
+#[cfg(feature = "write")]
+fn write_through_the_reference_mount(img: &Path, ino: u64, bytes: usize) {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    fn file_with_inode(dir: &Path, ino: u64) -> Option<PathBuf> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::read_dir(dir).unwrap().find_map(|entry| {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            if meta.ino() == ino {
+                Some(entry.path())
+            } else if meta.is_dir() {
+                file_with_inode(&entry.path(), ino)
+            } else {
+                None
+            }
+        })
+    }
+
+    let name = img.file_stem().unwrap().to_str().unwrap();
+    let guest_mount = format!("/mnt/check-oracle-{name}");
+    let mount = PathBuf::from(format!("{REF_ROOT}{guest_mount}"));
+    std::fs::create_dir_all(&mount).unwrap();
+    // The mount runs in the foreground under the shared deadline wrapper, so a
+    // mount that never returns ends at the same two minutes as every other run.
+    let mut daemon = Command::new("sh")
+        .args([
+            "-c",
+            common::reference_runs::WRAPPER,
+            "reference",
+            "fusemount",
+            "-f",
+        ])
+        .args(["-o", "rw,noatime", img.to_str().unwrap(), &guest_mount])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("chore test:vm provides the reference mount");
+    let is_mounted = || {
+        Command::new("mountpoint")
+            .args(["-q", mount.to_str().unwrap()])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let mounted = (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        is_mounted()
+    });
+    assert!(mounted, "the reference did not mount {}", img.display());
+    let wrote = (|| -> std::io::Result<()> {
+        let file = file_with_inode(&mount, ino).expect("the mount shows the file");
+        let mut file = std::fs::OpenOptions::new().write(true).open(file)?;
+        file.write_all(&vec![0; bytes])?;
+        file.sync_all()
+    })();
+    let unmounted = Command::new("fusermount3")
+        .args(["-u", mount.to_str().unwrap()])
+        .status()
+        .unwrap();
+    let _ = daemon.wait();
+    assert!(unmounted.success(), "{}: not unmounted", img.display());
+    wrote.unwrap();
+}
+
+/// The reference checker's status and output, under a time limit.
+#[cfg(feature = "write")]
+fn reference_checks(img: &Path) -> (Option<i32>, String) {
+    let (status, text) = reference_on_key_field(img);
+    (Some(status), text)
+}
+
+/// `bp` moved to `to`, value unchanged: its old key deleted and the new one
+/// written, a commit each.
+#[cfg(feature = "write")]
+fn moved_backpointer(img: &Path, bp: &bkey::Bkey, to: u64) -> bkey::Bkey {
+    let mut gone = bp.clone();
+    gone.key_type = bkey::key_type::DELETED;
+    gone.value.clear();
+    let mut new = bp.clone();
+    new.pos.offset = to;
+    let mut writer = fs_bcachefs::write::Writer::open(FileDevice::open_rw(img).unwrap()).unwrap();
+    writer.insert(backpointer::TREE, vec![gone]).unwrap();
+    writer.insert(backpointer::TREE, vec![new.clone()]).unwrap();
+    new
+}
+
+/// #563, #433's own recipe. The extent's backpointer is moved within its bucket,
+/// value unchanged; a write through the mount moves the extent's data away and
+/// the image is left not shut down cleanly. Nothing is planted after the write.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_report_a_backpointer_a_write_through_the_mount_left_behind() {
+    for set in ["default", "block4k"] {
+        for (case, to) in [("down", -255i64), ("up", 1)] {
+            let dir = ScratchDir::new("check-backpointer-left-behind");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("{set}-{case}.img"));
+            common::copy_sparse(fixture(&format!("{set}.img")), &img);
+            let (extent, bp) = backpointer::pair(&img);
+            let at = bp.pos.offset.checked_add_signed(to).unwrap();
+            let stale = moved_backpointer(&img, &bp, at);
+            write_through_the_reference_mount(&img, extent.pos.inode, 4096);
+
+            let dev = FileDevice::open(&img).unwrap();
+            assert!(!Superblock::read(&dev).unwrap().is_clean());
+            let (status, text) = reference_checks(&img);
+            assert_eq!(status, Some(9), "{set} {case}:\n{text}");
+            assert!(
+                text.contains("backpointer doesn't match extent it points to")
+                    && text.contains("backpointer_to_missing_ptr"),
+                "{set} {case}:\n{text}"
+            );
+            let ours = check(&dev).unwrap();
+            assert!(
+                ours.problems
+                    .iter()
+                    .any(|p| p.kind == "backpointer_to_missing_ptr"
+                        && p.detail.contains(&stale.pos.to_string())),
+                "{set} {case}: not reported: {:?}\n{text}",
+                ours.problems
+            );
+        }
+    }
+}
+
+/// #563's controls: the same write with no backpointer moved, and the
+/// reference's own crash image, are clean to both checkers.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_call_an_uncleanly_shut_down_image_clean_when_nothing_was_moved() {
+    for set in ["default", "block4k", "aged-unclean"] {
+        let dir = ScratchDir::new("check-backpointer-left-behind-control");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("{set}-control.img"));
+        common::copy_sparse(fixture(&format!("{set}.img")), &img);
+        if set != "aged-unclean" {
+            let (extent, _) = backpointer::pair(&img);
+            write_through_the_reference_mount(&img, extent.pos.inode, 4096);
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        assert!(!Superblock::read(&dev).unwrap().is_clean(), "{set}");
+        let (status, text) = reference_checks(&img);
+        assert_eq!(status, Some(0), "{set}:\n{text}");
+        let ours = check(&dev).unwrap();
+        assert!(ours.clean(), "{set}: {:?}\n{text}", ours.problems);
+    }
+}
+
+/// A stale backpointer is judged according to the bucket it is in, shut down
+/// cleanly or not (docs/clean-room.md, "A stale backpointer"). `reported` is
+/// what the reference measured; a bucket it passes, this checker passes.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_judge_a_stale_backpointer_by_the_bucket_it_is_in() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+
+    const SUPERBLOCK: u8 = 1;
+    const JOURNAL: u8 = 2;
+    const BTREE: u8 = 3;
+    const USER: u8 = 4;
+    const NEED_DISCARD: u8 = 9;
+    // An offset no piece of a checksummed region has, so the key is new.
+    const SUBOFFSET: u64 = 0xff01;
+
+    let source = fixture("default.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let member = sb.members().unwrap()[0].clone();
+    let bucket_size = u64::from(member.bucket_size);
+    let alloc: Vec<_> = btree::walk(&dev, &sb, btree_id::ALLOC)
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.key_type == key_type::ALLOC_V4)
+        .collect();
+    let of_type = |t: u8| {
+        alloc
+            .iter()
+            .find(|k| k.value[14] == t)
+            .unwrap_or_else(|| panic!("default.img has a bucket of data type {t}"))
+    };
+    let discard = of_type(NEED_DISCARD);
+    assert_ne!(discard.value[12], 0, "a generation the extent's is not");
+    let (_, pair) = backpointer::pair(&source);
+    let extent_bucket = (pair.pos.offset >> 16) / bucket_size;
+    let user = alloc
+        .iter()
+        .find(|k| k.value[14] == USER && k.pos.offset != extent_bucket)
+        .expect("default.img has another user bucket");
+    let no_key = (0..member.nbuckets)
+        .rev()
+        .find(|b| alloc.iter().all(|k| k.pos.offset != *b))
+        .expect("default.img has a bucket with no alloc key");
+    // (case, bucket, generation, reported)
+    let cases = [
+        (
+            "waiting for discard, at another generation",
+            discard.pos.offset,
+            None,
+            false,
+        ),
+        (
+            "waiting for discard, at its generation",
+            discard.pos.offset,
+            Some(discard.value[12]),
+            true,
+        ),
+        ("journal", of_type(JOURNAL).pos.offset, None, false),
+        ("superblock", of_type(SUPERBLOCK).pos.offset, None, false),
+        ("btree", of_type(BTREE).pos.offset, None, true),
+        ("user", user.pos.offset, None, true),
+        ("no alloc key", no_key, None, true),
+    ];
+    for unclean in [false, true] {
+        for (case, bucket, gen, reported) in cases {
+            let at = (bucket * bucket_size + 1) << 16 | SUBOFFSET;
+            let dir = ScratchDir::new("check-stale-backpointer-bucket");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("bucket-{bucket}-{unclean}-{}.img", gen.is_some()));
+            common::copy_sparse(&source, &img);
+            let (extent, bp) = backpointer::pair(&img);
+            let mut stale = bp.clone();
+            stale.pos.offset = at;
+            if let Some(gen) = gen {
+                stale.value[3] = gen;
+            }
+            let mut writer =
+                fs_bcachefs::write::Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            writer
+                .insert(backpointer::TREE, vec![stale.clone()])
+                .unwrap();
+            drop(writer);
+            if unclean {
+                write_through_the_reference_mount(&img, extent.pos.inode, 4096);
+            }
+            let dev = FileDevice::open(&img).unwrap();
+            let (status, text) = reference_checks(&img);
+            assert_eq!(
+                status,
+                Some(if reported { 9 } else { 0 }),
+                "{case}, unclean {unclean}:\n{text}"
+            );
+            let ours = check(&dev).unwrap();
+            let found = ours
+                .problems
+                .iter()
+                .any(|p| p.detail.contains(&stale.pos.to_string()));
+            assert_eq!(
+                found, reported,
+                "{case}, unclean {unclean}: {:?}\n{text}",
+                ours.problems
+            );
+            if !reported {
+                assert!(
+                    ours.clean(),
+                    "{case}, unclean {unclean}: {:?}",
+                    ours.problems
+                );
+            }
+        }
+    }
+}
+
 /// Independently mutate each interpreted field, in both an interior root
 /// and its leaf child. The length-only regression above stays unchanged.
 #[cfg(feature = "write")]
