@@ -189,23 +189,37 @@ else
     kill -KILL -- "-$sup" 2>/dev/null
 fi
 
-rm -f "$out" "$sandbox/child.pid"
-set -m
-bash "$RUN" sh -c 'trap "exit 7" TERM; echo $$ >"$2"; echo "$FS_BCACHEFS_TEST_SCRATCH_ROOT" >"$1"
-    while :; do sleep 0.1; done' sh "$out" "$sandbox/child.pid" 2>"$sandbox/own.err" &
-sup=$!
-set +m
-if await "$out"; then
-    kill -s TERM "$sup"
-    wait "$sup" 2>/dev/null
-    status=$?
-    [ "$status" = 143 ] || fail "handled TERM: the script exited $status, not 143"
-    grep -q 'status 7 after SIGTERM' "$sandbox/own.err" || fail "handled TERM: the child's status 7 was not reported"
-    [ ! -e "$(dirname "$(cat "$out")")" ] || fail "handled TERM: the root was left behind"
-else
-    fail "handled TERM: the child never started"
-    kill -KILL -- "-$sup" 2>/dev/null
-fi
+: >"$sandbox/normal.bash-env"
+cat >"$sandbox/exited-before-probe.bash-env" <<'STUB'
+kill() {
+    if [ "$1" = -0 ] && [ "${2:-}" = "${child:-}" ] && [ -n "${caught:-}" ]; then
+        builtin wait "$child"
+    fi
+    builtin kill "$@"
+}
+STUB
+for schedule in normal exited-before-probe; do
+    rm -f "$out" "$sandbox/child.pid"
+    set -m
+    BASH_ENV="$sandbox/$schedule.bash-env" bash "$RUN" sh -c 'trap "exit 7" TERM; echo $$ >"$2"; echo "$FS_BCACHEFS_TEST_SCRATCH_ROOT" >"$1"
+        while :; do sleep 0.1; done' sh "$out" "$sandbox/child.pid" 2>"$sandbox/own.err" &
+    sup=$!
+    set +m
+    if await "$out"; then
+        kill -s TERM "$sup"
+        wait "$sup" 2>/dev/null
+        status=$?
+        [ "$status" = 143 ] || fail "handled TERM ($schedule): the script exited $status, not 143"
+        grep -q 'status 7 after SIGTERM' "$sandbox/own.err" || {
+            fail "handled TERM ($schedule): the child's status 7 was not reported; supervisor stderr follows"
+            cat "$sandbox/own.err" >&2
+        }
+        [ ! -e "$(dirname "$(cat "$out")")" ] || fail "handled TERM ($schedule): the root was left behind"
+    else
+        fail "handled TERM ($schedule): the child never started"
+        kill -KILL -- "-$sup" 2>/dev/null
+    fi
+done
 no_runs_left || fail "escalated runs were left under $base"
 
 # --- the guest: the chroot view is mounted, unmounted, and leaves nothing.
