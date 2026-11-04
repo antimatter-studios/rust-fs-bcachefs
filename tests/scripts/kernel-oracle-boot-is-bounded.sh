@@ -37,10 +37,24 @@ chmod +x "$tmp/qemu"
 
 # The boot under a watchdog of its own, so a boot that does not end fails
 # this test rather than hanging it.
+#
+# GNU timeout(1) sends its SIGKILL to its own process group, itself included.
+# The shell running `boot` then reaps a job a signal killed and reports it on
+# that shell's stderr, with the checkout's path in front (#559). This test
+# expects that kill, so the wrapper below discards that one shell's stderr
+# from the moment timeout(1) starts. It stays discarded because Bash 3.2 makes
+# the report at a later command. timeout(1) and the stand-in keep the real
+# stderr, and so does everything the shell does before timeout(1) starts. It
+# goes through env(1) because the redirection on a builtin, `command` too,
+# applies to this shell, and Bash 3.2 then made the report on the real stderr.
 start=$SECONDS
 # shellcheck disable=SC2016 # expanded by the inner shell, from its arguments
 timeout -s KILL 10 bash -c '
     source "$1/scripts/kernel-oracle-boot.sh"
+    timeout() {
+        exec 3>&2 2>/dev/null
+        env timeout "$@" 2>&3 3>&-
+    }
     KERNEL_ORACLE_QEMU="$2/qemu" KERNEL_ORACLE_KILL_AFTER=1 boot 1 -nographic
 ' _ "$REPO" "$tmp"
 status=$?
