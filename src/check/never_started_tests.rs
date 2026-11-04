@@ -7,14 +7,14 @@
 use super::*;
 
 #[path = "../../tests/common/never_started.rs"]
-mod cases;
+pub(super) mod cases;
 
 use cases::{Case, On, CLAIMS_A_START, DEVICE_BYTES};
 
 const SUPERBLOCK: &[u8] = include_bytes!("../../tests/data/never-started-superblock-1.38.bin");
 
 /// An image that is only the byte ranges it was given; the rest reads as zero.
-struct Ranges(Vec<(u64, Vec<u8>)>);
+pub(super) struct Ranges(pub(super) Vec<(u64, Vec<u8>)>);
 
 impl BlockRead for Ranges {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {

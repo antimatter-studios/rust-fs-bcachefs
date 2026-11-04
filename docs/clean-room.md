@@ -2849,6 +2849,61 @@ root, snapshot and dirent state checks require a clean image of version
 assertion was changed. One reference fault was counted and kept private;
 no reproducer or identifying case details are published.
 
+## Superblock damage on a started filesystem (#533, 2026-11-04)
+
+Black-box guest probes used the reference tools 1.39.7 on images the reference
+formatter wrote at `--version=1.39`, which it starts itself, with the bytes of
+every superblock copy edited and their checksum type set to none. Only the tools'
+printed output and exit status were consulted; no reference source was read. The
+walk began from the rules of "Images formatted and never started", measured each
+one again, and added the edges those did not reach: 406 images at 3 runs each.
+
+**What the reference does with one.** It refuses the superblock it believes, the
+later copy on a tie, and reads no further; an edit to another copy changes nothing.
+It exits 1 on nearly all of these, and exits 9 or 12 where it starts the filesystem
+and refuses later. The rules are in `src/check/superblock_rules.rs`, shared with
+an image nothing has started, and `src/check/started_superblock.rs`.
+
+| Where | Reported on a started filesystem | On an image nothing has started |
+|---|---|---|
+| minimum version | below 0.14, "version_min < version_btree_ptr_sectors_written", or above the version | below 0.9, or above the version |
+| incompatible version in use | above 1.39, or above the version, "version_incompat > incompat_allowed" | above 1.39 |
+| first feature word | bit 24 or above; bit 9 clear, "new_extent_overwrite not set"; bit 21 set | bit 21 or above |
+| `metadata_replicas` | outside 1..=4 | not 1 |
+| `shard_inode_numbers_bits` | no value of it reported | above 8 |
+| `gc_reserve_bytes` | no value of it reported, to 101% of the device | 97% of the device or more |
+| member state, data allowed, durability | no value of them reported | not rw, without journal and btree, durability 0 |
+
+The other rows of the table in "Images formatted and never started" were measured
+to hold as they stand: version, offset, UUIDs, device index, time precision,
+checksum type, layout, block and btree node size, every other option, and the
+member's size, UUID, buckets, first bucket, bucket size and bitmap shift.
+
+**Bit 21 is reported two ways.** Beside a member marked as holding freespace it is
+refused with the superblock, "freespace initialized but fs has no alloc info". With
+that mark cleared as well the reference exits 12 after a pass over the filesystem.
+The first feature word's bits 22 and 23 are accepted here, though not on an image
+nothing has started.
+
+**What the reference finds past a superblock it accepts.** These it reports with a
+pass over the filesystem, exit 9, and this checker does not yet: a layout of 1 or 2
+copies or of size bits 5 or 10, under `freespace_key_wrong` (#553); a btree bitmap
+shift other than the formatter's below 58, and `members_v1` in place of
+`members_v2`, under `btree_bitmap_not_marked` (#554); and `metadata_replicas` of
+2, 3 or 4 on one device, under `extent_io_opts_not_set` (#555).
+
+**The agreement measured.** The 211 rows in `tests/common/started_superblock.rs`
+were each run 60 times, four at once: the reference kept its verdict on every row,
+and in 3 rows its exit status moved between 1 and 12 with the verdict the same. Of
+the 201 rows the table holds this checker to, it agreed with the reference on all
+of them. Unedited images from 39 formatter options are held to acceptance by both.
+`tests/check_oracle_started_superblock.rs` holds both checkers to the table in the
+guest, and `src/check/started_superblock_tests.rs` holds this checker to it on
+`tests/data/started-image-1.39.bin`: the nonzero 4 KiB runs of an image the formatter
+wrote on a 256 MiB file, each an offset and a length as two little-endian u64s and
+then its bytes. 9 runs where the reference crashed, hung or faulted across the
+walk were counted and not kept, and the table's 12,660 runs had none.
+
 ## Images formatted and never started (#505, 2026-11-03)
 
 Black-box guest probes used the reference tools 1.39.7 on images made by the

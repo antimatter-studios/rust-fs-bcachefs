@@ -22,11 +22,11 @@ const OFFSET: usize = 0x68;
 const FLAGS: usize = 0x90;
 const U64S: usize = 0x7c;
 
-const FIELD_MEMBERS_V1: u32 = 1;
+pub const FIELD_MEMBERS_V1: u32 = 1;
 const FIELD_CLEAN: u32 = 6;
 const FIELD_JOURNAL_V2: u32 = 9;
-const FIELD_MEMBERS_V2: u32 = 11;
-const FIELD_EXT: u32 = 13;
+pub const FIELD_MEMBERS_V2: u32 = 11;
+pub const FIELD_EXT: u32 = 13;
 
 /// One edit to a superblock's bytes.
 pub type Edit = fn(&mut Vec<u8>);
@@ -64,20 +64,20 @@ const fn one(name: &'static str, copy: usize, reported: bool, edit: Edit) -> Cas
     }
 }
 
-fn u16_at(b: &mut [u8], at: usize, value: u16) {
+pub fn u16_at(b: &mut [u8], at: usize, value: u16) {
     b[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn u32_at(b: &mut [u8], at: usize, value: u32) {
+pub fn u32_at(b: &mut [u8], at: usize, value: u32) {
     b[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn u64_at(b: &mut [u8], at: usize, value: u64) {
+pub fn u64_at(b: &mut [u8], at: usize, value: u64) {
     b[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 /// The bit field `flags[word] >> shift`, `bits` wide.
-fn set_field(b: &mut [u8], word: usize, shift: u32, bits: u32, value: u64) {
+pub fn set_field(b: &mut [u8], word: usize, shift: u32, bits: u32, value: u64) {
     let at = FLAGS + word * 8;
     let mask = if bits == 64 {
         u64::MAX
@@ -106,7 +106,7 @@ fn fields(b: &[u8]) -> Vec<(u32, usize, usize)> {
     out
 }
 
-fn field_at(b: &[u8], field_type: u32) -> usize {
+pub fn field_at(b: &[u8], field_type: u32) -> usize {
     fields(b)
         .iter()
         .find(|(t, _, _)| *t == field_type)
@@ -116,11 +116,11 @@ fn field_at(b: &[u8], field_type: u32) -> usize {
 
 /// Where member 0 starts in `members_v2`: after the field header and the word
 /// holding the member size.
-fn member(b: &[u8]) -> usize {
+pub fn member(b: &[u8]) -> usize {
     field_at(b, FIELD_MEMBERS_V2) + 16
 }
 
-fn drop_fields(b: &mut Vec<u8>, gone: &[u32]) {
+pub fn drop_fields(b: &mut Vec<u8>, gone: &[u32]) {
     let mut out = b[..HEADER].to_vec();
     for (t, at, size) in fields(b) {
         if !gone.contains(&t) {
@@ -132,7 +132,7 @@ fn drop_fields(b: &mut Vec<u8>, gone: &[u32]) {
     *b = out;
 }
 
-fn add_field(b: &mut Vec<u8>, field_type: u32, body: &[u8]) {
+pub fn add_field(b: &mut Vec<u8>, field_type: u32, body: &[u8]) {
     assert_eq!(body.len() % 8, 0);
     let u64s = 1 + (body.len() / 8) as u32;
     b.extend_from_slice(&u64s.to_le_bytes());
@@ -142,7 +142,7 @@ fn add_field(b: &mut Vec<u8>, field_type: u32, body: &[u8]) {
     u32_at(b, U64S, total);
 }
 
-fn ext(b: &mut [u8], at_bit: u32, bits: u32, value: u64) {
+pub fn ext(b: &mut [u8], at_bit: u32, bits: u32, value: u64) {
     let word = field_at(b, FIELD_EXT) + 8 + 88;
     let old = u64::from_le_bytes(b[word..word + 8].try_into().unwrap());
     let mask = ((1u64 << bits) - 1) << at_bit;
