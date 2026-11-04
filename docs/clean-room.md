@@ -2935,10 +2935,35 @@ option is what the reference printer calls those bits.
 The reference reads `members_v1` only where there is no `members_v2`. It accepts
 `members_v1` holding anything beside `members_v2`, and an absent `ext`.
 
-**The rule for `gc_reserve_bytes` is the one measured rather than derived.** On
-a 256 MiB device 96.9% is accepted and 97.3% reported; on a 512 MiB device
-93.8% is accepted and 97.7% reported. It is otherwise an open question where
-that edge sits on a device of another size.
+**The rule for `gc_reserve_bytes` is the one measured rather than derived.**
+The reference's verdict on one image varies from run to run near the edge (#548):
+
+| Reserve, of 256 MiB | Runs | Accepted | Reported |
+|---|---|---|---|
+| 96.0% to 96.6%, four sizes | 60 each | 60 | 0 |
+| 96.7% | 60 | 55 | 5 |
+| 96.8% | 60 | 53 | 7 |
+| 96.9% | 60 | 51 | 9 |
+| 97.0% | 60 | 3 | 57 |
+| 97.1% | 60 | 10 | 50 |
+| 97.2% | 60 | 12 | 48 |
+| 97.3%, 97.5% | 60 each | 0 | 60 |
+
+On 512 MiB, 95%, 96% and 96.5% were accepted 30 of 30, 97% accepted 4 of 30, and
+97.5% and 98% reported 30 of 30. The checker reports from 97%, which is inside the
+band, and the guest holds the reference to no verdict inside it. It is an open
+question where the band sits on a device of another size.
+
+**The reference also reports rarely on an image it otherwise accepts.** Over 120
+runs of `both_checkers_agree_on_every_superblock_edit`, which judges 58 such images
+each run, it reported twice: once on the freespace bit set and once on sequence 26,
+no image twice. Repeating those two images 3,000 times each, four at once, it
+reported once, on the freespace image: "bch2_fs_initialize(): error creating
+lost+found Device or resource busy". 600 repeats of the unedited image, 200 serially
+and 400 eight at once, never reported. So in the guest an image expected to be
+accepted gets up to three runs and one acceptance settles it, while an image it
+reports every time still fails. An image expected to be reported gets one run; none
+of those ever accepted.
 
 **The agreement measured.** On the walk's 1,689 images the reference judged,
 this checker reports all that the reference reports. One image the reference
