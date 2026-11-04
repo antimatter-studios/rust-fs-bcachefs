@@ -912,6 +912,15 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             }
         }
     }
+    // What each bucket holds, against its alloc key's counters (#380). The
+    // calls hold nothing yet.
+    if let (true, 1, Some(b)) = (judge_alloc, sb.nr_devices, bucket_size) {
+        let held = bucket_sectors::BucketSectors::new(b, u64::from(sb.dev_idx), 0);
+        held.judge(
+            trees.get(&btree_id::ALLOC).map_or(&[], Vec::as_slice),
+            &mut r,
+        );
+    }
     // A written extent's bucket is a user bucket in its alloc key; a bucket
     // with no alloc key is free (#163). An unwritten extent's is not judged:
     // no fixture shows what the reference gives it.
@@ -2972,6 +2981,7 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
     }
 }
 
+mod bucket_sectors;
 mod never_started;
 #[cfg(test)]
 mod never_started_tests;
