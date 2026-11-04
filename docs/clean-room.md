@@ -3134,6 +3134,19 @@ with each version, each formatter option, and smaller devices. The superblock in
 `--version=1.38` on a 256 MiB image. 17 cases where the reference crashed, hung
 or faulted across these probes were counted and not kept.
 
+## A size on a reconcile_work key (#589)
+
+Differential [run 41822822138](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/41822822138)
+gave a `set` key in reconcile_work a size of 1 on `kernel.img` and committed it
+through the writer's raw `insert`. This crate called the image clean. The
+reference checker 1.39.7 exits 9, prints "invalid bkey in btree_node
+btree=reconcile_work", "size != 0, deleting", and counts `bkey_size_nonzero`.
+
+The guest test repeats that on the fixture's first `set` key in that btree, with
+sizes 1 and U32_MAX, and finds the same reason for both. The checker now includes
+this btree and key type in its zero-size rule. reconcile_work_phys and the other
+reconcile btrees were not probed, so they are not judged. No GPL source was read.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or

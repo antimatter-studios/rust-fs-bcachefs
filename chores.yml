@@ -151,7 +151,8 @@ tasks:
       # #507 adds two unit cases; 132 executed locally on 2026-11-03.
       # #533 adds two started-superblock cases to that 136.
       # #562 adds two unit cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 140'
+      # #589 adds one unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 141'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -224,7 +225,8 @@ tasks:
       # tmp/logs/oracle.log.
       # #506 adds two value-size regressions to the measured 289.
       # #507 adds four host cases to the measured 289-case baseline.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 295'
+      # #589 adds one fixture case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 296'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -380,7 +382,10 @@ tasks:
       # Baseline: 564 executed on 2026-11-03, tmp/logs/vm.log.
       # #533 adds two unit and three live-reference started-superblock cases.
       # #562 adds two unit cases and one live-reference case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 592'
+      # #589 adds one unit, one host oracle and one live-reference case to the
+      # 599 merge-queue run 41832709412 executed: 602 measured locally on
+      # 2026-11-04, tmp/logs/vm.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 602'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -562,7 +567,8 @@ tasks:
       # #507 adds two default-feature unit cases.
       # #533 adds its two started-superblock unit cases to this tier too.
       # #562 adds two default-feature unit cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 221'
+      # #589 adds one default-feature unit case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 222'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

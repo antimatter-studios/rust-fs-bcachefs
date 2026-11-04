@@ -2304,6 +2304,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         // Nightly differential runs (#462).
         (NEED_DISCARD, KEY_SET),
         (btree_id::ALLOC, key_type::ALLOC_V4),
+        // Differential run 41822822138 (#589).
+        (RECONCILE_WORK, KEY_SET),
     ];
     const SNAPSHOT_ZERO: &[(u8, u8)] = &[
         (SUBVOLUMES, KEY_SUBVOLUME),
@@ -4248,6 +4250,28 @@ mod tests {
             let mut unrelated = Report::default();
             check_key_fields(SNAPSHOTS, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_reconcile_work_key_with_a_nonzero_size_is_named() {
+        // Differential run 41822822138, kernel seed 1659486 (#589): size 1 on
+        // this key is refused by the reference as bkey_size_nonzero.
+        for size in [0, 1, u32::MAX] {
+            let mut k = key(KEY_SET, 256, Vec::new());
+            k.pos.inode = 2305843009213693960;
+            k.pos.snapshot = u32::MAX;
+            k.size = size;
+            let mut report = Report::default();
+            check_key_fields(RECONCILE_WORK, &k, &mut report);
+            if size == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_size_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+                assert!(report.problems[0].detail.contains(&format!("size {size}")));
+            }
         }
     }
 

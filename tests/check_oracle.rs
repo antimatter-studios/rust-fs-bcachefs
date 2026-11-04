@@ -2745,6 +2745,75 @@ fn both_checkers_reject_a_bucket_gens_key_with_a_nonzero_size() {
     );
 }
 
+/// Differential run 41822822138, kernel seed 1659486 (#589): a size on a
+/// reconcile_work key is refused by the reference as bkey_size_nonzero, and this
+/// checker called it clean. The key is selected by its btree and type because a
+/// regenerated fixture may move it.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_reconcile_work_key_with_a_nonzero_size() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const RECONCILE_WORK: u8 = 18;
+    const KEY_SET: u8 = 25;
+
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for size in [1, u32::MAX] {
+        let dir = ScratchDir::new("check-oracle");
+        assert_seen_by_reference(&dir);
+        let img = dir.into_image(format!("reconcile-work-size-{size}.img"));
+        common::copy_sparse(fixture("kernel.img"), &img);
+        let (control_bad, text) = reference_finds_a_problem(&img);
+        assert!(!control_bad, "the unchanged control must be clean:\n{text}");
+        assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut k = btree::walk(&dev, &sb, RECONCILE_WORK)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == KEY_SET)
+            .expect("the kernel fixture has a reconcile_work key");
+        assert_eq!(k.size, 0);
+        let original = k.clone();
+        k.size = size;
+        let pos = k.pos;
+        {
+            let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            w.insert(RECONCILE_WORK, vec![k]).unwrap();
+        }
+        let dev = FileDevice::open(&img).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let mut stored = btree::walk(&dev, &sb, RECONCILE_WORK)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == KEY_SET && k.pos == pos)
+            .expect("the mutated reconcile_work key is stored");
+        assert_eq!(stored.size, size);
+        stored.size = 0;
+        assert_eq!(stored, original, "only the key's size must change");
+        let (damaged, text) = reference_finds_a_problem(&img);
+        assert!(damaged, "the reference must reject size {size}:\n{text}");
+        assert!(
+            text.contains("btree=reconcile_work")
+                && text.contains("bkey_size_nonzero")
+                && text.contains("size != 0"),
+            "wrong native finding:\n{text}"
+        );
+        let ours = check(&dev).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|p| p.kind == "bkey_size_nonzero" && p.detail.contains(&pos.to_string())),
+            "the reconcile_work key's size must be named: {:?}\n{text}",
+            ours.problems
+        );
+    }
+}
+
 /// The snapshot cases damage their images through the writer: without it
 /// they would vanish, and a case that does not run fails.
 #[cfg(not(feature = "write"))]
