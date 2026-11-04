@@ -104,3 +104,9 @@ ref-only	node	check_allocations...bucket # gen # data type sb has wrong cached_s
 ours-only	node	check:inode	#435: The checker reports inode_v3 keys the reference checker accepts
 ref-only	node	btree node read error at btree extents level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
 ref-only	node	btree node read error at btree accounting level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
+
+# Measured over the kept fixtures, differential-fixtures-1, in CI run 41822822138
+# (seed 1659440, 80 cases a fixture). These bytes reach cases no earlier build did.
+ours-only	node	check:accounting_underflow	#588: This crate reports an accounting underflow on a mutated block4k node the reference accepts
+ours-only	key-offset	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
+ref-only	key-size	invalid bkey in btree_node btree=reconcile_work level=#: u#s # type set #:u#_max len # ver #	#589: The checker misses a nonzero size on a reconcile_work key

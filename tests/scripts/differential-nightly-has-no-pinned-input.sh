@@ -15,8 +15,9 @@
 #     script or in its environment, since a numbered artifact is a fetch that
 #     fails once its retention runs out;
 #   - a failed scheduled run still reaches its issue.
-# The pinned regressions keep their numbers; they run only where their pinned
-# fixtures are judged.
+# The pinned regressions read a kept release; they run only where its bytes are
+# judged, and the proof that still names a number runs only where that number is
+# asked for (#430).
 #
 #   bash tests/scripts/differential-nightly-has-no-pinned-input.sh
 set -uo pipefail

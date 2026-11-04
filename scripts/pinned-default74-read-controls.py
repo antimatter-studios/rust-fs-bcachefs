@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Grade recorded independent reads, then reject deliberately damaged observations.
 
-The workflow verifies artifact 11996897949's digest before extracting it.
-That artifact records reference 1.39.7 reading the pinned physical images:
+The workflow verifies the kept observations' digest before extracting them.
+They record reference 1.39.7 reading the pinned physical images:
 fsck returns zero for both, while the mutated file read returns EIO. These
 controls exercise the live script's verdict, not the reference tools or CRC.
 """
@@ -17,9 +17,9 @@ from pathlib import Path
 def main():
     recorded = Path(sys.argv[1]).resolve()
     grader = Path(__file__).with_name("pinned-default74-reference.sh")
-    control_path = "/mnt/default-control/many/file-0242.txt"
-    mutated_path = "/mnt/default-74/many/file-0242.txt"
-    digest = "fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d"
+    control_path = "/mnt/default-control/big/transfer.bin"
+    mutated_path = "/mnt/default-206/big/transfer.bin"
+    digest = "e34dc68601ef38d9ddf0af2478b18241650ff47e512720d3d7d481101659c5fa"
     # Values come from the pinned independent read, never from this reader.
     cases = [
         ("recorded EIO", True, {}),
@@ -27,72 +27,72 @@ def main():
             "successful identical read is not observable",
             False,
             {
-                "read/default-74.read.status": "0\n",
-                "read/default-74.read.txt": f"{digest}  {mutated_path}\n",
+                "read/default-206.read.status": "0\n",
+                "read/default-206.read.txt": f"{digest}  {mutated_path}\n",
             },
         ),
         (
             "successful different read is not an integrity refusal",
             False,
             {
-                "read/default-74.read.status": "0\n",
-                "read/default-74.read.txt": f"{'0' * 64}  {mutated_path}\n",
+                "read/default-206.read.status": "0\n",
+                "read/default-206.read.txt": f"{'0' * 64}  {mutated_path}\n",
             },
         ),
         (
             "permission failure is not EIO",
             False,
             {
-                "read/default-74.read.txt": f"sha256sum: {mutated_path}: Permission denied\n",
+                "read/default-206.read.txt": f"sha256sum: {mutated_path}: Permission denied\n",
             },
         ),
         (
             "timeout is not EIO",
             False,
             {
-                "read/default-74.read.status": "124\n",
+                "read/default-206.read.status": "124\n",
             },
         ),
         (
             "failed mount is not a data read",
             False,
             {
-                "read/default-74.mount.status": "1\n",
+                "read/default-206.mount.status": "1\n",
             },
         ),
         (
             "missing read output is not EIO",
             False,
             {
-                "read/default-74.read.txt": "",
+                "read/default-206.read.txt": "",
             },
         ),
         (
             "missing read status is refused",
             False,
             {
-                "read/default-74.read.status": "",
+                "read/default-206.read.status": "",
             },
         ),
         (
             "missing inode observation is refused",
             False,
             {
-                "read/default-74.stat.txt": "",
+                "read/default-206.stat.txt": "",
             },
         ),
         (
             "wrong inode is refused",
             False,
             {
-                "read/default-74.stat.txt": f"2147483905 10 {mutated_path}\n",
+                "read/default-206.stat.txt": f"2147483654 3145729 {mutated_path}\n",
             },
         ),
         (
             "wrong file is refused",
             False,
             {
-                "read/default-74.path.txt": "/mnt/default-74/many/file-0243.txt\n",
+                "read/default-206.path.txt": "/mnt/default-206/big/odd.bin\n",
             },
         ),
         (
@@ -113,7 +113,7 @@ def main():
             "wrong control inode is refused",
             False,
             {
-                "read/default-control.stat.txt": f"2147483905 10 {control_path}\n",
+                "read/default-control.stat.txt": f"2147483654 3145729 {control_path}\n",
             },
         ),
     ]
@@ -121,23 +121,23 @@ def main():
     for name, before, after in [
         (
             "wrong physical image",
-            "3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb",
+            "d162eb63af5d9f0a2ca7cc1753c8c7d9169ad87dbb163766f42520a5f349156f",
             "0" * 64,
         ),
         (
             "wrong extent checksum tuple",
-            "default-74 0x11ba7, default-control 0xa2f1ba7",
-            "default-74 0x11ba8, default-control 0xa2f1ba7",
+            "default-206 0x0, default-control 0x25134e43",
+            "default-206 0x1, default-control 0x25134e43",
         ),
         (
             "wrong fixture pin",
-            "9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e",
+            "6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7",
             "0" * 64,
         ),
         (
             "wrong reference fsck status",
-            "default-74 reference fsck -n status 0 (expected 0)",
-            "default-74 reference fsck -n status 1 (expected 0)",
+            "default-206 reference fsck -n status 0 (expected 0)",
+            "default-206 reference fsck -n status 1 (expected 0)",
         ),
     ]:
         if evidence.count(before) != 1:
@@ -151,7 +151,7 @@ def main():
             for relative, value in edits.items():
                 (case / relative).write_text(value)
             result = subprocess.run(
-                ["bash", str(grader), "--grade-read-evidence", str(case), "2147483904"],
+                ["bash", str(grader), "--grade-read-evidence", str(case), "2147483653"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

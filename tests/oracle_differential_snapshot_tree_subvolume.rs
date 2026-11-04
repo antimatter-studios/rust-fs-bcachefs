@@ -14,7 +14,7 @@ include!("../fuzz/shared/helpers.rs");
 include!("../fuzz/shared/whole_image.rs");
 
 const SEED: u64 = 1_659_511;
-const PIN: &str = "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e";
+const PIN: &str = "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7";
 
 fn subvolume_snapshot(dev: &Overlay, id: u64) -> u32 {
     let sb = Superblock::read(dev).unwrap();
