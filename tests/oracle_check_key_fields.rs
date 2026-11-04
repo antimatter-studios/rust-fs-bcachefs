@@ -36,6 +36,7 @@ const BUCKET_GENS: u8 = 14;
 const SNAPSHOT_TREES: u8 = 15;
 const SUBVOLUME_CHILDREN: u8 = 19;
 const LOGGED_OPS: u8 = 17;
+const RECONCILE_WORK: u8 = 18;
 const ACCOUNTING: u8 = 20;
 const SUBVOLUME: u8 = 21;
 const SNAPSHOT: u8 = 22;
@@ -368,6 +369,14 @@ fn a_sized_snapshot_key_is_refused() {
     for set in ["aged", "kernel"] {
         refused(set, SNAPSHOTS, SNAPSHOT, any, Change::Size(1), kind);
     }
+}
+
+/// Differential run 41822822138 (#589) gave a reconcile_work key a size (kernel
+/// seed 1659486). The reference deleted it as "size != 0".
+#[test]
+fn a_sized_reconcile_work_key_is_refused() {
+    let kind = "bkey_size_nonzero";
+    refused("kernel", RECONCILE_WORK, SET, any, Change::Size(1), kind);
 }
 
 #[test]
