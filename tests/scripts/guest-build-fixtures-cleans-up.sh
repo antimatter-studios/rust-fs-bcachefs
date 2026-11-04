@@ -118,6 +118,9 @@ elif name == 'bcachefs-ref':
     elif op == 'fsck':
         if mode == 'check-fail': sys.exit(33)
         if '-y' in args and args[-1].endswith('/aged.img'): (case / 'replayed').touch()
+    elif op == 'list' and args[-1].endswith('/crc128-overwrite.img') and 'extents' in args:
+        # The supervisor refuses a build with no crc128 entry at an offset (#577).
+        print('  crc128: c_size 1024 size 1024 offset 16 nonce 0 csum crc32c 0:0  compress none')
     elif op == 'list' and len(args) > 2 and args[2] in ('reconcile_work', 'reconcile_work_phys'):
         # The supervisor refuses a reconcile.img whose lister shows no set key.
         print('u64s 5 type set 4096:128:U32_MAX len 0 ver 0')
@@ -230,6 +233,8 @@ elif name == 'rm':
         p = Path(a)
         published = {
             'casefold.img',
+            'crc128-overwrite.img', 'crc128-overwrite.json',
+            'crc128-overwrite.extents.txt', 'crc128-overwrite.written.extents.txt',
             'encrypted.mounted.json',
             'encrypted-compressed.img', 'encrypted-compressed.json',
             'encrypted-wide-macs.img', 'encrypted-wide-macs.json',

@@ -281,6 +281,24 @@ all eight fixture sets.
   only in 16 << 30, and the file reads back to the mount's SHA-256). Bits
   43..55 are then the 13-bit nonce S1 gives encryption alone; 0 in every
   entry seen, and a non-zero value is refused.
+- A read through a writable mount can remove that offset (S8, #577). The
+  fixture build's `crc128-overwrite` listing after the overwrite held
+  `offset 16` in merge-queue run 41789838751, and in run 41795639102 two
+  entries of 8 and 1008 sectors, each at offset 0 with a checksum of its own,
+  and one journal entry more to replay (24 keys against 18). The build read
+  the file through its writable mount just before killing that mount. In the
+  guest on an arm64 host, 2026-11-04, with no other change: a read then a
+  15-second wait before the kill gave the 8 and 1008 entries 4 times of 4; a
+  15-second wait with no read gave `offset 16` 4 times of 4; the read just
+  before the kill gave `offset 16` 8 times of 8. So the read makes the
+  reference narrow the entry (observed), and the narrowing reaches the image
+  only if its journal entry is written before the kill (inferred from the
+  extra journal entry and the wait). How often that happens on a CI runner
+  was not measured. The build now settles and lists the image before anything
+  reads the file, reads it through a read-only mount of a copy, and fails if
+  the entry is missing: all 6 runs of the step kept `offset 16`, and with a
+  read and a wait put back the step failed, listing those same 8 and 1008
+  entries with the checksums run 41795639102 recorded.
 - The flags entry is kind 6, one word, and bit 7 is `poisoned` (S8, S4: the
   `poison` image). A data sector of a settled image was corrupted and the
   file read through the reference mount: the read failed, and the
@@ -593,7 +611,8 @@ all eight fixture sets.
   compressed and uncompressed, offset 0, nonce field 21, compression type
   5, its pointer 21 sectors past the original extent's. (Other builds of
   the fixture keep the whole 64-sector entry at offset 21 and nonce 0, so
-  the narrowing happens in some runs only.) Of seven placements of 21 --
+  the narrowing happens in some runs only, as for `crc128-overwrite`
+  above.) Of seven placements of 21 --
   as word 0, times 8 and times 512 in word 0, as word 2, added to the
   version in word 1, and XORed into word 3, besides none -- only
   `[21 * 8, version, 0, 0x1000_0000]` reproduces its stored 80-bit MAC:
