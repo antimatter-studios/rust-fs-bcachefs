@@ -170,15 +170,20 @@ sup=$!
 set +m
 if await "$out" && await "$sandbox/child.pid"; then
     kill -s TERM "$sup"
-    # Bounded here too: a supervisor that waits forever fails, not hangs.
-    for _ in $(seq 1 150); do kill -0 "$sup" 2>/dev/null || break; sleep 0.1; done
-    if kill -0 "$sup" 2>/dev/null; then
-        fail "ignored TERM: the script was still waiting after 15s"
+    # Bounded here too: a supervisor that waits forever fails, not hangs. The
+    # bound polls from its own process, so this shell reaps the script only in
+    # the `wait` below. Bash 3.2 reports a job a signal killed at the next
+    # command after the reap, and only that `wait` discards its stderr.
+    (
+        for _ in $(seq 1 150); do kill -0 "$sup" 2>/dev/null || exit 0; sleep 0.1; done
         kill -KILL -- "-$sup" 2>/dev/null
         kill -KILL -- "-$(cat "$sandbox/child.pid")" 2>/dev/null
-    fi
+        exit 1
+    ) &
+    bound=$!
     wait "$sup" 2>/dev/null
     status=$?
+    wait "$bound" || fail "ignored TERM: the script was still waiting after 15s"
     [ "$status" = 143 ] || fail "ignored TERM: the script exited $status, not 143"
     kill -0 "$(cat "$sandbox/child.pid")" 2>/dev/null && fail "ignored TERM: the child was still running"
     [ ! -e "$(dirname "$(cat "$out")")" ] || fail "ignored TERM: the root was left behind"
