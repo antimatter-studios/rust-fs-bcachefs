@@ -1,0 +1,32 @@
+name: keep fixtures
+
+# The landed half of the kept fixtures (#386). When a change to what the
+# fixtures are made from lands, the build the merge queue tested it with becomes
+# the kept build for that tree's key, so the groups after it fetch rather than
+# build. scripts/kept-fixtures.sh says what is kept and from where. A landing
+# whose key is already kept does nothing.
+#
+# Never a required check: it reports on a push to main, not on a pull request.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  keep:
+    name: keep the landed tree's fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # contents: write, to create the release; actions: read, for the queue run's
+    # artifact.
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep the fixtures the merge queue tested this commit with
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/kept-fixtures.sh promote "$GITHUB_SHA"

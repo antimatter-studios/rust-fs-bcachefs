@@ -88,7 +88,7 @@ opt-level = 1
 panic = "unwind"
 
 # Case default-74's stored and computed checksums hold only for fixtures
-# artifact sha256:9f112ded...; differential.yml's pinned job runs it there.
+# build of the differential-fixtures-1 release; differential.yml's pinned job runs it there.
 [[test]]
 name = "pinned_differential_default74"
 path = "tests/oracle_differential_default74.rs"

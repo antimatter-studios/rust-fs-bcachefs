@@ -4,7 +4,7 @@
 # classifies every disagreement against the unchanged baseline.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-pin=sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e
+pin=sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 [ "$(cat .vm-share/fixtures-pin)" = "$pin" ] || {
     echo "snapshot-tree-subvolume: fetch the pinned fixtures in differential.yml" >&2
     exit 1
