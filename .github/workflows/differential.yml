@@ -9,17 +9,17 @@ name: differential
 # NOT A PULL-REQUEST GATE, and never a required check: what it finds depends
 # on its seeds, so a fresh finding would fail whichever unrelated change
 # happened to be open. It runs nightly, each night on new seeds; on demand;
-# and on pull requests that change the harness itself. Pull requests use
-# #261's digest-pinned fixtures and 80 cases starting at seed 1659440;
-# dispatches default to seed 0 unless another seed or replay is requested.
+# and on pull requests that change the harness itself. Pull requests use the
+# kept fixtures of the differential-fixtures-1 release, which do not expire
+# (#386), and 80 cases starting at seed 1659440; dispatches default to seed 0
+# unless another seed or replay is requested.
 #
 # The nightly and a dispatch left at its defaults judge the newest green main
-# run's fixtures, and read nothing fetched by number: a numbered artifact
-# expires, and when 11977252185 did (#386) the night was skipped behind it.
-# The pinned jobs and the steps bound to their bytes run only where those
-# bytes are judged: a pull request, or a dispatch naming fixtures run
-# 38741040375. tests/scripts/differential-nightly-has-no-pinned-input.sh
-# fails if that stops being so.
+# run's fixtures, and read nothing fetched by number. The pinned jobs and the
+# steps bound to the kept bytes run only where those bytes are judged: a pull
+# request, or a dispatch with fixture_run set to `kept`.
+# tests/scripts/differential-nightly-has-no-pinned-input.sh fails if that stops
+# being so.
 #
 # DISCLOSURE (AGENTS.md, "A crash in the reference stays private"). The
 # only things this workflow publishes are the report's counts and the
@@ -38,7 +38,7 @@ on:
         required: false
         default: ""
       fixture_run:
-        description: "CI run whose fixtures artifact to judge (empty: the newest green main run)"
+        description: "CI run whose fixtures artifact to judge (empty: the newest green main run; `kept`: the differential-fixtures-1 release, with the pinned jobs)"
         required: false
         default: ""
       fixture_digest:
@@ -69,6 +69,7 @@ on:
       - tests/default74_native_proof.py
       - tests/data/default-74-38840695392.patch
       - scripts/select-fixture-run.sh
+      - scripts/kept-fixtures.sh
       - examples/differential.rs
       - fuzz/differential-baseline.tsv
       - fuzz/differential-replay*.tsv
@@ -91,6 +92,10 @@ permissions:
   contents: read
 
 env:
+  # The kept build every pinned expectation here is recorded over. A number in
+  # a test or a script below is bound to these bytes and to no other build.
+  KEPT_TAG: differential-fixtures-1
+  KEPT_TARBALL: 6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
   REPLAY_FILE: ${{ inputs.replay_file || 'fuzz/differential-replay.tsv' }}
   CARGO_TERM_COLOR: always
   CHORE_VERSION: "0.11.0"
@@ -100,50 +105,44 @@ jobs:
   # damage each observation. A failed read alone is not integrity evidence:
   # fsck passes both images, but only the exact mutated file must return EIO.
   default74-read-controls:
-    name: default-74 read evidence rejection controls
-    if: github.event_name == 'pull_request' || inputs.fixture_run == '38741040375'
+    name: default-206 read evidence rejection controls
+    if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read
     steps:
       - uses: actions/checkout@v4
       - name: Fetch the digest-pinned independent read observations
         env:
           GH_TOKEN: ${{ github.token }}
+          DIGEST: KEPTEVIDENCE
         run: |
           set -euo pipefail
-          artifact=11996897949
-          digest=cb7c08fc3c89dd4886d7c88af030d68dbbb4588f03d9c1b0981053af3e38836d
-          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" --jq '.digest')"
-          [ "$actual" = "sha256:$digest" ] || { echo "independent read artifact digest differs: $actual" >&2; exit 1; }
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/default74-read.zip"
-          echo "$digest  $RUNNER_TEMP/default74-read.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/default74-read.zip" -d "$RUNNER_TEMP/default74-read"
+          gh release download "$KEPT_TAG" --repo "$GITHUB_REPOSITORY" --pattern default206-reference.zip --dir "$RUNNER_TEMP"
+          echo "$DIGEST  $RUNNER_TEMP/default206-reference.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/default206-reference.zip" -d "$RUNNER_TEMP/default74-read"
       - name: The live evidence grader accepts the recorded EIO and rejects invalid observations
         run: python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default74-read"
       - name: The pinned job reads exactly one complete observation from its test's log
         run: bash scripts/pinned-default74-observation-controls.sh
 
-  # Case default-74's expected checksums belong to one fixtures artifact, so
-  # it is judged only over that artifact, fetched by run, id and digest and
-  # refused on any mismatch. The run fails unless exactly that one test ran
-  # and passed. The artifact expired on 2026-10-22, so the fetch fails until
-  # #386 gives these cases fixtures that are kept.
+  # Each case's expected values belong to one fixtures build, so it is judged
+  # only over that build, fetched by its release and digest and refused on any
+  # mismatch. The run fails unless exactly that one test ran and passed.
+  # #219's and the others' cases were recorded over fixtures that expired on
+  # 2026-10-22; #386 re-derived each over this build. Case default-206 is #219's
+  # case: one extent's stored checksum changed, the reference's fsck passing
+  # both images, and its read of the file failing with EIO.
   pinned-default74:
-    name: pinned default-74 (#219, fixtures sha256:9f112ded)
-    if: github.event_name == 'pull_request' || inputs.fixture_run == '38741040375'
+    name: pinned default-206 (#219, kept fixtures sha256:6edbb7c0)
+    if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
-      actions: read
     env:
-      PIN_RUN: "38741040375"
-      PIN_ARTIFACT: "11977252185"
-      PIN_DIGEST: "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e"
-      PIN_TARBALL: "27b15c9dffa3240b2ec3f3f3a84221c255c210b157f5888d2285f4e358025869"
+      PIN_DIGEST: "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7"
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -154,25 +153,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
-      - name: Fetch the pinned fixtures
+      - name: Fetch the kept fixtures
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PIN_RUN/artifacts" --jq '.artifacts[] | select(.name == "fixtures") | "\(.id) \(.digest)"')"
-          [ -n "$artifact" ] || { echo "run $PIN_RUN has no fixtures artifact (expired?)" >&2; exit 1; }
-          [ "$artifact" = "$PIN_ARTIFACT $PIN_DIGEST" ] || { echo "run $PIN_RUN fixtures artifact is $artifact, not $PIN_ARTIFACT $PIN_DIGEST" >&2; exit 1; }
-          gh run download "$PIN_RUN" --repo "$GITHUB_REPOSITORY" --name fixtures --dir "$RUNNER_TEMP/fixtures"
-          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
-          [ "$tarball" = "$PIN_TARBALL" ] || { echo "fixtures.tar.gz is sha256:$tarball, not sha256:$PIN_TARBALL" >&2; exit 1; }
+          bash scripts/kept-fixtures.sh fetch "$KEPT_TAG" "$KEPT_TARBALL" "$RUNNER_TEMP/fixtures"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
           printf '%s\n' "$PIN_DIGEST" > .vm-share/fixtures-pin
-      - name: The default-74 regression runs over them
+      - name: The default-206 regression runs over them
         run: |
           set -euo pipefail
-          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_default_74_extent_data_mismatch_is_in_the_image -- --show-output 2>&1 | tee "$RUNNER_TEMP/default74.log"
-          grep -q '^test the_default_74_extent_data_mismatch_is_in_the_image \.\.\. ok$' "$RUNNER_TEMP/default74.log" || { echo "the default-74 test did not run and pass" >&2; exit 1; }
+          cargo test --locked --release --features pinned-fixtures --test pinned_differential_default74 the_default_206_extent_data_mismatch_is_in_the_image -- --show-output 2>&1 | tee "$RUNNER_TEMP/default74.log"
+          grep -q '^test the_default_206_extent_data_mismatch_is_in_the_image \.\.\. ok$' "$RUNNER_TEMP/default74.log" || { echo "the default-206 test did not run and pass" >&2; exit 1; }
           grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/default74.log" || { echo "expected exactly one executed test" >&2; exit 1; }
       - name: The exact block4k backpointer mismatch is reported (#256)
         run: |
@@ -217,11 +211,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       # The reference checker's own verdict on the same bytes: `fsck -n` on
-      # the fixture unchanged and on default-74's mutation, in the
+      # the fixture unchanged and on default-206's mutation, in the
       # differential harness's container, failed unless each is expected.
       # Then the reference reads the reported key's file through its own FUSE
       # mount on both images, recording each read's status and hash.
-      - name: The reference's verdicts on default-74
+      - name: The reference's verdicts on default-206
         env:
           OURS_LOG: ${{ runner.temp }}/default74.log
         run: scripts/pinned-default74-reference.sh
@@ -256,10 +250,15 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
-      # Bound to the pinned fixtures' bytes, so only after the pinned job
-      # has fetched and proved them in this run.
+      # #226's retained proof: the reference's read of case default-74 and its
+      # binding to the bytes of artifact 11977252185. Those bytes no longer exist,
+      # so no run can judge it, and only a dispatch naming their run reaches it,
+      # to fail at the fetch. Whether to re-record it over the kept build or
+      # retire it is #430's decision; the observations themselves are assets of
+      # the differential-fixtures-1 release. The same-run proof below, over the
+      # kept bytes, is what a pull request judges.
       - name: Retained default-74 native read contract and rejection controls
-        if: needs.pinned-default74.result == 'success'
+        if: inputs.fixture_run == '38741040375'
         env:
           GH_TOKEN: ${{ github.token }}
           DIFFERENTIAL_NATIVE74_ARCHIVE: ${{ runner.temp }}/default74-native.zip
@@ -296,8 +295,9 @@ jobs:
             target
           key: ${{ runner.os }}-differential-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      # Building them takes the harness VM, so the newest green main run's
-      # are fetched instead, as the nightly fuzz run does. A dispatch may name
+      # Building them takes the harness VM, so a pull request takes the kept
+      # build and the nightly the newest green main run's, as the nightly fuzz
+      # run does. A dispatch may name
       # the run instead, with its artifact's digest, to reproduce a report
       # exactly: the same seeds reach different nodes in rebuilt fixtures.
       # Either way the run, artifact and digests go into the report.
@@ -323,23 +323,29 @@ jobs:
       - name: Fetch the fixtures
         env:
           GH_TOKEN: ${{ github.token }}
-          FIXTURE_RUN: ${{ inputs.replay && env.FIXTURE_RUN || inputs.fixture_run || (github.event_name == 'pull_request' && '38741040375') || '' }}
-          FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest || (github.event_name == 'pull_request' && 'sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e') || '' }}
+          KEPT: ${{ github.event_name == 'pull_request' || inputs.fixture_run == 'kept' }}
+          FIXTURE_RUN: ${{ inputs.replay && env.FIXTURE_RUN || inputs.fixture_run || '' }}
+          FIXTURE_DIGEST: ${{ inputs.replay && env.FIXTURE_DIGEST || inputs.fixture_digest || '' }}
         run: |
           set -euo pipefail
-          read -r run artifact_id digest < <(bash scripts/select-fixture-run.sh "$GITHUB_REPOSITORY" "$FIXTURE_RUN" "$FIXTURE_DIGEST")
-          # The artifact the selector named, by id, and only if its bytes
-          # are the digest it was selected by.
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/fixtures.zip"
-          if ! printf '%s  %s\n' "${digest#sha256:}" "$RUNNER_TEMP/fixtures.zip" | sha256sum --check --status; then
-            echo "run $run artifact $artifact_id archive differs from $digest; no fallback" >&2
-            exit 1
-          fi
-          unzip -q "$RUNNER_TEMP/fixtures.zip" -d "$RUNNER_TEMP/fixtures"
-          tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
           mkdir -p .vm-share
+          if [ "$KEPT" = true ]; then
+            bash scripts/kept-fixtures.sh fetch "$KEPT_TAG" "$KEPT_TARBALL" "$RUNNER_TEMP/fixtures"
+            from="release $KEPT_TAG, fixtures.tar.gz sha256:$KEPT_TARBALL"
+          else
+            read -r run artifact_id digest < <(bash scripts/select-fixture-run.sh "$GITHUB_REPOSITORY" "$FIXTURE_RUN" "$FIXTURE_DIGEST")
+            # The artifact the selector named, by id, and only if its bytes
+            # are the digest it was selected by.
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/fixtures.zip"
+            if ! printf '%s  %s\n' "${digest#sha256:}" "$RUNNER_TEMP/fixtures.zip" | sha256sum --check --status; then
+              echo "run $run artifact $artifact_id archive differs from $digest; no fallback" >&2
+              exit 1
+            fi
+            unzip -q "$RUNNER_TEMP/fixtures.zip" -d "$RUNNER_TEMP/fixtures"
+            tarball="$(sha256sum "$RUNNER_TEMP/fixtures/fixtures.tar.gz" | cut -d' ' -f1)"
+            from="CI run $run, artifact $artifact_id ($digest), fixtures.tar.gz sha256:$tarball"
+          fi
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
-          from="CI run $run, artifact $artifact_id ($digest), fixtures.tar.gz sha256:$tarball"
           echo "DIFFERENTIAL_FIXTURES_FROM=$from" >> "$GITHUB_ENV"
           echo "fixtures from $from: $(find .vm-share/fixtures -name '*.img' | wc -l) images"
 

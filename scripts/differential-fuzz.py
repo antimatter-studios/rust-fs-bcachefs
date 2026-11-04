@@ -131,20 +131,20 @@ def read_cases(out):
 # the physical images and every field of the finding must match this proof.
 READ_BINDING = {
     "reference": "1.39.7",
-    "fixture_pin": "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e",
-    "control_sha256": "70e75cfbe82c927f6914689a0142c0e37e99cae289819d86fbacf62f6ee78342",
-    "mutated_sha256": "3b58375372070ca854c7600c54cca29d64a51921d68facea8eabaf4285e433eb",
+    "fixture_pin": "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7",
+    "control_sha256": "8491aab7096a1986c6d69e5809a279aece9892875aeac394e716bc08f81ba83e",
+    "mutated_sha256": "d162eb63af5d9f0a2ca7cc1753c8c7d9169ad87dbb163766f42520a5f349156f",
     "fixture": "default.img",
     "structure": "node",
     "ours": "found",
     "signature": "check:extent_data",
-    "detail": "extent 2147483904:1:U32_MAX: extent data: checksum mismatch (stored 0x11ba7, computed 0xa2f1ba7)",
-    "inode": "2147483904",
-    "key": "2147483904:1:U32_MAX",
-    "stored": "0x11ba7",
-    "computed": "0xa2f1ba7",
-    "path": "many/file-0242.txt",
-    "control_read_sha256": "fd7023d87ea3679ca779d9e8d671ac04a58df4c91ce26b2774cd06623f1f6a9d",
+    "detail": "extent 2147483653:2848:U32_MAX: extent data: checksum mismatch (stored 0x0, computed 0x25134e43)",
+    "inode": "2147483653",
+    "key": "2147483653:2848:U32_MAX",
+    "stored": "0x0",
+    "computed": "0x25134e43",
+    "path": "big/transfer.bin",
+    "control_read_sha256": "e34dc68601ef38d9ddf0af2478b18241650ff47e512720d3d7d481101659c5fa",
 }
 
 

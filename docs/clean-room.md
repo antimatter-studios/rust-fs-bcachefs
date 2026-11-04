@@ -3047,3 +3047,20 @@ instructions, S2); the only other access was GitHub API metadata (S7) and
 the package repository's index and dependency metadata (S10). The
 reference kernel module is built by DKMS in a throwaway container on the CI
 runner and its source discarded with it, unread (#110).
+
+## Observations bound to fixtures that expired
+
+The observations above that name fixtures artifact 11977252185 (CI run
+38741040375) were made over bytes that no longer exist: the artifact expired on
+2026-10-22 and no copy survives (#386). What each observed stands as a record of
+that run, and cannot be repeated over those bytes.
+
+The pinned regressions that rested on them are re-derived over the kept build,
+`fixtures.tar.gz` of the `differential-fixtures-1` release (SHA-256
+`6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7`), which also
+holds the read observations of artifacts 11996897949 and 12011667570. Six seeds
+of `differential.yml` reach the same kind of change there: #256's two, #258's,
+#261's, #262's and the snapshot tree subvolume case's, with their positions as
+this crate's tests now record them. Seed 74 of #219 reaches something else, so
+seed 206 stands in for it: one extent's stored checksum changed and nothing else,
+with the reference's verdicts on it taken by the same job.

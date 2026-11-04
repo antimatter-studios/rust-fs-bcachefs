@@ -1,9 +1,14 @@
-//! The ours-only disagreement the differential run left open on #219: on
-//! case default-74 (the `default` fixture, whole-image seed 74) this crate's
-//! checker reports `extent_data`, an extent whose stored data checksum
-//! 0x11ba7 is not the 0xa2f1ba7 its bytes give, and the reference checker's
-//! `fsck -n` passes the image. The change is to a btree node at byte
-//! 3014656 (32768 bytes), re-stamped so the node itself still verifies.
+//! The ours-only disagreement the differential run left open on #219: a btree
+//! node's change that alters one extent's stored data checksum and nothing
+//! else, re-stamped so the node itself still verifies. This crate's checker
+//! reports `extent_data`, and the reference checker's `fsck -n` passes the image.
+//!
+//! #219 reported it as seed 74 over fixtures that expired on 2026-10-22, whose
+//! bytes no copy of remains (#386). The same seed reaches other bytes in another
+//! build, so the case is re-derived over the kept build: seed 206 of the
+//! `default` fixture changes a node at byte 11042816 (32768 bytes), leaving the
+//! stored checksum 0x0 where the bytes give 0x25134e43. What it proves is what
+//! seed 74 proved.
 //!
 //! What decides whether the finding is a fact or a misreading is the
 //! checksum of the data itself. It is computed here a second time, bit by
@@ -28,16 +33,16 @@ use fs_bcachefs::btree::{self, btree_id};
 include!("../fuzz/shared/helpers.rs");
 include!("../fuzz/shared/whole_image.rs");
 
-const SEED: u64 = 74;
-const STORED: u64 = 0x11ba7;
-const COMPUTED: u64 = 0xa2f1ba7;
+const SEED: u64 = 206;
+const STORED: u64 = 0;
+const COMPUTED: u64 = 0x2513_4e43;
 
-/// The fixtures artifact the differential reports for default-74 were made
-/// from (CI run 38741040375, artifact 11977252185). Fresh fixtures put seed 74
-/// on other bytes, so the case is judged only over these, which the workflow's
-/// pinned job fetches, checks and records in `.vm-share/fixtures-pin`.
+/// The kept fixtures build these cases are recorded over: `fixtures.tar.gz` of
+/// the `differential-fixtures-1` release. Fresh fixtures put a seed on other
+/// bytes, so the cases are judged only over these, which the workflow's pinned
+/// job fetches, checks and records in `.vm-share/fixtures-pin`.
 const FIXTURE_DIGEST: &str =
-    "sha256:9f112ded30a1894c5d83948fb2c525ff075afaff74acc3e82b63deb98493007e";
+    "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7";
 
 #[test]
 fn the_aged_unclean_1659479_journal_length_mismatch_is_reported() {
@@ -51,15 +56,15 @@ fn the_aged_unclean_1659479_journal_length_mismatch_is_reported() {
     let t = targets(&base);
     let dev = Overlay::new(Arc::clone(&base), false);
     assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
-    let before = dev.bytes(2490368, 3584);
+    let before = dev.bytes(4246528, 3584);
     assert_eq!(
         apply_case(&dev, &t, 1659479),
-        "jset at byte 2490368 (3584 bytes), re-stamped"
+        "jset at byte 4246528 (3584 bytes), re-stamped"
     );
     let mut expected = before;
     expected[34..48].fill(255);
     assert_eq!(
-        dev.bytes(2490368, 3584),
+        dev.bytes(4246528, 3584),
         expected,
         "the oversized mutation cannot actually be re-stamped"
     );
@@ -140,7 +145,7 @@ fn castagnoli(init: u32, data: &[u8]) -> u32 {
 }
 
 #[test]
-fn the_default_74_extent_data_mismatch_is_in_the_image() {
+fn the_default_206_extent_data_mismatch_is_in_the_image() {
     let pin = common::fixtures_dir().join("../fixtures-pin");
     let recorded = std::fs::read_to_string(&pin).unwrap_or_else(|e| {
         panic!(
@@ -239,7 +244,7 @@ fn the_aged_1659486_xattr_size_mismatch_is_reported() {
     assert!(fs_bcachefs::check::check(&*dev).unwrap().clean());
     let at = Bpos {
         inode: 2147487679,
-        offset: 2679498547732338290,
+        offset: 1976897966788230529,
         snapshot: u32::MAX,
     };
     let xattr = |dev: &Overlay| {
@@ -253,7 +258,7 @@ fn the_aged_1659486_xattr_size_mismatch_is_reported() {
     let original = xattr(&dev);
     assert_eq!(original.size, 0);
     assert_eq!(original.value.get(..2), Some([0, 6].as_slice()));
-    assert_eq!(original.value.get(4..10), Some(b"attr29".as_slice()));
+    assert_eq!(original.value.get(4..10), Some(b"attr35".as_slice()));
     assert_eq!(
         apply_case(&dev, &t, 1659486),
         format!("btree 3 key at {at}: size changed, insert committed")
@@ -275,7 +280,8 @@ fn the_aged_1659486_xattr_size_mismatch_is_reported() {
     );
 }
 
-/// Both non-crashing #256 cases from nightly run 39018152705.
+/// Both non-crashing #256 cases from nightly run 39018152705, whose seeds change
+/// the same kind of key in the kept build.
 #[test]
 fn the_block4k_1659443_backpointer_value_mismatch_is_reported() {
     assert_eq!(
@@ -284,9 +290,11 @@ fn the_block4k_1659443_backpointer_value_mismatch_is_reported() {
             .trim(),
         FIXTURE_DIGEST
     );
-    for (set, seed, bp_offset, inode, len, word) in [
-        ("block4k", 1659443, 1116733440, 2147483766, 8u32, 1u64),
-        ("aged", 1659460, 3114205184, 2147487978, 22, 0),
+    for (set, seed, bp_offset, inode, end, len, word) in [
+        (
+            "block4k", 1659443, 1027604480, 2147483653, 1112u64, 64u32, 1u64,
+        ),
+        ("aged", 1659460, 1916862464, 2147487659, 1024, 128, 0),
     ] {
         let base = Arc::new(std::fs::read(common::fixture(&format!("{set}.img"))).unwrap());
         let t = targets(&base);
@@ -299,7 +307,7 @@ fn the_block4k_1659443_backpointer_value_mismatch_is_reported() {
         };
         let target = Bpos {
             inode,
-            offset: u64::from(len),
+            offset: end,
             snapshot: u32::MAX,
         };
         let bp = |dev: &Overlay| {

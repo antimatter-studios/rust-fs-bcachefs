@@ -17,6 +17,10 @@ on:
         description: Evidence path for a reusable invocation
         type: string
         default: full
+      fresh_fixtures:
+        description: Build the fixtures even if a kept build answers this tree
+        type: boolean
+        default: false
   # A dispatch runs the full gate unless it names one focused reproducer.
   # tests/scripts/ci-depth.sh holds this default to the command in AGENTS.md.
   workflow_dispatch:
@@ -29,6 +33,10 @@ on:
           - full
           - write-study-lifecycle
           - crc128-native
+      fresh_fixtures:
+        description: Build the fixtures even if a kept build answers this tree
+        type: boolean
+        default: false
 
 # A newer push to a pull request cancels the run still going on the older one,
 # except while the pull request's title starts "red:". Such a pull request
@@ -83,12 +91,16 @@ jobs:
   # repeat the queue's oracle work. Anything unexpected runs everything. The
   # jobs that boot the VM or read its fixtures run only when the answer is
   # true, and ci-ok accepts their skip when, and only when, it is false.
+  # A pull request that changes what the fixtures are made from
+  # (scripts/fixture-key.sh) runs everything too, in its own run: no kept build
+  # answers it, so nothing else would build and test its fixtures before the
+  # queue. A layer of a stack answers for its own change, not the layers below.
   changes:
     name: changes (does this need the full pipeline?)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     runs-on: ubuntu-24.04
     outputs:
-      code: ${{ steps.c.outputs.code }}
+      code: ${{ steps.c.outputs.code == 'true' || steps.k.outputs.changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,6 +123,10 @@ jobs:
           esac
           echo "full pipeline: $code ($EVENT $REF)"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Does this pull request change what the fixtures are made from?
+        id: k
+        if: github.event_name == 'pull_request'
+        run: bash scripts/fixture-key.sh --changed-from HEAD^1 >> "$GITHUB_OUTPUT"
 
   unit:
     name: unit (no tools, no fixtures)
@@ -190,27 +206,47 @@ jobs:
         run: chore lint
 
   # The reference tools build the fixtures, inside the harness VM, on an
-  # x86_64 runner with KVM. Nothing of theirs ever runs on the runner.
+  # x86_64 runner with KVM. Nothing of theirs ever runs on the runner. A build
+  # is kept per fixture key, so this fetches one unless this tree's key has none
+  # or the run asks for a fresh one (scripts/kept-fixtures.sh says exactly when).
+  # Either way it uploads the `fixtures` artifact every later job reads.
   # A green `chore fixtures` run takes 13 to 19 minutes. The full job also
   # provisions KVM and packs the result: run 40309210102 spent 20m27s setting
   # up and 14m13s generating fixtures, then hit 35m while packing. The 45m
   # limit leaves 10m for packing and upload; #94's runs hung until 90m.
   fixtures:
-    name: fixtures (harness VM, x86_64 KVM)
+    name: fixtures (kept, or built in the harness VM, x86_64 KVM)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: A kept build, or a fresh one?
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRESH: ${{ inputs.fresh_fixtures || startsWith(github.ref, 'refs/tags/') }}
+        run: bash scripts/kept-fixtures.sh select >> "$GITHUB_OUTPUT"
+      - name: Fetch the kept build
+        if: steps.source.outputs.kept == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.source.outputs.tag }}
+          SHA256: ${{ steps.source.outputs.sha256 }}
+        run: bash scripts/kept-fixtures.sh fetch "$TAG" "$SHA256" "$RUNNER_TEMP"
       - name: Install chore
+        if: steps.source.outputs.kept != 'true'
         run: scripts/ci-install-chore.sh
       - name: chore siblings
+        if: steps.source.outputs.kept != 'true'
         run: chore siblings
       - name: KVM, QEMU and Vagrant
         id: vm-host
+        if: steps.source.outputs.kept != 'true'
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
       - name: Cache the Vagrant box
+        if: steps.source.outputs.kept != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.vagrant.d/boxes
@@ -218,14 +254,18 @@ jobs:
       # This crate's tools write a file the reference kernel module then
       # reads back (#141), so the fixture build compiles them.
       - name: Install Rust
+        if: steps.source.outputs.kept != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
       - name: chore fixtures
+        if: steps.source.outputs.kept != 'true'
         run: chore fixtures
       - name: chore vm:status (the VM is down again)
+        if: steps.source.outputs.kept != 'true'
         run: '! chore vm:status'
       - name: Pack the fixtures, keeping their holes
+        if: steps.source.outputs.kept != 'true'
         run: |
           set -euo pipefail
           du -sh .vm-share/fixtures

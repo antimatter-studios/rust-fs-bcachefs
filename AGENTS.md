@@ -390,7 +390,8 @@ Never leave the VM running: `chore vm:status`, `chore vm:down`.
 ## Quick pull request checks, full merge-queue validation
 
 Pull requests, including every layer of a native `gh stack`, run the quick
-jobs: `unit` (unit tier and shell guards), `lint` and `semver`. The merge
+jobs: `unit` (unit tier and shell guards), `lint` and `semver`. A pull request
+that changes the fixture key runs the full pipeline too, as below. The merge
 queue runs the full pipeline (`fixtures`, `oracle`, `test-arm64`,
 `test-darwin`, `suite-in-vm`, `cli`, `coverage`) on its exact merge tree, and
 so do tags, `workflow_dispatch` and a release calling `ci.yml`. A push to
@@ -408,3 +409,32 @@ gh workflow run ci.yml -R antimatter-studios/rust-fs-bcachefs --ref <branch>
 A quick pull request pass is not oracle evidence. Neither is a focused
 reproducer, which runs one job and no oracle, and only when its input is
 given: `-f reproducer=write-study-lifecycle` or `-f reproducer=crc128-native`.
+
+## Kept fixtures
+
+A fixtures build takes 13 to 20 minutes and varies between runs (#577), so a
+full run reuses a kept one when nothing it was made from has changed. It is a
+release asset, which does not expire as an artifact does: `fixtures-<key>`, one
+per fixture key, a prerelease that never reads as the latest. `ci.yml`'s
+`fixtures` job fetches it, refuses other bytes than its recorded SHA-256 and
+uploads the `fixtures` artifact every later job reads.
+
+The run builds fresh instead, and nothing else makes it, when:
+
+- **The key has no release.** `scripts/fixture-key.sh` hashes the fixture
+  scripts, the reference pin, the harness config and pinned refs, every source
+  file the write verb reaches and what compiles it, the `fixtures` task and the
+  `fixtures` job. `tests/scripts/fixture-key-covers-its-inputs.sh` fails if one
+  is missing. A checker, reader-only or test change is not in it, and reuses the
+  images.
+- **A pull request changes the key.** Its own run is then a full one, and builds.
+- **It is a tag or a release**, or a dispatch with `-f fresh_fixtures=true`.
+- **It is the nightly** `fixtures-fresh.yml`: the whole of `ci.yml` over a fresh
+  build, then `scripts/fixtures-compare.py` against the kept one. A failure files
+  an issue. If a difference is accepted, raise `GENERATION` in
+  `scripts/fixture-key.sh`.
+
+When a changed key lands, `fixtures-keep.yml` keeps the build the merge queue
+tested that commit with. `differential.yml` keeps its own frozen build, the
+`differential-fixtures-1` release, because its expected values are bound to one
+build's bytes: a new build there means re-deriving each case.
