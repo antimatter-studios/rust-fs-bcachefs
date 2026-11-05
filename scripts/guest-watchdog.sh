@@ -12,8 +12,15 @@
 # the kernel log's last lines, then powers the guest off at once: the
 # session ends, the host sees the failure within seconds, and the guest's
 # disk is never written by a run, so nothing is lost.
+#
+# ON A SHARED GUEST it stops only this run (fs-linux-test-harness#157). Other
+# suites are using that guest, and powering it off would end them all. The harness
+# sets FLTH_RUN_ROOT in every run on one. There the watchdog ends what the build
+# started, and the build with it, and the build fails naming the step. A process
+# the kernel will not let die stays; ending the guest for that is the harness's own
+# watchdog's to decide, for every suite at once.
 
-WATCHDOG_STEP=/run/fixture-step
+WATCHDOG_STEP="${GUEST_WATCHDOG_STEP:-/run/fixture-step}"
 
 step() { # NAME [SECONDS]
     echo "== $1"
@@ -22,21 +29,54 @@ step() { # NAME [SECONDS]
 
 # Started once, by the first script that sources this; a script it runs
 # inherits WATCHDOG_PID and shares the same watchdog.
+# The build and everything it started, the watchdog left out, ended. One look at the
+# process table, followed down from the build, so the look's own processes and the
+# watchdog's are not chased.
+watchdog_end_build() { # OWNER SELF
+    local pids
+    pids="$(ps -A -o pid=,ppid= | awk -v owner="$1" -v self="$2" '
+        { parent[$1] = $2 }
+        END {
+            keep[owner] = 1
+            do {
+                grew = 0
+                for (pid in parent) if (!(pid in keep) && (parent[pid] in keep) && pid != self) { keep[pid] = 1; grew = 1 }
+            } while (grew)
+            for (pid in keep) printf "%s ", pid
+        }')"
+    # shellcheck disable=SC2086  # a list of pids
+    kill -TERM $pids 2>/dev/null || true
+    sleep 2
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
+}
+
 if [ -z "${WATCHDOG_PID:-}" ]; then
     rm -f "$WATCHDOG_STEP"
+    WATCHDOG_OWNER=$$
     (
-        while sleep 5; do
+        while sleep "${GUEST_WATCHDOG_POLL:-5}"; do
             read -r due name <"$WATCHDOG_STEP" 2>/dev/null || continue
             [ "$(date +%s)" -ge "$due" ] || continue
+            if [ -n "${FLTH_RUN_ROOT:-}" ]; then
+                what="so only this run is stopped: other suites share this guest"
+            else
+                what="so the guest is powered off"
+            fi
             {
-                echo "fixtures: step '$name' outlived its time, so the guest is powered off"
+                echo "fixtures: step '$name' outlived its time, $what"
                 echo "-- processes in uninterruptible sleep:"
                 ps -eo pid,stat,etimes,wchan:32,args | awk 'NR == 1 || $2 ~ /^D/'
                 echo "-- the kernel log, last lines:"
                 dmesg | tail -n 30
             } >&2
-            echo 1 >/proc/sys/kernel/sysrq
-            echo o >/proc/sysrq-trigger
+            if [ -n "${FLTH_RUN_ROOT:-}" ]; then
+                # The exec makes this subshell the parent, on a Bash with no BASHPID.
+                watchdog_end_build "$WATCHDOG_OWNER" "$(exec sh -c 'echo "$PPID"')"
+                exit 1
+            fi
+            echo 1 >"${GUEST_WATCHDOG_SYSRQ_ENABLE:-/proc/sys/kernel/sysrq}"
+            echo o >"${GUEST_WATCHDOG_SYSRQ:-/proc/sysrq-trigger}"
             exit 1
         done
     ) &
