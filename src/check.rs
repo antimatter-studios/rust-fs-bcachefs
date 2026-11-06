@@ -88,6 +88,9 @@ const SNAP_FLAG_SUBVOL: u32 = 1 << 1;
 /// (`creation_parent` is the low half), and the subvolume_children btree,
 /// a `set` key at `fs_parent:id` for each subvolume with a parent (S3).
 const SUBVOL_FS_PARENT: usize = 20;
+/// The snapshot a subvolume claims. Bytes 4..8 of its value, as the reference
+/// printer's `snapshot id` shows on every fixture (S3, #521).
+const SUBVOL_SNAPSHOT: usize = 4;
 const SUBVOLUME_CHILDREN: u8 = 19;
 /// A subvolume's state word, and a snapshot's reserved pad word, and the
 /// shortest subvolume the reference does not refuse for its size (the guest
@@ -416,6 +419,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // A btree's per-snapshot counters (#163). Clean only, as above.
     if sb.is_clean() {
         check_snapshot_accounting(&trees, &mut r);
+    }
+    // A snapshot two subvolumes claim (#521). Clean only, as above.
+    if sb.is_clean() {
+        snapshot_claims(&trees, &mut r);
     }
     // A snapshot's state against the rest of the filesystem (#487). Clean
     // only, as above.
@@ -2693,6 +2700,42 @@ fn subvolume_states(trees: &BTreeMap<u8, Vec<Bkey>>, report: &mut Report) -> BTr
 /// of every reference-made fixture is one of these, so the same states on a
 /// snapshot with nothing left are not judged. Measured on clean images at
 /// `STATE_REQUIRED_FROM`.
+/// A snapshot claimed by two subvolumes the reference does not read as deleted
+/// (#521).
+fn snapshot_claims(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    let mut claims: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
+    for k in trees.get(&SUBVOLUMES).into_iter().flatten() {
+        if k.key_type != KEY_SUBVOLUME || k.value.len() < SUBVOL_SNAPSHOT + 4 {
+            continue;
+        }
+        // No word, or a zero one, is read as live. A word a bit or two from
+        // deleted is read as deleted, as `check_state_words` reports.
+        let state = k.value.get(SUBVOL_STATE..SUBVOL_STATE + 4);
+        if state.is_some_and(|word| {
+            let word = u32::from_le_bytes(word.try_into().unwrap());
+            (word ^ SUBVOL_STATES[2]).count_ones() <= STATE_FLIP_BITS
+        }) {
+            continue;
+        }
+        claims
+            .entry(le32(&k.value, SUBVOL_SNAPSHOT))
+            .or_default()
+            .push(k.pos.offset);
+    }
+    for (snapshot, subvolumes) in claims {
+        if subvolumes.len() > 1 {
+            let named: Vec<String> = subvolumes.iter().map(u64::to_string).collect();
+            r.add(
+                "snapshot_claimed_twice",
+                format!(
+                    "snapshot {snapshot} is claimed by subvolumes {}",
+                    named.join(", ")
+                ),
+            );
+        }
+    }
+}
+
 fn snapshot_states(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
     let snapshots = || {
         trees
@@ -3015,6 +3058,9 @@ mod started_superblock;
 #[cfg(test)]
 mod started_superblock_tests;
 mod superblock_rules;
+
+#[cfg(test)]
+mod snapshot_claims_tests;
 
 #[cfg(test)]
 mod tests {
