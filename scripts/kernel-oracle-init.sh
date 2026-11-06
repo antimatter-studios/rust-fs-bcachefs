@@ -45,7 +45,11 @@ if grep -qw oracle=judge /proc/cmdline; then
     poweroff -f
 fi
 
-if mount -t bcachefs -o noatime /dev/vda /mnt 2>/tmp/mount.err; then
+# Reconcile off, so the work the background_compression=zstd file queues is
+# still queued at unmount: the reconcile_work keys the checker's tests change
+# are in kernel.img on every build. With it on, the module's thread raced the
+# unmount, and a rebuild could finish the work first and keep none (#600).
+if mount -t bcachefs -o noatime,reconcile_enabled=0 /dev/vda /mnt 2>/tmp/mount.err; then
     say "mount: ok"
     cp -a /tree/. /mnt/
     ln /mnt/hello.txt /mnt/dir/hello-again.txt
