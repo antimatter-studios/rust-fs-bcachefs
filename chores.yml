@@ -163,7 +163,8 @@ tasks:
       # #562 adds two unit cases.
       # #589 adds one unit case.
       # #521 adds three snapshot claim cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 144'
+      # #563 adds four stale-backpointer cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 148'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -401,7 +402,8 @@ tasks:
       # 599 merge-queue run 41832709412 executed: 602 measured locally on
       # 2026-11-04, tmp/logs/vm.log.
       # #521 adds three unit and five live-reference snapshot claim cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 610'
+      # #563 adds four unit and three live-reference stale-backpointer cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 617'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -585,7 +587,8 @@ tasks:
       # #562 adds two default-feature unit cases.
       # #589 adds one default-feature unit case.
       # #521 adds its three snapshot claim unit cases to this tier too.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 225'
+      # #563 adds its four stale-backpointer unit cases to this tier too.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 229'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

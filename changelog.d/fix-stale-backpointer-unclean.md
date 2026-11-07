@@ -1,0 +1,3 @@
+### Fixed
+
+- **The checker reports a stale backpointer on a filesystem not shut down cleanly, and passes one in a bucket the reference checker passes (#563).** A backpointer that names an extent none of whose pointers land on its sector was judged only on a filesystem shut down cleanly, so an image last written through the reference's mount was called clean where the reference checker reports `backpointer_to_missing_ptr`. Such a backpointer is now judged either way. In both cases, and as the reference checker does, a bucket is passed when none of its backpointers is at its generation, and a journal or superblock bucket is passed.

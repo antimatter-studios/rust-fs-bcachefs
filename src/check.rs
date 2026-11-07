@@ -137,6 +137,8 @@ const ALLOC_DATA_TYPE: usize = 14;
 /// alloc_v4's dirty sectors: word 2's low half (docs/clean-room.md).
 const ALLOC_DIRTY_SECTORS: usize = 16;
 const ALLOC_STRIPE_SECTORS: usize = 56;
+const DATA_SUPERBLOCK: u8 = 1;
+const DATA_JOURNAL: u8 = 2;
 const DATA_BTREE: u8 = 3;
 const DATA_USER: u8 = 4;
 /// The lru btree, and the key type of its entries: a partly filled bucket's
@@ -944,20 +946,19 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     };
     let have_alloc = trees.contains_key(&btree_id::ALLOC) && bucket_size.is_some();
     // Where the device's backpointers are, when the filesystem keeps them.
-    let backpointers: Option<BTreeMap<u64, &Bkey>> = trees
-        .get(&BACKPOINTERS)
-        .filter(|_| judge_alloc)
-        .map(|keys| {
-            keys.iter()
-                .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
-                .map(|k| (k.pos.offset, k))
-                .collect()
-        });
+    let all_backpointers: Option<BTreeMap<u64, &Bkey>> = trees.get(&BACKPOINTERS).map(|keys| {
+        keys.iter()
+            .filter(|k| k.key_type == KEY_BACKPOINTER && k.pos.inode == u64::from(sb.dev_idx))
+            .map(|k| (k.pos.offset, k))
+            .collect()
+    });
+    // What is judged against the allocation btrees' clean-image gate.
+    let backpointers = all_backpointers.as_ref().filter(|_| judge_alloc);
 
     // A node's existing allocation backpointer must describe its pointer
     // key, not just reside in an allocated bucket (#163). Recovery rebuilds
     // allocation metadata, so this uses the same clean-image gate as data.
-    if let Some(bps) = &backpointers {
+    if let Some(bps) = backpointers {
         for &id in trees.keys() {
             match btree::node_pointers(dev, &sb, id, replay.as_ref()) {
                 Ok(Some(nodes)) => {
@@ -1180,7 +1181,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // reference's "backpointer for nonexistent alloc key"): a bucket holding
     // data or a node has one.
     if let (Some(bps), Some(b), true) = (
-        &backpointers,
+        backpointers,
         bucket_size,
         trees.contains_key(&btree_id::ALLOC),
     ) {
@@ -1308,13 +1309,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     r.add("alloc_key_data_type_wrong", d);
                 }
             }
-            if let Some(bps) = &backpointers {
+            if let Some(bps) = backpointers {
                 data_backpointer(k, &e, bucket_size, bps, &mut r);
-                extent_sectors
-                    .entry((k.pos.inode, k.pos.offset))
-                    .or_default()
-                    .push(e.ptr.offset);
             }
+            extent_sectors
+                .entry((k.pos.inode, k.pos.offset))
+                .or_default()
+                .push(e.ptr.offset);
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
             // holding one (S8, the `poison` image), and so does this one.
@@ -1331,20 +1332,27 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // One device only, as the lru: a replica's backpointer names an extent
     // whose first pointer is on another device.
     if let (Some(bps), Some(b), true, 1) = (
-        &backpointers,
+        &all_backpointers,
         bucket_size,
         trees.contains_key(&btree_id::ALLOC),
         sb.nr_devices,
     ) {
-        let dirty: BTreeMap<u64, u32> = trees
+        let alloc: BTreeMap<u64, BucketAlloc> = trees
             .get(&btree_id::ALLOC)
             .into_iter()
             .flatten()
             .filter(|k| k.key_type == key_type::ALLOC_V4 && k.pos.inode == u64::from(sb.dev_idx))
             .filter(|k| k.value.len() >= ALLOC_DIRTY_SECTORS + 4)
-            .map(|k| (k.pos.offset, le32(&k.value, ALLOC_DIRTY_SECTORS)))
+            .map(|k| {
+                let bucket = BucketAlloc {
+                    gen: crate::extent::alloc_v4_gen(&k.value).unwrap_or(0),
+                    data_type: k.value[ALLOC_DATA_TYPE],
+                    dirty: le32(&k.value, ALLOC_DIRTY_SECTORS),
+                };
+                (k.pos.offset, bucket)
+            })
             .collect();
-        unclaimed_backpointers(bps, &extent_sectors, &dirty, b, &mut r);
+        unclaimed_backpointers(bps, &extent_sectors, &alloc, b, &mut r);
     }
 
     // Reflinks (#139): every `reflink_p` lands on indirect extents that
@@ -1911,30 +1919,50 @@ fn btree_backpointer(id: u8, pos: Bpos, sectors: u32, bp: &Bkey, r: &mut Report)
     }
 }
 
+/// What a bucket's alloc key decides about its backpointers.
+struct BucketAlloc {
+    gen: u8,
+    data_type: u8,
+    dirty: u32,
+}
+
 /// A backpointer that names an extent none of whose pointers land on its
-/// sector (#433). The reference judges a bucket's backpointers only where
-/// their lengths do not add up to the bucket's dirty sectors, so a backpointer
-/// moved within its bucket is left alone here too.
+/// sector (#433). The reference judges a bucket's backpointers only where they
+/// do not add up to its dirty sectors, adding only those at the bucket's
+/// generation, and passes a bucket with none at it, a journal bucket and a
+/// superblock bucket (docs/clean-room.md, "A stale backpointer"). A bucket with
+/// no alloc key is at generation 0 and judged.
+///
+/// This one is judged after an unclean shutdown too (#563), where the
+/// allocation btrees can lag (#214). They only choose which buckets are looked
+/// at: what is reported is a backpointer against the extents, so a lagging
+/// alloc key alone reports nothing.
 fn unclaimed_backpointers(
     bps: &BTreeMap<u64, &Bkey>,
     extent_sectors: &BTreeMap<(u64, u64), Vec<u64>>,
-    dirty: &BTreeMap<u64, u32>,
+    alloc: &BTreeMap<u64, BucketAlloc>,
     bucket_size: u64,
     r: &mut Report,
 ) {
     let mut held: BTreeMap<u64, u64> = BTreeMap::new();
     for (&at, bp) in bps {
-        if bp.value.len() >= 12 {
-            *held.entry((at >> 16) / bucket_size).or_default() += u64::from(le32(&bp.value, 8));
+        let bucket = (at >> 16) / bucket_size;
+        let gen = alloc.get(&bucket).map_or(0, |a| a.gen);
+        if bp.value.len() >= 12 && bp.value[3] == gen {
+            *held.entry(bucket).or_default() += u64::from(le32(&bp.value, 8));
         }
     }
     for (&at, bp) in bps {
         let v = &bp.value;
         let sector = at >> 16;
         let bucket = sector / bucket_size;
+        let total = held.get(&bucket).copied().unwrap_or(0);
+        let a = alloc.get(&bucket);
         if v.len() < 32
             || v[..3] != [btree_id::EXTENTS, 0, DATA_USER]
-            || held.get(&bucket).copied() == dirty.get(&bucket).map(|d| u64::from(*d))
+            || total == 0
+            || total == a.map_or(0, |a| u64::from(a.dirty))
+            || a.is_some_and(|a| matches!(a.data_type, DATA_SUPERBLOCK | DATA_JOURNAL))
         {
             continue;
         }
@@ -3058,6 +3086,8 @@ mod started_superblock;
 #[cfg(test)]
 mod started_superblock_tests;
 mod superblock_rules;
+#[cfg(test)]
+mod unclean_backpointer_tests;
 
 #[cfg(test)]
 mod snapshot_claims_tests;
@@ -3227,7 +3257,14 @@ mod tests {
             unclaimed_backpointers(
                 &bps,
                 &extents,
-                &BTreeMap::from([(15u64, dirty)]),
+                &BTreeMap::from([(
+                    15u64,
+                    BucketAlloc {
+                        gen: 0,
+                        data_type: DATA_USER,
+                        dirty,
+                    },
+                )]),
                 64,
                 &mut r,
             );
@@ -3241,6 +3278,76 @@ mod tests {
         assert!(run(vec![2000], 8).is_empty());
         // The extent does point there.
         assert!(run(vec![1000], 16).is_empty());
+    }
+
+    /// The buckets the reference passes (#563): none of their backpointers is
+    /// reported, whichever extent it names.
+    #[test]
+    fn an_unclaimed_backpointer_is_left_alone_in_a_bucket_the_reference_passes() {
+        let mut value = vec![btree_id::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let at = 1000u64 << 16;
+        let bp = key(KEY_BACKPOINTER, at, value);
+        let bps = BTreeMap::from([(at, &bp)]);
+        let extents = BTreeMap::from([((2147483766u64, 8u64), vec![2000u64])]);
+        let run = |alloc: Option<BucketAlloc>| {
+            let alloc = alloc.into_iter().map(|a| (15u64, a)).collect();
+            let mut r = Report::default();
+            unclaimed_backpointers(&bps, &extents, &alloc, 64, &mut r);
+            r.problems
+        };
+        let bucket = |gen, data_type, dirty| {
+            Some(BucketAlloc {
+                gen,
+                data_type,
+                dirty,
+            })
+        };
+        // At another generation than its bucket's: no sectors to total.
+        assert!(run(bucket(1, 0, 0)).is_empty());
+        assert!(run(bucket(1, DATA_USER, 64)).is_empty());
+        // In a bucket that holds no extents' data.
+        assert!(run(bucket(0, DATA_JOURNAL, 64)).is_empty());
+        assert!(run(bucket(0, DATA_SUPERBLOCK, 64)).is_empty());
+        // At its bucket's generation, those are judged, in a bucket with no
+        // alloc key too.
+        assert_eq!(run(bucket(0, 0, 0)).len(), 1);
+        assert_eq!(run(bucket(0, DATA_BTREE, 64)).len(), 1);
+        assert_eq!(run(None).len(), 1);
+    }
+
+    /// #214's reason, against this judgement: a lagging alloc key chooses which
+    /// buckets are looked at, and reports nothing by itself. Every backpointer
+    /// names an extent that points at it, and no dirty count makes it stale.
+    #[test]
+    fn a_lagging_alloc_key_alone_reports_no_backpointer() {
+        let mut value = vec![btree_id::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let at = 1000u64 << 16;
+        let bp = key(KEY_BACKPOINTER, at, value);
+        let bps = BTreeMap::from([(at, &bp)]);
+        let extents = BTreeMap::from([((2147483766u64, 8u64), vec![1000u64])]);
+        for dirty in [0, 1, 8, 64] {
+            for gen in [0, 1] {
+                let alloc = BTreeMap::from([(
+                    15u64,
+                    BucketAlloc {
+                        gen,
+                        data_type: DATA_USER,
+                        dirty,
+                    },
+                )]);
+                let mut r = Report::default();
+                unclaimed_backpointers(&bps, &extents, &alloc, 64, &mut r);
+                assert!(r.problems.is_empty(), "{:?}", r.problems);
+            }
+        }
     }
 
     #[test]

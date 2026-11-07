@@ -3184,6 +3184,68 @@ sizes 1 and U32_MAX, and finds the same reason for both. The checker now include
 this btree and key type in its zero-size rule. reconcile_work_phys and the other
 reconcile btrees were not probed, so they are not judged. No GPL source was read.
 
+## A stale backpointer (S3, S4, S8, #433, #563)
+
+Reference checker 1.39.7 in the harness guest, 2026-11-04, on copies of `default`,
+`block4k` and `casefold` of the fixtures of CI run 41805364959 (`casefold.img`
+sha256 `49c98315e4ae4c328bab40a07bbe9f45b26bb901d08dcb80b226bbd57b75361f`, `default.img`
+`8491aab7096a1986c6d69e5809a279aece9892875aeac394e716bc08f81ba83e`). A backpointer
+is stale when it names an extent none of whose pointers land on its sector. Each
+image below is written and read back: the backpointer is moved or added through the
+writer's raw `insert`, and on the unclean rows the extent's file is then overwritten
+through the reference's read-write mount, which moves the extent's data away and leaves
+the image not shut down cleanly (the next `fsck -n` says `recovering from unclean
+shutdown`). The extent itself is never written directly.
+
+T is the sectors of the bucket's backpointers at the bucket's generation, as in the
+rule #562 measured. S is the alloc key's `dirty_sectors`. Bucket numbers are for
+`default.img`.
+
+| where the stale backpointer is | T, S | clean image | unclean image |
+|---|---|---|---|
+| its own bucket, 255 lower or 1 higher, after the extent moved | T != S, user | not measured | exit 9, `backpointer_to_missing_ptr` |
+| another user bucket, at its generation | T != S | exit 9, `backpointer_to_missing_ptr` | exit 9 |
+| a btree bucket (82) | 72, 64 | exit 9, `backpointer_to_missing_ptr` | exit 9, `backpointer_to_missing_ptr` |
+| a bucket waiting for discard or free (81, 326), generation 0 against the bucket's 1 | 0, 0 | exit 0 | exit 0 |
+| the same buckets, at generation 1 | 8, 0 | exit 9, `backpointer_to_missing_ptr` | exit 9, `backpointer_to_missing_ptr` |
+| a journal bucket (65) | 8, 64 | exit 0 | exit 0 |
+| a superblock bucket (0) | 8, 64 | exit 0 | exit 0 |
+| a bucket with no alloc key (400) | | exit 9, `backpointer_to_missing_alloc` | exit 9, `backpointer_to_missing_alloc` |
+| its own bucket, 255 lower, while another file was written and the extent stayed | T == S | not measured | exit 0 |
+
+So where a stale backpointer is reported depends on the bucket, and not on whether the
+filesystem was shut down cleanly. A bucket is judged where T is neither 0 nor S, and
+it holds neither a superblock nor a journal. A bucket with no alloc key is judged. Why
+a journal bucket is passed is not known; only its verdict is measured. #563's report
+that moving the backpointer to the next bucket gave exit 9 fits this: whether that
+bucket is judged depends on its generation and what it holds, and on these fixtures
+the next bucket (326) is at generation 1 and exits 0.
+
+This judgement stays on after an unclean shutdown, while the checks of allocation data
+do not (#214). It compares a backpointer with the extents and reads the alloc keys only
+to choose the bucket, so an alloc key that lags cannot report an image by itself: every
+backpointer on a filesystem that was not damaged still names an extent that points at it.
+What it can do is hide or show a stale one, on an image that already holds one. The
+same image's extents and backpointers come through one replay, and the replay's keys for
+the backpointers btree are ordinary `btree_keys` entries (S4). Measured beside the table:
+30 images from `default`, `gzip`, `lz4`, `block4k` and `aged`, three seeds each, written
+through the mount by random overwrites, creations, truncations and removals, half of them
+ended by killing the mount and half by unmounting. The new judgement reported nothing on any.
+
+The other backpointer checks stay off after an unclean shutdown, and on a clean image
+they still compare fields in buckets this rule would pass (#574).
+
+`tests/data/unclean-moved-backpointer-41805364959.bin` and
+`tests/data/unclean-unchanged-41805364959.bin` hold the unit tier to this. Both are
+`casefold.img` with the file of inode 2147483651 overwritten by `dd if=/dev/zero bs=512
+count=1 conv=notrunc,fsync` through the mount and unmounted, and the first has that
+extent's backpointer moved first, from `0:390135808:0` to `0:390135553:0`. They are
+the images' nonzero 4 KiB runs, each an offset and a length as two little-endian u64s
+and then its bytes, in a raw deflate stream. Image sha256
+`aef28ccb1f98accc342a4a8b6a9212085ee3de16a784bf988f1c4ffc0f36aae6` (moved, exit 9) and
+`f3b8926ab112dea7fa43df8db770d43e84c8a0f81b0ff30272877395bdc51458` (unchanged, exit 0).
+`tests/check_oracle.rs` holds the reference itself to the table's verdicts.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
