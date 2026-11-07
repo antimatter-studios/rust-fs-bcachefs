@@ -3184,6 +3184,56 @@ sizes 1 and U32_MAX, and finds the same reason for both. The checker now include
 this btree and key type in its zero-size rule. reconcile_work_phys and the other
 reconcile btrees were not probed, so they are not judged. No GPL source was read.
 
+## Nightly differential run 42217255346 (#228, 2026-11-06)
+
+The run judged 648 cases over the fixtures of CI run 42128606436
+(`fixtures.tar.gz` SHA-256
+`f5c7bda71cc39633b249d215c20ef56dc91e88700be0229a38165f1732bb50bc`), 80 a
+fixture from seed 1661040, with reference checker 1.39.7. It met three
+classes the baseline did not hold. Each reproduces on the host from its seed:
+the emitter's verdicts match the report. Black-box output only; no reference
+source was read.
+
+**An inode_v3 value's tail (#435), not settled.** Seed 1661113 sets value
+bytes 96..104 of the inode of a file in `default.img`, `block4k.img` and
+`lz4.img` to the word 1. The varints of its 21 fields then end at byte 102,
+with `dir` and `dir_offset` 0, and the old bytes of `dir_offset` stay behind
+them. The reference checker calls all three clean (exit 0), and its lister
+prints `bi_dir=0` and `bi_dir_offset=0` for that inode. This checker refuses
+the value as "inode_v3 has bytes after its last field", and still does. Whether
+bytes after the last field make an inode invalid is not settled by the reference
+checker's exit status alone. Accepting them would make this checker call more
+images clean, so it waits on the kernel module's own verdict (#435).
+
+**A per-snapshot counter's btree.** Seed 1661092 copies `kernel-rootsnap.img`'s
+accounting key at `0x05fdffffff000000:0:0` (snapshot 4294967293, extents) one
+inode up, to `...000001`. The reference prints "accounting mismatch for
+snapshot id=4294967293 btree=(unknown btree 65536): got 2 112 0, should be 0 0
+0". The kind 5 position's bytes 5 to 8 are `00 00 01 00`. So the btree is a
+32-bit field, little-endian like the snapshot id before it, and it ends in the
+offset's top byte. This checker read only byte 5, took the copy for a second
+extents counter of the same snapshot, and found its counts right. It now reads
+the 32-bit field, and holds a counter whose id is past a byte, so names no
+btree, to zero. An id below 256 that names no btree this checker walked was
+not measured, and is still not judged.
+
+**Two extents in one sector of one bucket (#604).** Seed 1661091 adds 1 to the
+inode of one extent key of `default.img` and `lz4.img`. The insert overwrites
+the next file's only extent with its value, and two files then point at one
+sector. The reference lister's record of the unchanged fixtures puts both files'
+sectors in one bucket: `0:336:41` and `0:336:42`, and `0:306:33` and `0:306:34`.
+The bucket's extents and its backpointers still add up to its dirty sectors.
+As with the generations of #562, the reference passes the image (exit 0), and
+this checker reports `backpointer_to_missing_ptr`. The reference prints
+`check_extents_to_backpointers... done` with no scanning line. On `block4k.img`
+the same seed's two extents are in buckets 425 and 426. There the reference
+prints "bucket 0:425 gen 0 data type user has wrong dirty_sectors: got 64,
+should be 72" (and 0:426, 64 against 56), then "backpointer doesn't match
+extent it points to" for `2147483915:8:U32_MAX`, and `scanning for missing
+backpointers in 1/2048 buckets`. So it reports the shape wherever it looks, and
+it looks only at a bucket whose totals do not balance. The finding is kept,
+and the class is in the baseline against #604.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
