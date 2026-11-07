@@ -1412,6 +1412,60 @@ fn both_checkers_reject_a_per_snapshot_key_count_out_of_step() {
     );
 }
 
+/// A per-snapshot counter's btree is 32 bits after its snapshot id. Nightly
+/// differential run 42217255346 copied kernel-rootsnap.img's extents counter
+/// one inode up, which sets the btree's third byte: the reference read the
+/// copy as "btree=(unknown btree 65536)", which holds nothing, and wanted 0.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_per_snapshot_counter_of_a_btree_with_no_id() {
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const ACCOUNTING: u8 = 20;
+    let extents_counter = 0x05ff_ffff_ff00_0000 | (u64::from(btree_id::EXTENTS) << 16);
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let dir = ScratchDir::new("check-snapshot-accounting-btree");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("snapshot-accounting-btree.img");
+    common::copy_sparse(fixture("default.img"), &img);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(!bad, "the unchanged fixture must be clean:\n{text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let counter = btree::walk(&dev, &sb, ACCOUNTING)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == extents_counter && k.value.len() >= 8 && k.value[..8] != [0; 8])
+        .expect("the fixture counts its extents in the all-ones snapshot");
+    let mut moved = counter.clone();
+    moved.pos.inode += 1;
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(ACCOUNTING, vec![moved]).unwrap();
+    drop(writer);
+
+    let (bad, text) = reference_finds_a_problem(&img);
+    assert!(
+        bad && text.contains("accounting mismatch for snapshot")
+            && text.contains("btree=(unknown btree 65536)"),
+        "{text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "accounting_mismatch" && p.detail.contains("unknown btree 65536")),
+        "the extents counter copied to btree 65536 was not reported: {:?}\n{text}",
+        ours.problems
+    );
+}
+
 /// #247's primary-only mutation, with equal-sequence backup controls and
 /// a newer-primary control. Ask the actual checker before comparing ours.
 #[test]
