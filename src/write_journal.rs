@@ -181,6 +181,9 @@ impl<D: BlockDevice> Writer<D> {
     /// replay applies them all.
     pub fn open_journalled(dev: D) -> Result<Self> {
         let sb = crate::superblock::Superblock::read(&dev)?;
+        if sb.never_started() {
+            return Err(Error::not_started());
+        }
         if sb.is_clean() {
             let mut w = Self::open(dev)?;
             w.journal_commits()?;

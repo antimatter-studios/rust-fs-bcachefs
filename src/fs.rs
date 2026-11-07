@@ -103,6 +103,11 @@ impl<D: BlockRead> Filesystem<D> {
                 sb.nr_devices
             )));
         }
+        // Nothing to read yet: no journal and no btree. What the reference
+        // lists on such an image it makes at that start and does not keep.
+        if sb.never_started() {
+            return Err(Error::not_started());
+        }
         // The roots in the superblock are as of the last clean shutdown;
         // after an unclean one everything since is in the journal, which
         // is replayed here, in memory. So is a clean one whose superblock
