@@ -110,3 +110,9 @@ ref-only	node	btree node read error at btree accounting level #	#472: The checke
 ours-only	node	check:accounting_underflow	#588: This crate reports an accounting underflow on a mutated block4k node the reference accepts
 ours-only	key-offset	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
 ref-only	key-size	invalid bkey in btree_node btree=reconcile_work level=#: u#s # type set #:u#_max len # ver #	#589: The checker misses a nonzero size on a reconcile_work key
+
+# Nightly run 42217255346 (2026-11-06), main at 5c37bc8, fixtures of CI run
+# 42128606436, reference checker 1.39.7, 80 cases a fixture from seed 1661040.
+# Two extents left sharing one sector inside one bucket: the reference does not
+# look at a bucket whose totals balance, and this crate's finding is kept.
+ours-only	key-inode	check:backpointer_to_missing_ptr	#604: The reference checker passes two extents that share one sector when both lie in one bucket

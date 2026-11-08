@@ -2101,9 +2101,19 @@ fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
         .filter(|k| k.key_type == KEY_ACCOUNTING && k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE)
     {
         let snapshot = (((k.pos.inode >> 24) & 0xffff_ffff) as u32).swap_bytes();
-        let id = ((k.pos.inode >> 16) & 0xff) as u8;
-        let Some(keys) = trees.get(&id) else {
-            continue;
+        // The btree is 32 bits, little-endian after the snapshot id: the
+        // position's bytes 5 to 8, the last of them the offset's top byte.
+        let pos = accounting_position_bytes(k);
+        let btree = u32::from_le_bytes([pos[5], pos[6], pos[7], pos[8]]);
+        // An id past a byte names no btree, so the btree holds nothing: the
+        // reference wants 0 for "(unknown btree 65536)" (run 42217255346).
+        // A smaller id this check has no keys of is not judged.
+        let (name, keys) = match u8::try_from(btree) {
+            Ok(id) => match trees.get(&id) {
+                Some(keys) => (journal::btree_name(id), keys.as_slice()),
+                None => continue,
+            },
+            Err(_) => (format!("(unknown btree {btree})"), &[][..]),
         };
         let held = keys
             .iter()
@@ -2116,13 +2126,9 @@ fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
             r.add(
                 "accounting_mismatch",
                 format!(
-                    "snapshot {snapshot} btree {}: it holds {} keys, {} bytes; the \
+                    "snapshot {snapshot} btree {name}: it holds {} keys, {} bytes; the \
                      accounting says {}, {}",
-                    journal::btree_name(id),
-                    want[0],
-                    want[1],
-                    have[0],
-                    have[1]
+                    want[0], want[1], have[0], have[1]
                 ),
             );
         }
@@ -4566,6 +4572,52 @@ mod tests {
             assert_eq!(report.problems[0].kind, "accounting_mismatch");
             assert!(report.problems[0].detail.contains("dirents"), "{report:?}");
         }
+    }
+
+    /// A per-snapshot counter's btree is 32 bits, little-endian in the
+    /// position after the snapshot id. Nightly differential run 42217255346
+    /// copied kernel-rootsnap.img's extents counter of snapshot 4294967293
+    /// one inode up; the reference read the copy as "btree=(unknown btree
+    /// 65536)" and wanted 0 0 0 for its 2 keys and 112 bytes.
+    #[test]
+    fn a_per_snapshot_counter_of_a_btree_with_no_id_is_named() {
+        const SNAPSHOT: u32 = u32::MAX - 2;
+        let mut extent = key(key_type::EXTENT, 0, vec![0; 16]);
+        extent.pos.snapshot = SNAPSHOT;
+        let mut second = extent.clone();
+        second.pos.offset += 8;
+        let at = (ACCT_SNAPSHOT_BTREE << 56) | (u64::from(SNAPSHOT.swap_bytes()) << 24);
+        let counter = |inode: u64| {
+            let mut v = 2u64.to_le_bytes().to_vec();
+            v.extend(112u64.to_le_bytes());
+            v.extend(0u64.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos = Bpos {
+                inode,
+                offset: 0,
+                snapshot: 0,
+            };
+            k
+        };
+        let trees = |acct: Vec<Bkey>| {
+            BTreeMap::from([
+                (btree_id::EXTENTS, vec![extent.clone(), second.clone()]),
+                (ACCOUNTING, acct),
+            ])
+        };
+
+        let mut clean = Report::default();
+        check_snapshot_accounting(&trees(vec![counter(at)]), &mut clean);
+        assert!(clean.clean(), "{clean:?}");
+
+        let mut report = Report::default();
+        check_snapshot_accounting(&trees(vec![counter(at), counter(at + 1)]), &mut report);
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert_eq!(report.problems[0].kind, "accounting_mismatch");
+        assert!(
+            report.problems[0].detail.contains("unknown btree 65536"),
+            "{report:?}"
+        );
     }
 
     #[test]
