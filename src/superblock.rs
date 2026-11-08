@@ -471,7 +471,7 @@ impl Superblock {
     /// "Images formatted and never started"). A start also leaves a `clean`
     /// or journal field, so a superblock holding one has been damaged, and is
     /// read as the started filesystem it says it is.
-    pub(crate) fn never_started(&self) -> bool {
+    pub fn never_started(&self) -> bool {
         self.flags[0] & 1 == 0
             && ![
                 FIELD_JOURNAL_V1,

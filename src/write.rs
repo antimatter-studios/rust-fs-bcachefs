@@ -103,6 +103,9 @@ pub struct Writer<D: BlockDevice> {
 impl<D: BlockDevice> Writer<D> {
     pub fn open(dev: D) -> Result<Self> {
         let sb = Superblock::read(&dev)?;
+        if sb.never_started() {
+            return Err(Error::not_started());
+        }
         if !sb.is_clean() {
             return Err(Error::Unsupported(
                 "the filesystem was not cleanly unmounted: writing in place needs a clean one \

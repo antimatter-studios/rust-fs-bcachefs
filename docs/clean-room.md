@@ -3171,6 +3171,46 @@ with each version, each formatter option, and smaller devices. The superblock in
 `--version=1.38` on a 256 MiB image. 17 cases where the reference crashed, hung
 or faulted across these probes were counted and not kept.
 
+**What the reference shows on one, and what the read tools do (#534,
+2026-11-04).** Black-box guest probes used reference tools 1.39.7 on images the
+formatter made with `--version=1.38` on 256 MiB. Only their printed output, their
+exit status and the SHA-256 of the image were consulted; no reference source was
+read. The reference kernel module is not in this guest, so its mount was not
+probed.
+
+| The reference tool | Exit | Prints | Image after |
+|---|---|---|---|
+| printer, `show-super` | 0 | version 1.38, sequence 0, `Clean: 0`, sections `members_v1,members_v2,ext` | unchanged |
+| lister, `list -b dirents` | 0 | "initializing new filesystem", then one entry in inode 4096, `lost+found`, a directory | unchanged |
+| lister, `list -b inodes`, `-b subvolumes`, `-b snapshots`, `-b freespace` | 0 | the root inode, subvolume 1, its snapshot, one free run of 1987 buckets | unchanged |
+| `list_journal -a`, `dump` | 0 | "initializing new filesystem" | unchanged |
+| checker, `fsck -n` | 0 | "initializing new filesystem" | unchanged |
+| checker, `fsck -y` | 0 | "initializing new filesystem" | written: version 1.39, sequence 26, `Clean: 1`, a `clean` and a `journal_v2` section |
+
+So the lister starts the filesystem in memory and throws away what it made. Five
+runs of it on one image, whose SHA-256 did not move, printed the entry's name and
+type and the free run the same, and in every run a different root `hash_seed`, a
+different entry offset and root times. The inode number of `lost+found` was
+2147483648 on some runs and 4611686018427387904 on others.
+
+**So a listing is refused.** The image holds no directory for a listing to agree
+with: what the lister shows does not exist until a start, and a reader that made
+it up would be stating numbers the next start will not have. Every verb that needs
+a directory says the filesystem has not been started, exit 4, the volume's state
+refusing rather than something this reader lacks. A write verb says the same.
+Started once by the reference, the same image lists as the lister does.
+
+**What can be read is read.** `get` reports the superblock, each value held to the
+printer at every version the formatter leaves to the first start. `free_bytes` is
+null: the 1987 buckets are the reference's arithmetic at a start, written nowhere
+on the image, and this reader does not derive them. `bcachefs.started` is what
+`Superblock::never_started` says, the rule above. It is public for the tools,
+which are another crate.
+
+`tests/read_oracle_never_started.rs` holds these to the reference tools in the
+guest. 3 cases where the reference crashed, hung or faulted across these probes
+were counted and not kept.
+
 ## A size on a reconcile_work key (#589)
 
 Differential [run 41822822138](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/41822822138)

@@ -61,6 +61,11 @@ json.dump(
             "devices": int(fields["Devices"]),
             "encrypted": "crypt" in fields["Sections"].split(","),
             "clean": clean,
+            # A start leaves these; the formatter leaves neither on an image
+            # it leaves to the first start.
+            "started": bool(
+                {"journal_v2", "clean"} & set(fields["Sections"].split(","))
+            ),
         },
     },
     sys.stdout,

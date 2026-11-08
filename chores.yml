@@ -176,9 +176,10 @@ tasks:
       # builds `cli`; it still reads no fixture and runs no tool or VM, so it
       # runs here and fails in minutes. Budget copied from the unit row until
       # a run measures it.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-cli-export 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --features cli --test cli_export_tree_args -- --quiet'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit-cli-export 150 12000 -- scripts/test-scratch-run.sh cargo test --locked --features cli --test cli_export_tree_args --test cli_never_started -- --quiet'
       # #442 adds the --preserve=xattrs parse test: three tests, measured.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-cli-export 3'
+      # #534 adds tests/cli_never_started.rs, seven tests: ten, measured.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit-cli-export 10'
       # The tools' own unit tests (src/cli): how a library error becomes the
       # CLI contract's error, kind included. They build `cli` and read no
       # image, so they run here. Budget copied from the unit row until a run
@@ -401,7 +402,8 @@ tasks:
       # 599 merge-queue run 41832709412 executed: 602 measured locally on
       # 2026-11-04, tmp/logs/vm.log.
       # #521 adds three unit and five live-reference snapshot claim cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 610'
+      # #534 adds five live-reference cases of the read tools on such images.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 615'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;

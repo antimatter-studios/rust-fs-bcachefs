@@ -26,7 +26,7 @@ for set in default lz4 zstd gzip nocsum xxhash crc64 block4k labeled aged write-
             '. == $want[0]' "$SANDBOX/got.json" >/dev/null
 
         # JSON selection keeps the literal dotted key; text is the scalar.
-        for key in fs label total_bytes free_bytes block_size dirty bcachefs bcachefs.uuid bcachefs.version bcachefs.btree_node_size bcachefs.devices bcachefs.encrypted bcachefs.clean; do
+        for key in fs label total_bytes free_bytes block_size dirty bcachefs bcachefs.uuid bcachefs.version bcachefs.btree_node_size bcachefs.devices bcachefs.encrypted bcachefs.clean bcachefs.started; do
             fs.bcachefs "$img" "$verb" "$key" >"$SANDBOX/one.json" 2>"$SANDBOX/err"
             check "$set: $verb $key succeeds" test $? -eq 0
             check "$set: $verb $key selects the same value" jq -e --arg k "$key" --slurpfile all "$SANDBOX/got.json" \

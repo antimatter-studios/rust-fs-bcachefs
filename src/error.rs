@@ -25,7 +25,18 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Why a filesystem nothing has started cannot be read or written past its
+/// superblock (#534, docs/clean-room.md "Images formatted and never started").
+const NOT_STARTED: &str =
+    "the filesystem has not been started: until its first mount it holds only its superblocks";
+
 impl Error {
+    /// A filesystem the reference formatter wrote and nothing has started
+    /// ([`crate::superblock::Superblock::never_started`]).
+    pub(crate) fn not_started() -> Error {
+        Error::Unsupported(NOT_STARTED.into())
+    }
+
     /// Whether this is the volume's current state refusing a change, not
     /// damage or a limit of this crate: a name that is not there, or one of
     /// the writer's own refusals of a name already taken, a directory that
@@ -33,7 +44,8 @@ impl Error {
     /// (src/write.rs reports those three as `Corrupt`, in these words, which
     /// the C ABI maps to EEXIST and ENOTEMPTY), or too few free buckets for
     /// a write (src/write_alloc.rs reports that as `Unsupported`, in these
-    /// words, which the C ABI maps to ENOSPC). The CLI's exit 4 (#394, #456).
+    /// words, which the C ABI maps to ENOSPC), or a filesystem nothing has
+    /// started. The CLI's exit 4 (#394, #456, #534).
     pub fn is_state_refusal(&self) -> bool {
         match self {
             Error::NotFound(_) => true,
@@ -42,7 +54,7 @@ impl Error {
                     || m == "the directory is not empty"
                     || m.ends_with(" is not a directory")
             }
-            Error::Unsupported(m) => m.contains(" free buckets are needed"),
+            Error::Unsupported(m) => m.contains(" free buckets are needed") || m == NOT_STARTED,
             _ => false,
         }
     }
@@ -94,6 +106,7 @@ mod tests {
             Error::Corrupt(format!("{:?} is not a directory", "x")),
             Error::Corrupt("inode 4096 is not a directory".into()),
             Error::Unsupported("128 free buckets are needed and only 105 are free".into()),
+            Error::not_started(),
         ] {
             assert!(refusal.is_state_refusal(), "{refusal}");
         }
