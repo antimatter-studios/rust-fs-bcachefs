@@ -48,6 +48,7 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
         # here; the writer makes some of its damaged images.
         bash "$run" cargo test --locked --release --features write --test check_oracle "$@" || failed=1
         bash "$run" cargo test --locked --release --features write --test check_oracle_snapshot_claims "$@" || failed=1
+        bash "$run" cargo test --locked --release --features write --test check_oracle_extent_checksum "$@" || failed=1
         bash "$run" cargo test --locked --release --features write --test check_oracle_key_types "$@" || failed=1
         bash "$run" cargo test --locked --release --features write --test check_oracle_never_started "$@" || failed=1
         bash "$run" cargo test --locked --release --features write --test check_oracle_started_superblock "$@" || failed=1

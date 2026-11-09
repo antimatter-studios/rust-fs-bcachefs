@@ -3,8 +3,8 @@
 Every guest target that runs the reference tools under a deadline does it through
 `tests/common/reference_runs.rs`: `check_oracle`, `check_oracle_key_types`,
 `check_oracle_never_started`, `check_oracle_started_superblock`,
-`check_oracle_reconcile_dirent`, `check_oracle_snapshot_claims` and
-`read_oracle_never_started`.
+`check_oracle_reconcile_dirent`, `check_oracle_snapshot_claims`,
+`check_oracle_extent_checksum` and `read_oracle_never_started`.
 `tests/scripts/reference-key-field-outcomes.sh` fails on a test target with a
 deadline of its own.
 
