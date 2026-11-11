@@ -23,6 +23,8 @@
 
 #[path = "common/backpointer.rs"]
 mod backpointer;
+#[path = "common/bucket_counters.rs"]
+mod bucket_counters;
 mod common;
 #[path = "common/freespace.rs"]
 mod freespace;
@@ -61,6 +63,39 @@ fn scratch(test: &str) -> common::ScratchImage {
     let img = common::ScratchDir::new("check-alloc").into_image(format!("{test}.img"));
     common::copy_sparse(fixture("default.img"), &img);
     img
+}
+
+/// Every counter of every data type (#380): named with the numbers the
+/// reference prints (`tests/check_oracle.rs` holds it to them).
+#[test]
+fn a_bucket_counter_that_disagrees_with_what_the_bucket_holds_is_named() {
+    for &data_type in bucket_counters::DATA_TYPES {
+        for &counter in bucket_counters::COUNTERS {
+            let planted = bucket_counters::plant_counter("default", data_type, counter);
+            let report = check::check(&FileDevice::open(&*planted.image).unwrap()).unwrap();
+            assert!(
+                report.problems.iter().any(|p| p.kind == planted.kind),
+                "{}: {:?}",
+                planted.expected,
+                report.problems
+            );
+        }
+    }
+}
+
+/// `kernel-written.img` seed 1659864's class: an extent gone from a bucket
+/// whose alloc key still counts it.
+#[test]
+fn a_bucket_that_counts_an_extent_it_no_longer_holds_is_named() {
+    for set in ["default", "kernel-written"] {
+        let planted = bucket_counters::plant_extent_type(set);
+        let report = check::check(&FileDevice::open(&*planted.image).unwrap()).unwrap();
+        let named = report
+            .problems
+            .iter()
+            .any(|p| p.kind == planted.kind && planted.expected == p.detail);
+        assert!(named, "{}: {:?}", planted.expected, report.problems);
+    }
 }
 
 fn keys(img: &std::path::Path, id: u8) -> Vec<Bkey> {

@@ -352,7 +352,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         None => sb.btree_roots()?.iter().map(|x| x.btree_id).collect(),
     };
     let mut trees: BTreeMap<u8, Vec<Bkey>> = BTreeMap::new();
-    for id in roots {
+    for &id in &roots {
         match walk_checked(dev, &sb, id, replay.as_ref(), &mut r) {
             Some(keys) => {
                 trees.insert(id, keys);
@@ -1156,6 +1156,18 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     ),
                 );
             }
+        }
+    }
+
+    // Each alloc key's dirty and cached sectors against what its bucket holds
+    // (#380). On one device only, as the lru.
+    if let (true, 1, Some(b), Some(m)) = (judge_alloc, sb.nr_devices, bucket_size, &member) {
+        let first = u64::from(m.first_bucket);
+        if let (Some(alloc), Some(held)) = (
+            trees.get(&btree_id::ALLOC),
+            bucket_sectors::of_filesystem(dev, &sb, &roots, &trees, replay.as_ref(), b, first),
+        ) {
+            held.judge(alloc, &mut r);
         }
     }
 
@@ -3051,6 +3063,7 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
 
 #[cfg(test)]
 mod backpointer_generation_tests;
+mod bucket_sectors;
 mod never_started;
 #[cfg(test)]
 mod never_started_tests;

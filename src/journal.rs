@@ -134,7 +134,7 @@ pub fn jset_magic(uuid: &[u8; 16]) -> u64 {
 }
 
 /// The journal's buckets, as `(first bucket, count)` ranges.
-fn bucket_ranges(sb: &Superblock) -> Result<Vec<(u64, u64)>> {
+pub(crate) fn bucket_ranges(sb: &Superblock) -> Result<Vec<(u64, u64)>> {
     let f = sb
         .field(FIELD_JOURNAL_V2)
         .ok_or_else(|| Error::Unsupported("no journal_v2 field".into()))?;

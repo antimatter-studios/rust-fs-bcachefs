@@ -76,10 +76,7 @@ ref-only	key-type	invalid bkey in btree_node btree=backpointers level=#: u#s # t
 # backpointer_to_missing_ptr classes by #230.
 ours-only	node	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
 ref-only	node	check_inodes...inode has_inode_opts flag wrong, should be #	#379: The checker misses an inode whose has_inode_opts flag disagrees with its options
-ref-only	node	check_allocations...bucket # gen # data type user has wrong cached_sectors: got #, should be #, fixi	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
-ref-only	node	check_allocations...bucket # gen # data type journal has wrong stripe_sectors: got #, should be #, f	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
 ours-only	key-value	check:backpointer_to_missing_ptr	#230: unresolved backpointer disagreement; reference clean is not proof of validity
-ref-only	key-type	check_allocations...bucket # gen # data type user has wrong dirty_sectors: got #, should be #, fixin	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
 
 # Measured in run 40708525651 (2026-10-28), a dispatch at seed 0 on #431's
 # branch: reference checker 1.39.7, 648 cases, fixtures of CI run
@@ -100,7 +97,6 @@ ref-only	key-offset	check_extents_to_backpointers...backpointer doesn't match bt
 
 # Nightly runs 40862227140, 41044679907, 41193184068 and 41301902844, main at
 # 54f2a9d, reference checker 1.39.7: twenty-six new classes, each tracked below.
-ref-only	node	check_allocations...bucket # gen # data type sb has wrong cached_sectors: got #, should be #, fixing	#380: The checker misses alloc keys whose sector counters disagree with what their buckets hold
 ours-only	node	check:inode	#435: The checker reports inode_v3 keys the reference checker accepts
 ref-only	node	btree node read error at btree extents level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
 ref-only	node	btree node read error at btree accounting level #	#472: The checker accepts btree nodes with an unsupported bset version or an invalid key format
