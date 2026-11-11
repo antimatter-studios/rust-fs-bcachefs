@@ -26,6 +26,50 @@ fn every_fixture_is_clean() {
     }
 }
 
+/// No false positive (#380): every image the reference made and left clean,
+/// the write study's among them, agrees with its buckets' counters. The
+/// images this checker refuses, or does not judge, are counted to show that
+/// the check ran over the others.
+#[test]
+fn every_reference_made_image_agrees_with_its_bucket_counters() {
+    let mut images = Vec::new();
+    for dir in [
+        common::fixtures_dir(),
+        common::fixtures_dir().join("write-study"),
+    ] {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "img") {
+                images.push(path);
+            }
+        }
+    }
+    let mut judged = 0;
+    for image in &images {
+        let dev = FileDevice::open(image).unwrap();
+        let Ok(report) = check(&dev) else { continue };
+        judged += 1;
+        let wrong: Vec<_> = report
+            .problems
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    "alloc_key_dirty_sectors_wrong"
+                        | "alloc_key_cached_sectors_wrong"
+                        | "alloc_stripe_sectors_wrong"
+                )
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{}: {wrong:?}", image.display());
+    }
+    assert!(
+        judged >= 50,
+        "only {judged} of {} images judged",
+        images.len()
+    );
+}
+
 /// A damaged copy of a fixture in a scratch directory it owns.
 pub fn damaged(
     set: &str,

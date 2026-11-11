@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{fixture, ScratchDir, ScratchImage};
+use fs_bcachefs::bkey::key_type;
 use fs_bcachefs::btree::{self, btree_id};
+use fs_bcachefs::check::check;
 use fs_bcachefs::superblock::Superblock;
 use fs_bcachefs::write::Writer;
 use fs_bcachefs::Filesystem;
@@ -149,6 +151,161 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
             std::panic::resume_unwind(panic)
         }
     }
+}
+
+/// The bytes of a file a compressor can shrink by a set amount: `random` bytes
+/// of noise in each 4 KiB, then zeros.
+fn partly_compressible(seed: &mut u64, size: usize, random: usize) -> Vec<u8> {
+    (0..size)
+        .map(|at| {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            if at % 4096 < random {
+                *seed as u8
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
+/// A compressed extent the reference mount overwrote parts of leaves pieces
+/// that count their share of its stored size, rounded up (#380). The reference
+/// checker and this one both pass such an image, and both name a bucket counter
+/// changed by one. No fixture holds a piece whose share rounds.
+#[test]
+fn both_checkers_judge_a_bucket_holding_pieces_of_compressed_extents() {
+    require_guest();
+    let dir = ScratchDir::new("write-oracle");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("compressed-pieces.img");
+    std::fs::File::create(&*img)
+        .unwrap()
+        .set_len(128 << 20)
+        .unwrap();
+    let path = img.to_str().unwrap();
+    let (ok, text) = reference(&[
+        "format",
+        "-q",
+        "--compression=lz4",
+        "--bucket_size=256k",
+        path,
+    ]);
+    assert!(ok, "the reference formatter refused:\n{text}");
+
+    let host_mnt = PathBuf::from(format!("{REF_ROOT}{MNT}"));
+    std::fs::create_dir_all(&host_mnt).unwrap();
+    let mut daemon = Command::new("bcachefs-ref")
+        .args(["fusemount", "-f", "-o", "rw,noatime", path, MNT])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(img.with_extension("fuse.log")).unwrap())
+        .spawn()
+        .unwrap();
+    let mounted = (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        Command::new("mountpoint")
+            .args(["-q", host_mnt.to_str().unwrap()])
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    assert!(mounted, "the reference implementation did not mount {path}");
+    let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use std::os::unix::fs::FileExt;
+        let mut seed = 380;
+        for (name, random) in [("a", 1500), ("b", 700), ("c", 2800), ("d", 2200)] {
+            let path = host_mnt.join(name);
+            std::fs::write(&path, partly_compressible(&mut seed, 2 << 20, random)).unwrap();
+            let file = std::fs::File::open(&path).unwrap().sync_all();
+            file.unwrap();
+        }
+        for name in ["a", "b", "c", "d"] {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(host_mnt.join(name))
+                .unwrap();
+            for (n, at) in (30_000..2 << 20).step_by(173_000).enumerate() {
+                let size = [512, 1024, 4096, 9000][n % 4];
+                let noise = partly_compressible(&mut seed, size, size);
+                file.write_all_at(&noise, at as u64).unwrap();
+            }
+            file.sync_all().unwrap();
+        }
+    }));
+    let _ = Command::new("fusermount3")
+        .args(["-uz", host_mnt.to_str().unwrap()])
+        .status();
+    let stopped = (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        matches!(daemon.try_wait(), Ok(Some(_)))
+    });
+    if !stopped {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
+    if let Err(panic) = written {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(stopped, "the reference mount did not stop");
+    // The mount leaves a journal to replay: settled by the reference checker,
+    // with nothing to fix, as the write study settles its images.
+    let (ok, text) = reference(&["fsck", "-y", path]);
+    assert!(
+        ok && !text.contains("errors fixed") && !text.contains("errors this recovery"),
+        "settling the mount's image was not a clean replay:\n{text}"
+    );
+    assert_fsck_clean(&img);
+
+    let dev = FileDevice::open(&*img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let extents = btree::walk(&dev, &sb, btree_id::EXTENTS).unwrap();
+    let pieces = extents
+        .iter()
+        .filter(|k| k.key_type == key_type::EXTENT)
+        .filter(|k| {
+            fs_bcachefs::extent::parse_entries(&k.value)
+                .unwrap()
+                .iter()
+                .any(|e| {
+                    matches!(e, fs_bcachefs::extent::ExtentEntry::Crc(c)
+                        if c.compression_type == fs_bcachefs::extent::compression::LZ4
+                            && k.size < c.uncompressed_size
+                            && u64::from(k.size) * u64::from(c.compressed_size)
+                                % u64::from(c.uncompressed_size)
+                                != 0)
+                })
+        })
+        .count();
+    assert!(pieces > 0, "the image holds no piece that rounds");
+    let ours = check(&dev).unwrap();
+    assert!(ours.clean(), "{:?}", ours.problems);
+
+    let mut key = btree::walk(&dev, &sb, btree_id::ALLOC)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.key_type == key_type::ALLOC_V4 && k.value[14] == 4)
+        .expect("the image has a user bucket");
+    drop(dev);
+    let want = u32::from_le_bytes(key.value[16..20].try_into().unwrap());
+    let got = want + 1;
+    key.value[16..20].copy_from_slice(&got.to_le_bytes());
+    let expected = format!(
+        "bucket 0:{} gen {} data type user has wrong dirty_sectors: got {got}, should be {want}",
+        key.pos.offset, key.value[12]
+    );
+    let mut writer = Writer::open(FileDevice::open_rw(&*img).unwrap()).unwrap();
+    writer.insert(btree_id::ALLOC, vec![key]).unwrap();
+    drop(writer);
+    let (ok, text) = reference(&["fsck", "-n", path]);
+    assert!(!ok && text.contains(&expected), "{expected}:\n{text}");
+    let ours = check(&FileDevice::open(&*img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|p| p.kind == "alloc_key_dirty_sectors_wrong" && p.detail == expected),
+        "{expected}: {:?}",
+        ours.problems
+    );
 }
 
 /// Whether the reference mount reads each named file back as given. A

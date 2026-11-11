@@ -1159,6 +1159,75 @@ measured and is not judged. No reference source was read.
   write-study base (32 KiB nodes) pass the reference checker and read back
   through its mount.
 
+### A bucket's sector counters (`src/check/bucket_sectors.rs`, #380)
+
+Nightly differential run 39756419740, re-run as 39764355709, and run
+40862227140 had the reference checker correct alloc keys this crate called
+clean: `wrong cached_sectors` on a user and a superblock bucket, `wrong
+stripe_sectors` on a journal bucket, and `wrong dirty_sectors` on a user bucket
+after an extent key changed type ("got 23, should be 20"). The fields are word 2
+(dirty, low half; cached, high half) and word 7's low u16 (stripe), as "Allocating
+space" records them.
+
+Measured with a scratch program outside this repository over the fixtures of CI
+run 41759137778, every clean single-device unencrypted image (26 fixtures and all
+28 write-study images): each alloc_v4 key's dirty sectors equal the sum of these,
+with no exception (S3, S4).
+
+- **An extent** counts its live sectors (the key's size) in its pointer's bucket,
+  and so does an unwritten or poisoned one. An indirect extent counts the same.
+- **A compressed extent** counts its stored size when whole. No fixture holds a
+  piece whose share rounds, so two images were made through the reference mount
+  (S8: `--compression=lz4`, one with `--bucket_size=256k`, files written and then
+  partly overwritten, settled by the reference checker). On the second, 79 shapes
+  of piece in 15 buckets settle the rule: `ceil(live * stored / uncompressed)`.
+  Bucket 18 counted 506 from pieces (live, stored, uncompressed) of (58, 191,
+  512), (335, 191, 512), (113, 191, 512), (222, 191, 512), (272, 191, 512), (48,
+  130, 346) and (296, 130, 346): rounding down gives 499, to the nearest 502, and
+  14 of the 15 buckets refuse both. Compression types 0 and 5 are stored raw and
+  count live sectors.
+- **A btree node** counts the node size in its pointer's bucket, for every node of
+  every btree reached from the roots, so several nodes share a bucket's count.
+- **A journal bucket**, one the `journal_v2` field names, counts all of itself.
+- **The superblock** counts every copy's span, `2^sb_max_size_bits` sectors from
+  the layout's offset, and the 8 sectors before the primary. `default` (offsets
+  8, 2056, 129024; 64-sector buckets) counts 64 in buckets 0 to 63, 8 in bucket
+  64 and 64 in the last 32. `crc128` (offsets 8, 2112, 2095104; 1024-sector
+  buckets) counts 968 in bucket 2: the 56 sectors between its first two copies
+  count nothing. With every copy's layout changed and re-stamped in the guest the
+  reference follows the layout too: smaller `sb_max_size_bits` gave "bucket 0:16
+  gen 0 data type sb has wrong dirty_sectors: got 64, should be 8", and a layout
+  naming two copies moved the third's buckets to free. A larger one it refuses
+  (`invalid_sb_layout_superblocks_overlap`, exit 1), and an offset moved by 64
+  sectors with `metadata_bucket_inconsistency`, exit 1; this checker reports both.
+- **Cached sectors** are 0 in every key of every one of those images: none holds a
+  pointer with a flag other than unwritten.
+
+Judged by the reference checker's printed output and exit status, in the guest:
+dirty, cached and stripe sectors changed on one bucket each of data types sb,
+journal, btree and user, and an extent key replaced by a reservation on `default`
+and `kernel-written`. Each of those 14 cases, five runs each, printed the same
+"bucket D:B gen G data type T has wrong F: got X, should be Y" and exited 9 every
+time, so nothing here needs a verdict held loosely. Of a bucket the change empties
+the reference names the data type it would become, "data type free", where this
+checker names the alloc key's own; the tests use buckets that stay in use.
+
+A pointer's flags are the exception, and leave its bucket unjudged. Each flag value
+but unwritten was set on an extent's pointer in the guest: value 1 (the first flag
+bit) gave `extent_ptrs_all_invalid_but_cached`, exit 9, as did 3, 5 and 7; 2 and 6
+gave exit 0, which this checker's `extent_pointer` disagrees with (#575). What
+such a pointer adds to a counter is not observed.
+
+A stripe's buckets hold blocks no extent or node names, and no single-device image
+has a stripe, so an image with a key in the stripes btree is not judged. Neither is
+a filesystem with a btree that did not read, a value that does not parse, or no
+`journal_v2` field: what stopped it is reported where it was read. Buckets with
+sectors and no alloc key are not reported here, though the reference reports them
+("bucket 0:2015 gen 0 has wrong data_type: got free, should be sb", with the
+layout's last copy moved); #576 tracks that. On a filesystem that was not
+shut down cleanly nothing here is judged, as for the other allocation checks. No
+reference source was read.
+
 ## Open questions
 
 Facts this reader needs that neither documentation nor black-box observation
