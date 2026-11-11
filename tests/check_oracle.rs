@@ -9,6 +9,9 @@ mod alloc_v4;
 #[cfg(feature = "write")]
 #[path = "common/backpointer.rs"]
 mod backpointer;
+#[cfg(feature = "write")]
+#[path = "common/bucket_counters.rs"]
+mod bucket_counters;
 mod common;
 #[cfg(feature = "write")]
 #[path = "common/freespace.rs"]
@@ -1076,6 +1079,38 @@ fn both_checkers_reject_a_wrong_alloc_stripe_sector_count() {
         "stripe_sectors was not checked against the reference finding: {:?}\n{text}",
         ours.problems
     );
+}
+
+/// Every counter of every data type (#380), and an extent gone from a bucket
+/// whose key still counts it: the reference prints the numbers this crate
+/// names, and exits 9.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_bucket_counter_that_disagrees_with_the_bucket() {
+    let mut planted = Vec::new();
+    for &data_type in bucket_counters::DATA_TYPES {
+        for &counter in bucket_counters::COUNTERS {
+            planted.push(bucket_counters::plant_counter(
+                "default", data_type, counter,
+            ));
+        }
+    }
+    planted.push(bucket_counters::plant_extent_type("default"));
+    planted.push(bucket_counters::plant_extent_type("kernel-written"));
+    let mut disagreements = Vec::new();
+    for case in &planted {
+        let (status, text) = reference_on_key_field(&case.image);
+        let found = text.contains(&case.expected);
+        let ours = check(&FileDevice::open(&*case.image).unwrap()).unwrap();
+        let named = ours.problems.iter().any(|p| p.kind == case.kind);
+        if status != 9 || !found || !named {
+            disagreements.push(format!(
+                "{}: exit {status}, printed {found}, named {named}\n{text}\n{:?}",
+                case.expected, ours.problems
+            ));
+        }
+    }
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
 }
 
 /// A node's backpointer must describe the node, not just an allocated bucket.
