@@ -368,6 +368,7 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
+          targets: aarch64-apple-darwin
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -392,6 +393,10 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
+      - name: Cross-build the shipped staticlib for aarch64-apple-darwin
+        # The staticlib diskjockey links on macOS. A static library is never linked,
+        # so it builds on Linux without a Mac or Apple's SDK; diskjockey tests it on macOS.
+        run: cargo build --locked --release --lib --target aarch64-apple-darwin
       - name: chore lint
         run: chore lint
       - name: chore test:unit
@@ -408,79 +413,6 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
-  test-darwin:
-    name: test-darwin
-    needs: fixtures
-    # arm64 by label: the tests built for aarch64-apple-darwin run on the host.
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install chore
-        run: scripts/ci-install-chore.sh
-      - name: chore siblings
-        run: chore siblings
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.95.0
-          targets: aarch64-apple-darwin
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-darwin-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: fixtures
-          path: ${{ runner.temp }}
-      - name: Unpack the fixtures
-        run: |
-          set -euo pipefail
-          mkdir -p .vm-share
-          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
-          ls -1 .vm-share/fixtures | wc -l | xargs echo "fixture files:"
-      # The static library a macOS consumer links. A break here would ship
-      # while every Linux job stayed green.
-      - name: Build the shipped staticlib for aarch64-apple-darwin
-        run: cargo build --locked --release --lib --target aarch64-apple-darwin
-      - name: chore test:unit
-        run: chore test:unit
-      - name: chore test:oracle
-        run: chore test:oracle
-      - name: chore cli:install
-        run: chore cli:install
-      - name: The staged tools first on PATH
-        run: scripts/cli-install.sh --print-bin-dir >> "$GITHUB_PATH"
-      - name: chore test:cli
-        run: chore test:cli
-      # The shell guards on the host they most often break on: BSD tools, the
-      # /var symlink, no setsid or timeout (#411, #412). The unit job runs them
-      # on Linux. PyYAML is what the workflow guards read ci.yml with.
-      - name: Python with PyYAML
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install PyYAML
-        run: python -m pip install pyyaml
-      - name: chore test:scripts
-        run: chore test:scripts
-      - name: Keep the tier logs
-        # A tier keeps its whole run in tmp/logs/<tier>.log and prints a
-        # verdict naming it; the runner is thrown away minutes later.
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tier-logs-darwin
-          path: tmp/logs/*.log
-          if-no-files-found: error
-
-  # The whole suite compiled and run INSIDE the harness guest: the path a
-  # Mac takes for the Linux tests. No Rust on the runner; the guest installs
-  # the toolchain rust-toolchain.toml pins.
   suite-in-vm:
     name: suite in the guest (the macOS path)
     needs: fixtures
@@ -667,7 +599,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
+    needs: [changes, unit, lint, fixtures, oracle, test-arm64, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -682,5 +614,5 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPRODUCER: ${{ inputs.reproducer }}
           # Retained as an independently checked declaration for ci-depth.
-          FULL_JOBS: '["fixtures", "oracle", "test-arm64", "test-darwin", "suite-in-vm", "cli", "coverage"]'
+          FULL_JOBS: '["fixtures", "oracle", "test-arm64", "suite-in-vm", "cli", "coverage"]'
         run: python3 scripts/ci-verdict.py

@@ -5,8 +5,9 @@
 # only tests/scripts/support to find them in. Here the support setsid must
 # start a real session and the kernel-oracle guard must pass on the support
 # timeout. The two guards that use setsid take minutes on a Mac, so they are
-# not run a second time here: they run on macOS itself, in the test-darwin job,
-# and each asserts that its tools lead their own sessions.
+# not run a second time here. CI no longer runs them on macOS (the test-darwin
+# job is gone; diskjockey tests the drivers on macOS), so they run on a Mac only
+# when someone runs them there.
 #
 #   bash tests/scripts/host-tools-are-not-assumed.sh
 set -uo pipefail
