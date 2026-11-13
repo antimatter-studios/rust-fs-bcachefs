@@ -1290,6 +1290,17 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 format!("extent {} of inode {} (size {})", k.pos, i.ino, i.size),
             );
         }
+        // The inode's nocow field: an extent of a nocow inode is not judged.
+        let nocow = inode_keys
+            .get(&k.pos.inode)
+            .and_then(|keys| nearest(&chain(k.pos.snapshot), keys))
+            .and_then(|ik| InodeV3Raw::parse(&ik.value).ok())
+            .is_some_and(|raw| raw.field("nocow").unwrap_or(0) != 0);
+        if k.key_type == key_type::EXTENT && !nocow {
+            let want =
+                extent_checksum::option_in_force(i.options.data_checksum, sb.data_checksum_opt());
+            extent_checksum::judge(k, want, &mut r);
+        }
         if k.key_type == key_type::EXTENT {
             let e = match DataExtent::from_key(k) {
                 Ok(e) => e,
@@ -3051,6 +3062,9 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
 
 #[cfg(test)]
 mod backpointer_generation_tests;
+mod extent_checksum;
+#[cfg(test)]
+mod extent_checksum_tests;
 mod never_started;
 #[cfg(test)]
 mod never_started_tests;

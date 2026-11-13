@@ -3224,6 +3224,56 @@ sizes 1 and U32_MAX, and finds the same reason for both. The checker now include
 this btree and key type in its zero-size rule. reconcile_work_phys and the other
 reconcile btrees were not probed, so they are not judged. No GPL source was read.
 
+## An extent checksummed with another type than its options ask for (#614, 2026-11-09)
+
+Nightly differential run 42475842401 (main `8e06f5f`, reference checker 1.39.7)
+judged `default.img` seed 1661200 over the fixtures of CI run 42229991088
+(`fixtures.tar.gz` SHA-256
+`0cb70cf325dec8989fab5694d8c953b619d6ddda2d5d5c86a0f191c95abe5398`, the
+`fixtures-457531769dd4008f` release). The case re-stamps the extents node at byte
+10878976 with three bytes cleared at node offset 0x1763: the checksum type
+nibble and the low 16 bits of the checksum of the crc32 entry of extent
+`2147483653:800:U32_MAX`. The fixture's own listing gives that entry as `csum
+crc32c 0:b0e313ab`; the reference printed it as `csum none 0:b0e30000`. It
+exited 9 with "extent with incorrect/missing reconcile opts", "new reconcile :
+need_rb=data_checksum replicas=1 checksum=crc32c", "data_checksum 0 != 1" and
+`extent_io_opts_not_set`. This checker called the image clean. The emitter
+reproduces the case on the host from its seed. Black-box output only; no
+reference source was read.
+
+What the reference tools make, from their listings of the same fixtures: every
+extent of `default.img`, `aged.img`, `block4k.img` and `lz4.img` is checksummed
+crc32c, of `crc64.img` crc64 and of `xxhash.img` xxhash, the filesystem's
+`data_checksum`; `nocsum.img` (none) has no crc entry at all. On `kernel.img`
+the files whose inodes hold `bi_data_checksum=3` and `=4` (crc64 and xxhash,
+the value plus one, open question 7) have crc64 and xxhash extents, with no
+reconcile entry, and the reference passes the image. `bgcompress.img`'s
+extents that are not yet compressed as `background_compression` asks carry a
+reconcile entry (open question 19). So data is checksummed with the type the
+option in force names, and an extent that is not records the work in a
+reconcile entry.
+
+Guest probes, on copies of the fixtures with one extent changed through the
+writer (`tests/check_oracle_extent_checksum.rs`): the first `[crc32 crc32c,
+ptr]` extent of `default.img` with its checksum type cleared to none, and the
+first `[crc64 crc64, ptr]` extent of `crc64.img` given type crc32c and the
+crc32c of its own data, which verifies. The reference refuses both, exit 9,
+with the same finding: `need_rb=data_checksum`, and "data_checksum 0 != 1" and
+"data_checksum 0 != 2". The second number is the option in force; the first is
+0 in both, whatever the extent's checksum, so it is not the extent's checksum
+type read as an option. The unchanged copies are clean to both checkers.
+
+The checker reports `extent_io_opts_not_set` for an extent with a crc entry
+whose checksum type (none 0, crc32c 5, crc64 6, xxhash 7, read as the options
+none, crc32c, crc64, xxhash) is not the `data_checksum` in force, the inode's
+own field minus one or the filesystem's when it is 0, and which has no
+reconcile entry. Not judged, because no image has shown them: an extent with no
+crc entry, the nonzero crc32c and crc64 types (1 and 2), an unwritten or
+poisoned extent, an inode with `nocow` set, a filesystem-wide nocow option,
+indirect extents in the reflink btree, and the other options a reconcile entry
+records. The regressions are in `tests/check_oracle_extent_checksum.rs` and
+`src/check/extent_checksum_tests.rs`.
+
 ## Confirmation
 
 No GPL source code (kernel `fs/bcachefs`, `bcachefs-tools`, or any crate or
