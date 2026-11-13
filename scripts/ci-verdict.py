@@ -10,7 +10,6 @@ FULL = {
     "fixtures",
     "oracle",
     "test-arm64",
-    "test-darwin",
     "suite-in-vm",
     "cli",
     "coverage",
