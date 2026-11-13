@@ -26,6 +26,8 @@ pub enum Plant {
     Move,
     /// A new key at the entry, holding this counter, beside the fixture's.
     Add(u64),
+    /// Change the first replicas key's counter in place.
+    SetFirst(u64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,6 +225,87 @@ pub const HOLDING_NOTHING: &[Case] = &[
     empty(255, 1, &[0]),
 ];
 
+/// Counters that disagree with the sectors held by the filesystem (#497).
+pub const WRONG_COUNTERS: &[Case] = &[
+    Case {
+        data_type: BTREE,
+        nr_required: 1,
+        devs: &[0],
+        plant: Plant::SetFirst(0),
+        verdict: Some(("accounting mismatch for replicas btree: 1/1 [0]", MISMATCH)),
+    },
+    moved(
+        USER,
+        1,
+        &[0],
+        "accounting mismatch for replicas user: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        CACHED,
+        1,
+        &[0],
+        "accounting mismatch for replicas cached: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        6,
+        1,
+        &[0],
+        "accounting mismatch for replicas parity: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        7,
+        1,
+        &[0],
+        "accounting mismatch for replicas stripe: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        8,
+        1,
+        &[0],
+        "accounting mismatch for replicas need_gc_gens: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        9,
+        1,
+        &[0],
+        "accounting mismatch for replicas need_discard: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        10,
+        1,
+        &[0],
+        "accounting mismatch for replicas unstriped: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        11,
+        1,
+        &[0],
+        "accounting mismatch for replicas multiple: 1/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        USER,
+        0,
+        &[0],
+        "accounting mismatch for replicas user: 0/1 [0]",
+        MISMATCH,
+    ),
+    added(
+        USER,
+        1,
+        &[255],
+        "accounting mismatch for replicas user: 1/1 [255]",
+        MISMATCH,
+    ),
+];
+
 /// The first eight bytes of a replicas entry's position: kind, data type,
 /// nr_devs, nr_required, then the devices.
 fn entry(case: &Case) -> u64 {
@@ -266,6 +349,7 @@ pub fn plant(set: &str, case: &Case) -> (ScratchImage, Bpos) {
             ..first
         }),
         Plant::Add(counter) => keys[0].value = counter.to_le_bytes().to_vec(),
+        Plant::SetFirst(counter) => keys[0].value = counter.to_le_bytes().to_vec(),
     }
     keys.sort_by_key(|k| k.pos);
     let mut writer = Writer::open(FileDevice::open_rw(&image).unwrap()).unwrap();

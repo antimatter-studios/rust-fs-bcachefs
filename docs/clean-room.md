@@ -1945,6 +1945,24 @@ superblock without replicas_v0. The writer's raw insert does not plant into a
 fixture shut down uncleanly, so these verdicts are unmeasured on one; the rules
 apply there too, and the unclean fixtures' own keys give no finding.
 
+### Replicas counters against held sectors (S3, #497)
+
+The black-box guest probes recorded in issue #497 used reference checker
+1.39.7 on copies of the reference-made `default.img`. Setting the first
+`replicas btree: 1/1 [0]` counter to zero produced `got 0, should be 1408`.
+Moving that counter to `replicas user: 1/1 [0]` produced `got 1408, should be
+14809`, with the absent btree entry reported as `got 0, should be 1408`.
+Adding a counter of eight at `cached`, `parity`, `stripe`, `need_gc_gens`,
+`need_discard`, `unstriped` or `multiple` produced `got 8, should be 0`.
+The same eight at `user: 0/1 [0]` or `user: 1/1 [255]` also produced
+`got 8, should be 0`. The reference printed `accounting mismatch for
+replicas` in each case and exited 9. No reference source was read.
+
+For the clean single-device fixtures, the allocation btree's dirty-sector
+totals by data type are an independent on-disk measure of these expected
+counters. Comparing them is limited to the single-device, clean state whose
+allocation accounting this checker already validates (#163).
+
 ### subvolume_children entries and their parent (S3, #219, #382)
 
 Our own walker reads two `set` keys in `kernel.img`'s subvolume_children

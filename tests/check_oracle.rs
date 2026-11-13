@@ -3990,3 +3990,9 @@ fn both_checkers_reject_a_replicas_key_with_an_unknown_data_type() {
 fn both_checkers_accept_a_replicas_key_holding_nothing() {
     both_checkers_judge_replicas_accounting_keys(replicas_accounting::HOLDING_NOTHING);
 }
+
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_replicas_counters_that_disagree_with_allocations() {
+    both_checkers_judge_replicas_accounting_keys(replicas_accounting::WRONG_COUNTERS);
+}

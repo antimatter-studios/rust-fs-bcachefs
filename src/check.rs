@@ -382,6 +382,9 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         }
     }
     check_replicas_entries(&trees, &sb, &mut r);
+    if sb.is_clean() {
+        check_replicas_counters(&trees, &sb, &mut r);
+    }
     // A btree's own accounting key holds its nodes' sectors, its nodes and
     // its interior nodes (#381). Judged for logged_ops, the btree run
     // 39764355709 caught, and like the other allocation figures only on a
@@ -3055,6 +3058,79 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
             r.add(
                 "accounting_mismatch",
                 format!("replicas accounting key {at} holds data of unknown type {data_type}"),
+            );
+        }
+    }
+}
+
+/// For a clean one-device filesystem, alloc_v4 keys independently record the
+/// occupied sectors by data type. The reference's black-box verdicts for
+/// changed replicas counters (#497) agree with these totals. Recovery can
+/// leave allocation metadata stale, so compare only a clean filesystem.
+fn check_replicas_counters(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &mut Report) {
+    if sb.nr_devices != 1 {
+        return;
+    }
+    let (Some(alloc), Some(accounting)) = (trees.get(&btree_id::ALLOC), trees.get(&ACCOUNTING))
+    else {
+        return;
+    };
+    let Some(first_bucket) = sb
+        .members()
+        .ok()
+        .and_then(|members| members.get(sb.dev_idx as usize).map(|m| m.first_bucket))
+    else {
+        return;
+    };
+    let mut expected: BTreeMap<u8, u64> = BTreeMap::new();
+    for k in alloc.iter().filter(|k| {
+        k.key_type == key_type::ALLOC_V4
+            && k.pos.inode == u64::from(sb.dev_idx)
+            && k.pos.offset >= u64::from(first_bucket)
+    }) {
+        if let (Some(&data_type), Some(word)) = (
+            k.value.get(ALLOC_DATA_TYPE),
+            k.value.get(ALLOC_DIRTY_SECTORS..ALLOC_DIRTY_SECTORS + 8),
+        ) {
+            *expected.entry(data_type).or_default() += le64(word, 0) & 0xffff_ffff;
+        }
+    }
+    for k in accounting
+        .iter()
+        .filter(|k| k.key_type == KEY_ACCOUNTING && k.pos.inode >> 56 == ACCT_REPLICAS)
+    {
+        let bytes = accounting_position_bytes(k);
+        if replicas_entry_refused(&bytes).is_some() {
+            continue;
+        }
+        let (data_type, nr_required) = (bytes[1], bytes[3]);
+        let devs = replicas_entry_devs(&bytes);
+        // The read-time checks own missing devices and unmarked entries.
+        // An unknown data type already receives the same mismatch kind there.
+        if data_type >= REPLICAS_UNKNOWN_FROM
+            || devs
+                .iter()
+                .any(|&d| d != sb.dev_idx && d != REPLICAS_NO_DEVICE)
+            || (data_type <= REPLICAS_LISTED_UP_TO
+                && !replicas_v0_entries(sb).is_some_and(|entries| {
+                    nr_required == 1 && entries.contains(&(data_type, devs))
+                }))
+        {
+            continue;
+        }
+        let got = k.value.get(..8).map(|word| le64(word, 0)).unwrap_or(0);
+        let want = if nr_required == 1 && devs == [sb.dev_idx] {
+            expected.get(&data_type).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        if got != want {
+            r.add(
+                "accounting_mismatch",
+                format!(
+                    "replicas accounting key {}: counter says {got} sectors, allocations hold {want}",
+                    k.pos
+                ),
             );
         }
     }
