@@ -11,7 +11,7 @@ mod replicas_accounting;
 use fs_bcachefs::check::check;
 use fs_core::FileDevice;
 use replicas_accounting::{
-    plant, Case, DEVICES_AND_COPIES, HOLDING_NOTHING, SETS, UNKNOWN_DATA_TYPES,
+    plant, Case, DEVICES_AND_COPIES, HOLDING_NOTHING, SETS, UNKNOWN_DATA_TYPES, WRONG_COUNTERS,
 };
 
 fn mismatches(cases: &[Case]) -> Vec<String> {
@@ -49,5 +49,11 @@ fn a_replicas_key_with_an_unknown_data_type_is_reported() {
 #[test]
 fn a_replicas_key_holding_nothing_is_not_judged() {
     let found = mismatches(HOLDING_NOTHING);
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn replicas_counters_disagreeing_with_allocations_are_reported() {
+    let found = mismatches(WRONG_COUNTERS);
     assert!(found.is_empty(), "{found:#?}");
 }
