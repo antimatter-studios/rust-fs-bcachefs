@@ -385,7 +385,7 @@ chore test            # unit then oracle, exactly as CI runs them
 
 A tier prints a verdict and writes everything it saw to `tmp/logs/<tier>.log`.
 A fixture test with no fixture **fails**, naming `chore fixtures`; nothing skips.
-Never leave the VM running: `chore vm:status`, `chore vm:down`.
+When you are done, `chore vm:down`: it stops the shared guest when nobody is using it.
 
 ## Quick pull request checks, full merge-queue validation
 
