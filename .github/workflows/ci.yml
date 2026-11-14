@@ -261,12 +261,12 @@ jobs:
       - name: chore fixtures
         if: steps.source.outputs.kept != 'true'
         run: chore fixtures
-      - name: chore vm:down (no run is still using the guest)
+      - name: Stop the shared guest (no run is still using it)
         # The shared guest stays up after a run (harness v0.7.0). `vm:down`
         # stops it only when no suite is using it, so a guest still up
         # afterwards means a run leaked its session.
         if: steps.source.outputs.kept != 'true'
-        run: chore vm:down && ! chore vm:status
+        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
       - name: Pack the fixtures, keeping their holes
         if: steps.source.outputs.kept != 'true'
         run: |
@@ -524,11 +524,11 @@ jobs:
           name: tier-logs-suite-in-vm
           path: tmp/logs/*.log
           if-no-files-found: error
-      - name: chore vm:down (no run is still using the guest)
+      - name: Stop the shared guest (no run is still using it)
         # The shared guest stays up after a run (harness v0.7.0). `vm:down`
         # stops it only when no suite is using it, so a guest still up
         # afterwards means a run leaked its session.
-        run: chore vm:down && ! chore vm:status
+        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
 
   cli:
     name: cli (the installed tools, on PATH)

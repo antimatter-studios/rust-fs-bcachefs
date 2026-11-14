@@ -47,7 +47,7 @@ jobs:
         # The shared guest stays up after a run (harness v0.7.0); `vm:down`
         # stops it only when no suite is using it.
         if: always()
-        run: chore vm:down && ! chore vm:status
+        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
       - name: Keep native transcripts
         if: always()
         uses: actions/upload-artifact@v4
