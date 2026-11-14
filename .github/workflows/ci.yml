@@ -172,6 +172,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Test images have scoped owners
         run: python3 scripts/check-test-images.py
       - name: Install chore
@@ -221,6 +222,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -357,6 +359,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -579,6 +582,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -654,6 +658,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -681,6 +686,7 @@ jobs:
       - name: Build tools for the self-hosted runner
         run: |
           command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
+          python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y python3-yaml; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
