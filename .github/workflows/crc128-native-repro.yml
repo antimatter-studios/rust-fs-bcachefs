@@ -43,9 +43,11 @@ jobs:
           key: ${{ steps.vm-host.outputs.box-cache-key }}
       - name: Reproduce only the native crc128 overwrite
         run: nice -n 10 bash scripts/repro-crc128-overwrite.sh
-      - name: The harness session stopped its VM
+      - name: No run is still using the guest
+        # The shared guest stays up after a run (harness v0.7.0); `vm:down`
+        # stops it only when no suite is using it.
         if: always()
-        run: '! chore vm:status'
+        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
       - name: Keep native transcripts
         if: always()
         uses: actions/upload-artifact@v4
