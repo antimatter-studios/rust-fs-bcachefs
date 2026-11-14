@@ -648,12 +648,12 @@ jobs:
       OUTPUT_BUDGET_FAIL_TAIL: "200"
     steps:
       - uses: actions/checkout@v4
-      - name: Build tools for the self-hosted runner
-        run: |
-          command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
         with:
           # The baseline before publication is main, so it must be fetched.
           fetch-depth: 0
+      - name: Build tools for the self-hosted runner
+        run: |
+          command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y build-essential; }
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
