@@ -85,11 +85,15 @@ die() {
 
 # The lines of a two-space-indented block of a YAML file: its `  NAME:` line and
 # what is indented under it, up to the next line indented two spaces.
+#
+# awk reads to the end rather than `exit` at the block's end: an early exit can
+# close the pipe while `git show` is still writing, git dies of SIGPIPE, and under
+# `set -o pipefail` the caller fails silently (unit, on some hosted runners).
 block() {
     git show "$2:$1" | awk -v start="  $3:" '
+        done { next }
         $0 == start { inside = 1; print; next }
-        inside && /^  [^ ]/ { exit }
-        inside && /^[^ ]/ { exit }
+        inside && (/^  [^ ]/ || /^[^ ]/) { inside = 0; done = 1; next }
         inside { print }'
 }
 
@@ -97,7 +101,7 @@ manifest() {
     local tree="$1" file listed text
     git rev-parse --verify --quiet "$tree^{tree}" >/dev/null || die "$tree is not a tree"
     # The tree's own generation, so a pull request's raise reads as a change.
-    git show "$tree:scripts/fixture-key.sh" | awk -F= '$1 == "GENERATION" { print "generation " $2; exit }'
+    git show "$tree:scripts/fixture-key.sh" | awk -F= '!found && $1 == "GENERATION" { print "generation " $2; found = 1 }'
     listed="$(git ls-tree "$tree" -- "${FILES[@]}")"
     for file in "${FILES[@]}"; do
         printf '%s\n' "$listed" | awk -F '\t' -v f="$file" '$2 == f { found = 1 } END { exit !found }' ||
