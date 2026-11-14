@@ -139,23 +139,24 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           SENDER: ${{ github.event.sender.login }}
           GH_ACTOR: ${{ github.actor }}
-          CODE: ${{ steps.c.outputs.code == 'true' || steps.k.outputs.changed == 'true' }}
         run: |
           set -euo pipefail
           JOBS="unit lint semver"
-          [ "$CODE" != true ] || JOBS="$JOBS oracle cli coverage"
+          # oracle, cli and coverage also need `fixtures` (a long VM job), so a pick made here would
+          # expire before they start; picking at the end of `fixtures` would change the fixture key
+          # (scripts/fixture-key.sh hashes that job). They stay on GitHub-hosted runners.
           ours=true
           for who in "$ACTOR" "$GH_ACTOR" "$SENDER" "$AUTHOR"; do
             [ -z "$who" ] || [ "$who" = christhomas ] || ours=false
           done
           pick() {
-            $ours || { echo ubuntu-latest; return; }
+            $ours || { echo ubuntu-24.04; return; }
             r=$(curl -fsS --max-time 10 --get https://runner-gate.antimatter-studios.com/pick \
                   --data-urlencode "org=$ORG" --data-urlencode prefer=antimatter-vps-linux-x64 \
-                  --data-urlencode fallback=ubuntu-latest --data-urlencode "actor=$ACTOR" --data-urlencode "author=$AUTHOR" \
+                  --data-urlencode fallback=ubuntu-24.04 --data-urlencode "actor=$ACTOR" --data-urlencode "author=$AUTHOR" \
                   --data-urlencode "run=${{ github.run_id }}" --data-urlencode "attempt=${{ github.run_attempt }}" \
-                  --data-urlencode "job=$1") || r=ubuntu-latest
-            case "$r" in antimatter-vps-linux-x64|ubuntu-latest) echo "$r" ;; *) echo ubuntu-latest ;; esac
+                  --data-urlencode "job=$1") || r=ubuntu-24.04
+            case "$r" in antimatter-vps-linux-x64|ubuntu-24.04) echo "$r" ;; *) echo ubuntu-24.04 ;; esac
           }
           runners='{}'
           for job in $JOBS; do runners=$(jq -c --arg j "$job" --arg r "$(pick "$job")" '. + {($j): $r}' <<<"$runners"); done
@@ -166,7 +167,7 @@ jobs:
     name: unit (no tools, no fixtures)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['unit'] || 'ubuntu-latest' }}
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['unit'] || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build tools for the self-hosted runner
@@ -217,7 +218,7 @@ jobs:
     name: lint (fmt, clippy, family-check, agents-core, ci-gate, licences)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['lint'] || 'ubuntu-latest' }}
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['lint'] || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build tools for the self-hosted runner
@@ -354,7 +355,7 @@ jobs:
   oracle:
     name: oracle (fixtures vs the reference tools' record)
     needs: [changes, fixtures]
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['oracle'] || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -578,7 +579,7 @@ jobs:
   cli:
     name: cli (the installed tools, on PATH)
     needs: [changes, fixtures]
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['cli'] || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -648,7 +649,7 @@ jobs:
     name: semver (public API against its baseline)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
     needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['semver'] || 'ubuntu-latest' }}
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['semver'] || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.50.0"
@@ -684,7 +685,7 @@ jobs:
   coverage:
     name: coverage (unit and oracle tiers)
     needs: [changes, fixtures]
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['coverage'] || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
