@@ -22,6 +22,7 @@ const VERSION: usize = 0x10;
 const VERSION_MIN: usize = 0x12;
 const INCOMPAT_IN_USE: usize = 0xbc;
 const FEATURES: usize = 0xd0;
+const FIELD_JOURNAL_V2: u32 = 9;
 /// What the formatter sets in the first feature word of a started image.
 const FEATURES_FORMATTED: u64 = 0xfba80;
 
@@ -264,11 +265,15 @@ pub const CASES: &[Case] = &[
     layout_at!("layout size bits 0", true, 0x101, 0),
     layout_at!("layout size bits 1", true, 0x101, 1),
     layout_at!("layout size bits 11", false, 0x101, 11),
+    layout_at!("layout size bits 5", true, 0x101, 5),
+    layout_at!("layout size bits 10", true, 0x101, 10),
     layout_at!("layout size bits 12", true, 0x101, 12),
     layout_at!("layout size bits 19", true, 0x101, 19),
     layout_at!("layout size bits 20", true, 0x101, 20),
     layout_at!("layout size bits 255", true, 0x101, 255),
     layout_at!("layout of no copies", true, 0x102, 0),
+    layout_at!("layout of 1 copy", true, 0x102, 1),
+    layout_at!("layout of 2 copies", true, 0x102, 2),
     layout_at!("layout of 3 copies", false, 0x102, 3),
     layout_at!("layout of 4 copies", true, 0x102, 4),
     layout_at!("layout of 61 copies", true, 0x102, 61),
@@ -312,6 +317,9 @@ pub const CASES: &[Case] = &[
     opt!("data checksum 3", false, 0, 44, 4, 3),
     opt!("data checksum 4", true, 0, 44, 4, 4),
     opt!("metadata replicas 0", true, 0, 48, 4, 0),
+    opt!("metadata replicas 2", true, 0, 48, 4, 2),
+    opt!("metadata replicas 3", true, 0, 48, 4, 3),
+    opt!("metadata replicas 4", true, 0, 48, 4, 4),
     opt!("metadata replicas 5", true, 0, 48, 4, 5),
     opt!("data replicas 0", true, 0, 52, 4, 0),
     opt!("data replicas 2", false, 0, 52, 4, 2),
@@ -397,6 +405,9 @@ pub const CASES: &[Case] = &[
     all("no members_v2 field", true, |b| {
         drop_fields(b, &[FIELD_MEMBERS_V2])
     }),
+    all("started superblock has no journal_v2 field", true, |b| {
+        drop_fields(b, &[FIELD_JOURNAL_V2])
+    }),
     all("a field of no size", true, |b| {
         let at = field_at(b, FIELD_EXT);
         u32_at(b, at, 0);
@@ -479,16 +490,9 @@ pub const CASES: &[Case] = &[
     }),
 ];
 
-/// Reported by the reference and not by this checker, whose verdict the guest
-/// does not hold: the superblock itself is accepted and what reports them is a
-/// pass over the filesystem finding what they imply, a bucket holding a copy
-/// the layout no longer names (#553), a bitmap that names no bucket of a node
-/// (#554), extents written with other options (#555).
+/// Reported by the reference only after it accepts the superblock: a bitmap
+/// that names no bucket of a node, or members_v1 in place of members_v2 (#554).
 pub const REFERENCE_SAYS_MORE: &[Case] = &[
-    layout_at!("layout of 1 copy", true, 0x102, 1),
-    layout_at!("layout of 2 copies", true, 0x102, 2),
-    layout_at!("layout size bits 5", true, 0x101, 5),
-    layout_at!("layout size bits 10", true, 0x101, 10),
     shift!("bitmap shift 0", true, 0),
     shift!("bitmap shift 57", true, 57),
     all("members_v1 in place of members_v2", true, |b| {
@@ -498,9 +502,6 @@ pub const REFERENCE_SAYS_MORE: &[Case] = &[
         drop_fields(b, &[FIELD_MEMBERS_V2]);
         add_field(b, FIELD_MEMBERS_V1, &body);
     }),
-    opt!("metadata replicas 2", true, 0, 48, 4, 2),
-    opt!("metadata replicas 3", true, 0, 48, 4, 3),
-    opt!("metadata replicas 4", true, 0, 48, 4, 4),
 ];
 
 /// The edited copies of a started image, as byte ranges: `read` gives `len`
