@@ -62,6 +62,21 @@ while a guest shared with a `check_oracle` run took one to 59.53 s, with no dead
 in 464 runs. A minute left nothing in hand there. A run that does not end costs one
 minute more, and these are rare.
 
+### One case has ten minutes (#636)
+
+`both_checkers_report_an_unlinked_root_beside_a_live_claimant`, an unlinked root
+subvolume beside a live copy claiming its snapshot, reached the two-minute deadline
+four times in most merge-queue runs, and on unchanged `main` (run 43723455189, at
+374ec09). Under a 900 s deadline in run 43737346548, its four images took 31.2,
+160.7, 58.7 and 28.1 s and the case passed, while every other reference run in the
+suite took under five seconds. So in CI the reference is slow on these images, not
+stopped, and one of them needs more than two minutes on every run.
+
+That case alone runs under `SLOW_WRAPPER`, ten minutes, 3.7 times the longest run
+measured. Nothing else changes: a run that does not end still reaches the deadline
+`RUNS_PER_IMAGE` times and fails with counts only, and every other case keeps two
+minutes.
+
 ## What stays private
 
 A hang is a finding about the reference, under **A crash in the reference stays

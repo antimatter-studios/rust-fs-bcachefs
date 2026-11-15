@@ -35,7 +35,16 @@ const CLAIMED: &str = "snapshot_claimed_twice";
 const REFERENCE_SAYS: &str = "which it backrefs, and also by";
 
 fn reference(image: &Path) -> (i32, String) {
-    let out = common::reference_runs::output(&["fsck", "-n"], image);
+    judged(common::reference_runs::output(&["fsck", "-n"], image))
+}
+
+/// [`reference`] under the longer deadline: the reference is slow, not stopped,
+/// on an unlinked root beside a live claimant (#636, `SLOW_WRAPPER`).
+fn slow_reference(image: &Path) -> (i32, String) {
+    judged(common::reference_runs::slow_output(&["fsck", "-n"], image))
+}
+
+fn judged(out: std::process::Output) -> (i32, String) {
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     let faulted = [
@@ -197,7 +206,7 @@ fn both_checkers_report_an_unlinked_root_beside_a_live_claimant() {
             set,
             vec![with_state(&root, UNLINKED), copy_at(&root, UNUSED, LIVE)],
         );
-        let (status, text) = reference(&image);
+        let (status, text) = slow_reference(&image);
         assert_eq!(status, 9, "{set}: {text}");
         let kinds = kinds(&image);
         assert!(kinds.contains(&CLAIMED), "{set}: {kinds:?}");
