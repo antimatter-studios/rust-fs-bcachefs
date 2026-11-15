@@ -845,6 +845,58 @@ fn inode_v3_in_logged_ops_is_rejected_by_both_checkers() {
     );
 }
 
+/// Differential run 43591206493 changed the logged_ops key at 1:2:0 into a
+/// logged_op_truncate. Its 16-byte value is shorter than the reference's
+/// 24-byte minimum.
+#[test]
+fn a_short_logged_op_truncate_value_is_rejected_by_both_checkers() {
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: this runs inside the harness guest (`chore test:vm`)"
+    );
+    let source = fixture("kernel.img");
+    let dev = FileDevice::open(&source).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let mut key = btree::walk(&dev, &sb, LOGGED_OPS)
+        .unwrap()
+        .into_iter()
+        .find(|k| k.pos.inode == 1 && k.pos.offset == 2 && k.pos.snapshot == 0)
+        .expect("kernel.img holds the logged_ops key from differential run 43591206493");
+    assert_eq!(key.value.len(), 16, "the recorded mutation keeps its value");
+    key.key_type = KEY_LOGGED_OP_TRUNCATE;
+    let p = key.pos.to_string();
+
+    let dir = common::ScratchDir::new("check-logged-ops-truncate-value-size");
+    let img = dir.join("kernel-43591206493.img");
+    let bytes = std::fs::read(source).unwrap();
+    let (text, report) = match judge(&bytes, &img, true, LOGGED_OPS, &key).unwrap() {
+        Judged::Seen(text, report) => (text, report),
+        Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let (rejected, reason) = verdict(&lines, &p, &[]);
+    assert!(
+        rejected,
+        "the reference did not reject the key for its value size: {reason:?}\n{text}"
+    );
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|s| s.contains("bad val size (16 < 24)")),
+        "the reference refused the key for another reason: {reason:?}"
+    );
+    assert!(
+        report.problems.iter().any(|problem| {
+            problem.kind == "bkey_val_size_too_small"
+                && problem
+                    .detail
+                    .contains(&format!("btree logged_ops: logged_op_truncate {p}"))
+        }),
+        "the checker did not report the short value: {:?}",
+        report.problems
+    );
+}
+
 /// What the reference printed for keys planted into reconcile_work_phys in
 /// run 38722144899 (`vm.log` in its tier-logs-suite-in-vm artifact), on an
 /// image it judged without crashing.
