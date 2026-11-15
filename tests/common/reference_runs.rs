@@ -22,6 +22,15 @@ pub const RUNS_PER_IMAGE: usize = 4;
 pub const WRAPPER: &str =
     "ulimit -c 0; export LC_ALL=C; exec timeout --verbose --kill-after=5 120 bcachefs-ref \"$@\"";
 
+/// Ten minutes, for the one case the reference is measured to be slow on in CI
+/// rather than stopped: an unlinked root subvolume beside a live claimant
+/// (#636). Its four images took 31.2, 160.7, 58.7 and 28.1 s under a 900 s
+/// deadline in run 43737346548, where every other reference run in the suite
+/// took under five seconds. A run that does not end still reaches this deadline
+/// `RUNS_PER_IMAGE` times and fails (docs/oracle-reference-failures.md).
+pub const SLOW_WRAPPER: &str =
+    "ulimit -c 0; export LC_ALL=C; exec timeout --verbose --kill-after=5 600 bcachefs-ref \"$@\"";
+
 static RETRIED: AtomicUsize = AtomicUsize::new(0);
 
 fn reached_deadline(run: &Output) -> bool {
@@ -59,13 +68,23 @@ pub fn finished(mut run: impl FnMut() -> Output) -> Output {
 
 /// The reference tool's finished run with these arguments, then the image.
 pub fn output(args: &[&str], image: &Path) -> Output {
+    output_under(WRAPPER, args, image)
+}
+
+/// [`output`], under [`SLOW_WRAPPER`]'s deadline: only for a case measured to
+/// be slow, never to make a hang pass.
+pub fn slow_output(args: &[&str], image: &Path) -> Output {
+    output_under(SLOW_WRAPPER, args, image)
+}
+
+fn output_under(wrapper: &str, args: &[&str], image: &Path) -> Output {
     assert!(
         Path::new("/usr/local/bin/bcachefs-ref").exists(),
         "the reference tools are required: run `chore test:vm`"
     );
     finished(|| {
         Command::new("sh")
-            .args(["-c", WRAPPER, "reference"])
+            .args(["-c", wrapper, "reference"])
             .args(args)
             .arg(image)
             .output()
