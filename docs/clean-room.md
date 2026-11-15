@@ -3117,12 +3117,24 @@ that mark cleared as well the reference exits 12 after a pass over the filesyste
 The first feature word's bits 22 and 23 are accepted here, though not on an image
 nothing has started.
 
-**What the reference finds past a superblock it accepts.** These it reports with a
-pass over the filesystem, exit 9, and this checker does not yet: a layout of 1 or 2
-copies or of size bits 5 or 10, under `freespace_key_wrong` (#553); a btree bitmap
-shift other than the formatter's below 58, and `members_v1` in place of
-`members_v2`, under `btree_bitmap_not_marked` (#554); and `metadata_replicas` of
-2, 3 or 4 on one device, under `extent_io_opts_not_set` (#555).
+**Findings reported after the reference accepts a superblock.** A layout of 1 or 2
+copies or of size bits 5 or 10 is reported by the reference under
+`freespace_key_wrong` (#553). This checker accounts for the sectors the layout
+assigns to each superblock bucket and reports when those counts disagree with the
+bucket allocation records (`src/check/bucket_sectors.rs`; the cases are in
+`tests/common/started_superblock.rs`). `metadata_replicas` of 2, 3 or 4 on one
+device is reported by the reference under `extent_io_opts_not_set` (#555); because
+this checker currently reads one-device images only, a started superblock bounds
+that value to one. The btree bitmap shift below 58 and `members_v1` in place of
+`members_v2` remain findings reported after the reference's filesystem pass under
+`btree_bitmap_not_marked` (#554).
+
+**A started superblock needs its journal field.** The reference formatter at
+version 1.38 with only the started bit set produces a superblock without
+`journal_v2`. Read tools refuse the image as not implemented, but the reference
+checker reports damage with exit 1 (#545). The started-superblock check now reports
+the missing field before attempting journal replay, keeping the result a damage
+verdict instead of an unrelated unsupported-operation error.
 
 **The agreement measured.** The 211 rows in `tests/common/started_superblock.rs`
 were each run 60 times, four at once: the reference kept its verdict on every row,
