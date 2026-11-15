@@ -371,7 +371,7 @@ check(len(source) == 1 and "kept-fixtures.sh select" in source[0]["run"], "the f
 fresh = source[0].get("env", {}).get("FRESH", "") if source else ""
 check("inputs.fresh_fixtures" in fresh and "refs/tags/" in fresh, f"a tag or a dispatch does not build fresh: {fresh}")
 names = [s.get("name", s.get("uses", "")) for s in steps]
-for wanted in ["chore fixtures", "chore vm:status (the VM is down again)", "Pack the fixtures, keeping their holes",
+for wanted in ["chore fixtures", "Stop the shared guest (no run is still using it)", "Pack the fixtures, keeping their holes",
                "KVM, QEMU and Vagrant", "Install chore", "chore siblings", "Install Rust", "Cache the Vagrant box"]:
     match = [s for s in steps if s.get("name") == wanted]
     check(len(match) == 1 and match[0].get("if") == "steps.source.outputs.kept != 'true'",
