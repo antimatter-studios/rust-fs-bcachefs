@@ -6,6 +6,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 python3 - "$REPO/.github/workflows/key-fields-focused.yml" <<'PY' || exit 1
 import sys
+from pathlib import Path
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
@@ -44,5 +45,9 @@ require("tests/default74_native_proof.py" not in commands,
         "the focused workflow still binds the proof to expired default-74 fixture bytes")
 require("workflow_dispatch" in str(workflow.get("on", workflow.get(True, {}))),
         "the focused workflow lost its manual dispatch route")
+guest_script = (Path(sys.argv[1]).resolve().parents[2] / "scripts/guest-key-fields-focused.sh").read_text(encoding="utf-8")
+case_loop = guest_script.split("for case_name in", 1)[-1].split("done", 1)[0]
+require("scripts/test-scratch-run.sh cargo test --locked --features write --test write_oracle" in case_loop,
+        "the guest focused workflow does not bind reference-backed test scratch")
 print("key-fields-focused-uses-kept-assets: all checks passed")
 PY
