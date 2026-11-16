@@ -549,6 +549,22 @@ mod tests {
         assert!(varint(&[0xff, 1]).is_err());
         assert!(varint(&[0x03]).is_err());
     }
+
+    #[test]
+    fn inode_v3_ignores_bytes_after_the_declared_fields() {
+        let mut no_fields = vec![0; 56];
+        no_fields[48..].copy_from_slice(&[0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02]);
+        let parsed = InodeV3Raw::parse(&no_fields).unwrap();
+        assert!(parsed.varints.is_empty());
+
+        let mut nonzero_padding = vec![0; 56];
+        nonzero_padding[16..24].copy_from_slice(&(1u64 << 24).to_le_bytes());
+        nonzero_padding[48] = 0x04;
+        nonzero_padding[49] = 0x02;
+        nonzero_padding[55] = 0x55;
+        let parsed = InodeV3Raw::parse(&nonzero_padding).unwrap();
+        assert_eq!(parsed.varints, [2, 1]);
+    }
 }
 
 /// Encode a varint: the inverse of [`varint`]. The shortest length `n` (1 to
@@ -566,10 +582,10 @@ pub fn varint_encode(v: u64, out: &mut Vec<u8>) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// An `inode_v3` value as stored, every field kept: the fixed part, then
-/// the varints exactly as many as were stored (each time is two varints).
-/// Decoding then encoding gives back the same bytes (checked against every
-/// inode of every fixture).
+/// The fixed part and the varints declared by an `inode_v3` value. Bytes
+/// after those fields are ignored, as the reference checker accepts them
+/// (#435). Decoding then encoding gives back the same bytes for every inode
+/// of every fixture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InodeV3Raw {
     pub journal_seq: u64,
@@ -657,11 +673,6 @@ impl InodeV3Raw {
             let (val, len) = varint(&v[p.min(v.len())..])?;
             varints.push(val);
             p += len;
-        }
-        if v[p..].iter().any(|&b| b != 0) {
-            return Err(Error::Corrupt(
-                "inode_v3 has bytes after its last field".into(),
-            ));
         }
         Ok(InodeV3Raw {
             journal_seq: le64(v, 0),

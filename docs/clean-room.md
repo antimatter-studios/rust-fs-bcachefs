@@ -3473,16 +3473,25 @@ classes the baseline did not hold. Each reproduces on the host from its seed:
 the emitter's verdicts match the report. Black-box output only; no reference
 source was read.
 
-**An inode_v3 value's tail (#435), not settled.** Seed 1661113 sets value
-bytes 96..104 of the inode of a file in `default.img`, `block4k.img` and
-`lz4.img` to the word 1. The varints of its 21 fields then end at byte 102,
-with `dir` and `dir_offset` 0, and the old bytes of `dir_offset` stay behind
-them. The reference checker calls all three clean (exit 0), and its lister
-prints `bi_dir=0` and `bi_dir_offset=0` for that inode. This checker refuses
-the value as "inode_v3 has bytes after its last field", and still does. Whether
-bytes after the last field make an inode invalid is not settled by the reference
-checker's exit status alone. Accepting them would make this checker call more
-images clean, so it waits on the kernel module's own verdict (#435).
+**An inode_v3 value's tail (#435).** Seed 1661113 sets value bytes 96..104 of
+the inode of a file in `default.img`, `block4k.img` and `lz4.img` to the word
+1. The varints of its 21 fields then end at byte 102, with `dir` and
+`dir_offset` 0, and the old bytes of `dir_offset` stay behind them. The
+reference checker calls all three clean (exit 0), and its lister prints
+`bi_dir=0` and `bi_dir_offset=0` for that inode.
+
+Guest regressions for #435 also clear the field count on the inode of
+`/many/file-0200.txt` in a copy of `default.img`, keeping its original value
+bytes, and append eight bytes ending in `0x55` to that file inode's value,
+adjusting its btree byte counter by eight. The test checks that every declared
+inode field stays unchanged. Replacing the original final byte is not a
+portable tail mutation: fresh fixture builds can use it for a declared field.
+The reference checker 1.39.7 calls both images clean. This checker now reads only
+the declared varints and ignores all remaining value bytes, including nonzero
+padding. `tests/check_oracle.rs` repeats both mutations against fresh copies
+and requires both checkers to call them clean. The kernel module's verdict on
+these tail mutations has not been measured; this support is limited to the
+observed reference-checker behavior.
 
 **A per-snapshot counter's btree.** Seed 1661092 copies `kernel-rootsnap.img`'s
 accounting key at `0x05fdffffff000000:0:0` (snapshot 4294967293, extents) one
