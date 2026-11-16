@@ -220,10 +220,10 @@ tasks:
       # to Cargo.lock printed 322 lines against the old 300 with every test
       # passing (#131), and a merge queue group that moves the lockfile would
       # be refused the same way.
-      - 'cargo test --locked --release --features write --test "oracle_*" --test capi --no-run --quiet'
+      - 'CARGO_BUILD_JOBS=2 cargo test --locked --features write --test "oracle_*" --test capi --no-run --quiet'
       # MEASURED 2026-11-03 (#507): 293 passing cases, 721 lines / 38,410
       # bytes, including the new four-case binary. Keep room for another binary.
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 760 45000 -- scripts/test-scratch-run.sh cargo test --locked --release --features write --test "oracle_*" --test capi'
+      - 'CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 760 45000 -- scripts/test-scratch-run.sh cargo test --locked --features write --test "oracle_*" --test capi'
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
