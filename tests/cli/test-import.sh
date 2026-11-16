@@ -28,6 +28,7 @@ check 'import help succeeds without opening an image' test $? -eq 0
 check 'help has an import example' grep -q 'fs.bcachefs disk.img import hello.txt /hello.txt' "$SANDBOX/help"
 check 'help documents replacement' grep -q -- '--replace' "$SANDBOX/help"
 check 'help documents verification' grep -q -- '--verify' "$SANDBOX/help"
+check 'help documents the one-entry replacement limit' grep -q 'one journal entry' "$SANDBOX/help"
 
 img="$SANDBOX/base.img"
 cp "$base" "$img"

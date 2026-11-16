@@ -884,6 +884,40 @@ fn pattern(n: usize, seed: u8) -> Vec<u8> {
     (0..n).map(|i| (i % 251) as u8 ^ seed).collect()
 }
 
+/// A 64 MiB file written in 1 MiB positioned calls is read back by the
+/// reference mount with the source's SHA-256, and the reference checker
+/// passes the image (#441).
+#[cfg(feature = "cli")]
+#[test]
+fn positioned_writes_of_a_64_mib_file_match_the_reference() {
+    let img = scratch("large.img", "write-at-64m");
+    let data = pattern(64 << 20, 113);
+    let dir = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/wide")
+        .unwrap();
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let ino = writer
+        .create_file(dir, b"positioned-64m", b"", 0o644)
+        .unwrap();
+    for (n, chunk) in data.chunks(1 << 20).enumerate() {
+        writer.write_at(ino, (n * (1 << 20)) as u64, chunk).unwrap();
+    }
+    drop(writer);
+
+    assert_fsck_clean(&img);
+    let source_sha = sha256_hex(&data);
+    with_reference_mount(&img, |mount| {
+        let actual = std::fs::read(mount.join("wide/positioned-64m")).unwrap();
+        assert_eq!(
+            sha256_hex(&actual),
+            source_sha,
+            "the reference mount's SHA-256"
+        );
+    });
+    assert_fsck_clean(&img);
+}
+
 /// Files too large to store inline: whole free buckets, checksummed
 /// extents, alloc, freespace, backpointer, lru and accounting keys -- on
 /// the write-study base, which has no lru btree yet (its root is made), and
@@ -2207,16 +2241,16 @@ fn cli_import_preserves_links_and_times_as_the_reference_does() {
     assert_fsck_clean(&img);
 }
 
-/// One-file imports in a row into a copy of the aged image, each its own
-/// process and each with an extent (#491). The journal is reclaimed on the
+/// One-file imports in a row into a fresh write-study image, each its own
+/// process and each with an extent (#490). The journal is reclaimed on the
 /// way, by a process that did not take the buckets the journal's entries
 /// hold, and a node must not take one of them from a file published earlier.
 /// Every import succeeds, the reference checker passes the image, and the
 /// reference mount reads every file with its own bytes.
 #[cfg(feature = "cli")]
 #[test]
-fn imports_in_a_row_on_the_aged_image_keep_what_they_published() {
-    let img = scratch("aged.img", "cli-import-published");
+fn imports_in_a_row_on_a_fresh_write_study_image_keep_what_they_published() {
+    let img = scratch("write-study/base.img", "cli-import-published");
     let source = img.with_extension("source");
     let mut published = Vec::new();
     let mut refusal = None;
@@ -2468,6 +2502,89 @@ fn an_import_over_a_file_too_large_to_free_at_once_keeps_it() {
     with_reference_mount(&img, |m| {
         assert_eq!(staged_names(m, "d"), Vec::<String>::new());
     });
+    assert_fsck_clean(&img);
+}
+
+/// A journalled `write`/`put` is limited to one entry. When the new bytes do
+/// not fit, the old file remains the one the reference mount reads (#494).
+#[cfg(feature = "cli")]
+#[test]
+fn a_journalled_put_too_large_for_one_entry_keeps_the_old_file() {
+    let img = scratch("write-study/base.img", "cli-put-over-large");
+    let old = pattern(4 << 20, 97);
+    let new = pattern(6 << 20, 101);
+    let old_source = img.with_extension("old");
+    let new_source = img.with_extension("new");
+    std::fs::write(&old_source, &old).unwrap();
+    std::fs::write(&new_source, &new).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .arg("fs")
+        .arg(img.as_path())
+        .args(["put", "/d/large", "--from"])
+        .arg(&old_source)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .arg("fs")
+        .arg(img.as_path())
+        .args(["put", "/d/large", "--from"])
+        .arg(&new_source)
+        .arg("--journal")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.contains("does not fit"),
+        "not the one-entry refusal: {said}"
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(&img, &[("d/large", &old)]));
+    assert_fsck_clean(&img);
+}
+
+/// A journalled removal that cannot fit one entry refuses before changing
+/// the visible filesystem; the reference mount still reads the old file.
+#[cfg(feature = "cli")]
+#[test]
+fn a_journalled_rm_too_large_for_one_entry_keeps_the_file() {
+    let img = scratch("write-study/base.img", "cli-rm-over-large");
+    let old = pattern(4 << 20, 103);
+    let source = img.with_extension("old");
+    std::fs::write(&source, &old).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .arg("fs")
+        .arg(img.as_path())
+        .args(["put", "/d/large", "--from"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-fs-bcachefs"))
+        .arg("fs")
+        .arg(img.as_path())
+        .args(["rm", "/d/large", "--journal"])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.contains("does not fit"),
+        "not the one-entry refusal: {said}"
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+    assert!(reference_mount_reads(&img, &[("d/large", &old)]));
     assert_fsck_clean(&img);
 }
 

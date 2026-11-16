@@ -400,7 +400,14 @@ impl<D: BlockDevice> Writer<D> {
     /// Replace btree `id`'s root key in the clean field (same length).
     fn set_root(&mut self, id: u8, level: u8, key: &Bkey) -> Result<()> {
         let bytes = encode_key(key)?;
-        let (off, len) = self.clean_root_span(id)?;
+        let (off, len) = match self.clean_root_span(id) {
+            Ok(span) => span,
+            Err(Error::NotFound(_)) => {
+                self.add_root_entry(id, &bytes)?;
+                self.clean_root_span(id)?
+            }
+            Err(error) => return Err(error),
+        };
         if len != bytes.len() {
             return Err(Error::Corrupt("the new root key's length differs".into()));
         }

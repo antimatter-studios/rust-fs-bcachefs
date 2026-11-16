@@ -1038,6 +1038,70 @@ impl fs_core::BlockDevice for CountingRw {
     }
 }
 
+/// A read/write device that counts data bytes sent to the filesystem image.
+struct CountingWrites {
+    inner: FileDevice,
+    bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl fs_core::BlockRead for CountingWrites {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        fs_core::BlockRead::read_at(&self.inner, offset, buf)
+    }
+    fn size_bytes(&self) -> u64 {
+        fs_core::BlockRead::size_bytes(&self.inner)
+    }
+}
+
+impl fs_core::BlockDevice for CountingWrites {
+    fn write_at(&self, offset: u64, buf: &[u8]) -> fs_core::Result<()> {
+        self.bytes
+            .fetch_add(buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        fs_core::BlockDevice::write_at(&self.inner, offset, buf)
+    }
+    fn flush(&self) -> fs_core::Result<()> {
+        fs_core::BlockDevice::flush(&self.inner)
+    }
+    fn is_writable(&self) -> bool {
+        true
+    }
+}
+
+/// Sixty-four MiB sent in 1 MiB positioned writes touches a small multiple
+/// of the input on the host device and reads back exactly (#441).
+#[test]
+fn positioned_writes_of_64_mib_bound_device_writes() {
+    use std::sync::{atomic::AtomicU64, Arc};
+
+    let img = scratch("large.img", "write-at-bounded");
+    let dir = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/wide")
+        .unwrap();
+    let data: Vec<u8> = (0..64 << 20).map(|i| (i % 251) as u8).collect();
+    let written = Arc::new(AtomicU64::new(0));
+    let dev = CountingWrites {
+        inner: FileDevice::open_rw(&img).unwrap(),
+        bytes: Arc::clone(&written),
+    };
+    let mut writer = Writer::open(dev).unwrap();
+    let ino = writer
+        .create_file(dir, b"bounded-write-at", b"", 0o644)
+        .unwrap();
+    for (n, chunk) in data.chunks(1 << 20).enumerate() {
+        writer.write_at(ino, (n * (1 << 20)) as u64, chunk).unwrap();
+    }
+    drop(writer);
+
+    let device_bytes = written.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        device_bytes <= data.len() as u64 * 4,
+        "64 MiB positioned writes wrote {device_bytes} device bytes"
+    );
+    let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
+    assert_eq!(fs.read(ino).unwrap(), data);
+}
+
 /// Removing the `large` image's directory of 30000 names is refused as not
 /// empty, and finding that out reads the leaf holding its first entry, not
 /// every leaf of the directory (#193): one live dirent is enough. The reads
