@@ -4428,3 +4428,148 @@ fn both_checkers_agree_on_every_extent_pointer_flag_value() {
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
+
+/// The checker reports an unclaimed sector when two files share one extent
+/// pointer, even when the reference's bucket totals keep it from looking.
+/// The block4k case is a control: its sectors cross buckets, so the reference
+/// also reports the stale backpointer.
+#[cfg(feature = "write")]
+#[test]
+fn a_shared_extent_sector_is_reported_when_bucket_totals_balance() {
+    use fs_bcachefs::bkey::{key_type, Bpos};
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::DataExtent;
+    use fs_bcachefs::write::Writer;
+
+    for (set, source, reference_reports) in [
+        (
+            "default",
+            Bpos {
+                inode: 2147483914,
+                offset: 1,
+                snapshot: u32::MAX,
+            },
+            false,
+        ),
+        (
+            "lz4",
+            Bpos {
+                inode: 2147483924,
+                offset: 1,
+                snapshot: u32::MAX,
+            },
+            false,
+        ),
+        (
+            "block4k",
+            Bpos {
+                inode: 2147483915,
+                offset: 8,
+                snapshot: u32::MAX,
+            },
+            true,
+        ),
+    ] {
+        let dir = ScratchDir::new("check-shared-extent-sector");
+        assert_seen_by_reference(&dir);
+        let image = dir.into_image(format!("{set}.img"));
+        common::copy_sparse(fixture(&format!("{set}.img")), &image);
+        let (control_status, control_text) = reference_on_key_field(&image);
+        assert_eq!(control_status, 0, "{set} unchanged control: {control_text}");
+        assert!(check(&FileDevice::open(&image).unwrap()).unwrap().clean());
+
+        let initial = FileDevice::open(&image).unwrap();
+        let sb = Superblock::read(&initial).unwrap();
+        let extents = btree::walk(&initial, &sb, btree_id::EXTENTS).unwrap();
+        let bucket_size = u64::from(sb.members().unwrap()[usize::from(sb.dev_idx)].bucket_size);
+        // Fixture builds can place the seed's two files in one bucket even
+        // with 4 KiB blocks. The rejection control must actually straddle a
+        // bucket boundary, rather than infer placement from inode numbers.
+        let source = if reference_reports {
+            extents
+                .windows(2)
+                .find_map(|pair| {
+                    let [first, second] = pair else {
+                        unreachable!()
+                    };
+                    let a = DataExtent::from_key(first).ok()?;
+                    let b = DataExtent::from_key(second).ok()?;
+                    (first.pos.snapshot == u32::MAX
+                        && first.pos.inode.checked_add(1) == Some(second.pos.inode)
+                        && first.pos.offset == u64::from(first.size)
+                        && first.pos.offset == second.pos.offset
+                        && first.size == second.size
+                        && a.ptr.dev == b.ptr.dev
+                        && a.ptr.offset / bucket_size != b.ptr.offset / bucket_size)
+                        .then_some(first.pos)
+                })
+                .expect("the block4k fixture has adjacent one-extent files across buckets")
+        } else {
+            source
+        };
+        let original = extents
+            .iter()
+            .find(|key| key.key_type == key_type::EXTENT && key.pos == source)
+            .expect("the measured source extent is present")
+            .clone();
+        let overwritten_pos = Bpos {
+            inode: source.inode + 1,
+            ..source
+        };
+        let overwritten = extents
+            .iter()
+            .find(|key| key.key_type == key_type::EXTENT && key.pos == overwritten_pos)
+            .expect("the next file's only extent is present")
+            .clone();
+        assert_eq!(
+            DataExtent::from_key(&original).unwrap().ptr.offset / bucket_size
+                != DataExtent::from_key(&overwritten).unwrap().ptr.offset / bucket_size,
+            reference_reports,
+            "{set}: the control's physical bucket placement must match its verdict"
+        );
+
+        let mut duplicate = original.clone();
+        duplicate.pos = overwritten_pos;
+        {
+            let mut writer = Writer::open(FileDevice::open_rw(&image).unwrap()).unwrap();
+            writer
+                .insert(btree_id::EXTENTS, vec![duplicate.clone()])
+                .unwrap();
+        }
+
+        let device = FileDevice::open(&image).unwrap();
+        let sb = Superblock::read(&device).unwrap();
+        let extents = btree::walk(&device, &sb, btree_id::EXTENTS).unwrap();
+        assert!(extents.contains(&original), "{set}: source extent changed");
+        assert!(
+            extents.contains(&duplicate),
+            "{set}: replacement was not stored"
+        );
+        assert!(!extents.contains(&overwritten), "{set}: old extent remains");
+        assert_eq!(
+            DataExtent::from_key(&original).unwrap().ptr,
+            DataExtent::from_key(&duplicate).unwrap().ptr,
+            "{set}: both files must point to the same sector"
+        );
+
+        let (reference_status, reference_text) = reference_on_key_field(&image);
+        assert_eq!(
+            reference_status,
+            if reference_reports { 9 } else { 0 },
+            "{set}: {reference_text}"
+        );
+        assert_eq!(
+            reference_text.contains("backpointer doesn't match extent it points to"),
+            reference_reports,
+            "{set}: {reference_text}"
+        );
+        let ours = check(&device).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|problem| problem.kind == "backpointer_to_missing_ptr"),
+            "{set}: {:?}",
+            ours.problems
+        );
+    }
+}
