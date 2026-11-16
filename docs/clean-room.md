@@ -3495,7 +3495,16 @@ should be 72" (and 0:426, 64 against 56), then "backpointer doesn't match
 extent it points to" for `2147483915:8:U32_MAX`, and `scanning for missing
 backpointers in 1/2048 buckets`. So it reports the shape wherever it looks, and
 it looks only at a bucket whose totals do not balance. The finding is kept,
-and the class is in the baseline against #604.
+and the class is in the baseline against #604. The guest regression
+`a_shared_extent_sector_is_reported_when_bucket_totals_balance` keeps both
+same-bucket fixtures and the cross-bucket control measured against the pinned
+reference. Physical placement varies between fixture builds: in the kept
+fixture archive used on 2026-11-16, the originally selected `block4k` files
+both occupy bucket 432, at sectors 0 and 8 within it. The regression therefore
+selects adjacent one-extent files whose decoded pointers actually cross a
+bucket boundary for that control, and asserts the placement before mutation.
+The required reference rejection is unchanged; inode numbers alone do not
+establish a cross-bucket case.
 
 ## Confirmation
 
