@@ -11,18 +11,18 @@ export CARGO_BUILD_JOBS=2
 FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-run.sh \
     fs-bcachefs /share rust-fs-core -- bash -c '
         set -euo pipefail
-        nice -n 10 cargo test --locked --release --features write \
+        nice -n 10 cargo test --locked --features write \
             --test oracle_check_key_fields --test write_oracle --no-run --quiet
         bash /share/siblings/rust-fs-core/scripts/tier.sh --refuse-ignored \
             test:key-fields-focused key-fields-focused 160 16000 -- bash -c '\''
                 set -euo pipefail
-                cargo test --locked --release --features write --test oracle_check_key_fields
+                cargo test --locked --features write --test oracle_check_key_fields
                 for case_name in \
                     a_reference_key_refusal_keeps_its_reason_with_its_own_header \
                     a_sized_bucket_gens_key_is_refused_by_the_reference \
                     an_xattr_key_in_the_dirents_btree_is_refused_by_the_reference
                 do
-                    cargo test --locked --release --features write --test write_oracle \
+                    cargo test --locked --features write --test write_oracle \
                         "$case_name" -- --exact --test-threads=1
                 done
             '\''
