@@ -43,7 +43,9 @@
 # ssh gave up two minutes later. A run that would not fit passes on every other runner, so in CI
 # (CI=true) a run that passes and used more of the disk than DISK_BUDGET_MB fails
 # with status 66, as a tier over its output budget does. A developer's machine is
-# not judged, because other work moves its free space.
+# not judged, because other work moves its free space. With FLTH_SHARED_ROOT,
+# the guest itself is shared too: other sessions' writes make host-disk growth an
+# unreliable measure of this run, so that run is not judged.
 #
 # WHAT A RUN USED is what stops a guest: the most it held at once. The free space at
 # the end cannot say that, because the overlay gives back what the guest deletes,
@@ -102,6 +104,7 @@ forget_samples() {
 # session's descriptors: a tier reads its command's output until the last holder
 # of that pipe has gone.
 start_sampling() {
+    [ -z "$not_judged" ] || return 0
     if [ -z "$free_before" ]; then
         not_judged="the free space could not be read"
         return 0
@@ -300,6 +303,10 @@ low_seen=
 not_judged=
 used_mb=
 held_mb=
+
+if [ -n "${FLTH_SHARED_ROOT:-}" ]; then
+    not_judged="the harness guest is shared; host disk growth includes other runs"
+fi
 
 free_before="$(free_kb)"
 host_line
