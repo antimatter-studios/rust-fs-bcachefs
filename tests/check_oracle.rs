@@ -3994,6 +3994,35 @@ fn both_checkers_accept_a_file_inode_with_hash_type_zero() {
     );
 }
 
+/// The reference checker ignores old varints left after an inode_v3 field
+/// count is reduced (#435).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_an_inode_v3_with_a_reduced_field_count() {
+    both_checkers_judge_an_inode_key("default", "/many/file-0200.txt", |k| {
+        let flags = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+        k.value[16..24].copy_from_slice(&(flags & !(0xff << 24)).to_le_bytes());
+        None
+    });
+}
+
+/// The reference checker accepts nonzero bytes appended after a file inode's
+/// declared fields, without changing any existing field (#435).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_file_inode_with_nonzero_tail_bytes() {
+    both_checkers_judge_an_inode_key("default", "/many/file-0200.txt", |k| {
+        let before = fs_bcachefs::inode::InodeV3Raw::parse(&k.value).unwrap();
+        k.value.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x55]);
+        assert_eq!(
+            fs_bcachefs::inode::InodeV3Raw::parse(&k.value).unwrap(),
+            before,
+            "the appended tail must not change the declared inode fields"
+        );
+        None
+    });
+}
+
 /// Bits 32..36 of the word, 3 in every fixture, are read as fields_start,
 /// twice their value: below 6, or past the value's length in u64s, which
 /// differs with the fixture (#495), is "invalid fields_start (got N, min 6
