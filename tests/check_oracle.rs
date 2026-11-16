@@ -3752,6 +3752,75 @@ fn both_checkers_reject_a_backpointer_at_a_snapshot() {
     }
 }
 
+/// Reproduce #453's xattrs leaf backpointer, whose target is the first
+/// quarter of the key space. Moving its physical position one byte back
+/// crosses a bucket boundary, and the reference reports the misplaced key.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_btree_backpointer_moved_off_its_node() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BACKPOINTERS: u8 = 13;
+    const KEY_BACKPOINTER: u8 = 28;
+    let target = Bpos {
+        inode: (1u64 << 61) - 1,
+        offset: u64::MAX,
+        snapshot: u32::MAX,
+    };
+    let dir = ScratchDir::new("check-moved-btree-backpointer");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("kernel-rootsnap.img");
+    common::copy_sparse(fixture("kernel-rootsnap.img"), &img);
+    let (control_status, control_text) = reference_on_key_field(&img);
+    assert_eq!(control_status, 0, "unchanged control: {control_text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let original = btree::walk(&dev, &sb, BACKPOINTERS)
+        .unwrap()
+        .into_iter()
+        .find(|key| {
+            key.key_type == KEY_BACKPOINTER
+                && key.value.first() == Some(&btree_id::XATTRS)
+                && key.value.get(2) == Some(&3)
+                && key.value.len() >= 32
+                && Bpos::parse(&key.value[12..32]).is_ok_and(|pos| pos == target)
+        })
+        .expect("the kernel-rootsnap xattrs leaf from #453 has its backpointer");
+    drop(dev);
+
+    let mut moved = original.clone();
+    moved.pos.offset -= 1;
+    let deleted = Bkey {
+        key_type: key_type::DELETED,
+        value: Vec::new(),
+        ..original.clone()
+    };
+    let mut keys = vec![moved.clone(), deleted];
+    keys.sort_by_key(|key| key.pos);
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(BACKPOINTERS, keys).unwrap();
+    drop(writer);
+
+    let (reference_status, reference_text) = reference_on_key_field(&img);
+    assert_eq!(reference_status, 9, "{reference_text}");
+    assert!(
+        reference_text.contains("backpointer doesn't match btree node it points to"),
+        "{reference_text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|problem| problem.kind == "backpointer_to_missing_ptr"),
+        "the misplaced node backpointer was not reported: {:?}",
+        ours.problems
+    );
+}
+
 /// A backpointer's level (value byte 1) of 5 is "backpointer level bad:
 /// 5 >= 4"; the reference accepted 4 in the same probe.
 #[cfg(feature = "write")]
