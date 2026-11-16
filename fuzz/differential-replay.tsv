@@ -1,10 +1,10 @@
-# The pinned differential replay (#227): three non-crash disagreement classes
-# first measured in PR CI run 38718924048. Each is replayed from these exact
-# fixtures, its patch, mutation and reference output kept as an artifact, and
-# the run fails unless every case lands in exactly its class here. The fixtures
-# artifact expires 2026-10-22; after that the replay fails at the fetch.
-#! fixture_run 38714446443
-#! fixture_digest sha256:ea2151e74da19320ae6de32f1a1d332847cf44bb0bf7643af68c4e151aa7ec3c
+# The #227 replay's three non-crash disagreement classes were first measured
+# in PR CI run 38718924048. Its original fixtures artifact expired; this replay
+# now uses the frozen durable fixture release and digest below. Each run keeps
+# its cases, patches, mutations and reference outputs as a new Actions artifact,
+# and fails unless every case lands in exactly its class here.
+#! fixture_run kept
+#! fixture_digest sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 #! cases 80
 #! first_seed 0
 # fixtures artifact 11963530352, from main at b23f1a198d3a7c9855f52f48ad84a88b85f2b7fc
