@@ -1035,15 +1035,31 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 ))
             })
             .collect();
-        let have: std::collections::BTreeSet<(u64, u64)> = trees
+        let lru_entries: Vec<(u64, u64)> = trees
             .get(&LRU)
             .into_iter()
             .flatten()
-            .filter(|k| k.key_type == KEY_SET && k.pos.inode >> 61 == LRU_FRAGMENTATION)
+            .filter(|k| k.key_type == KEY_SET)
             .map(|k| (k.pos.inode, k.pos.offset))
             .collect();
         for (&(at, bucket), dirty) in &want {
-            if !have.contains(&(at, bucket)) {
+            let has_expected = lru_entries.contains(&(at, bucket));
+            let misplaced = if has_expected {
+                None
+            } else {
+                lru_entries
+                    .iter()
+                    .find(|&&(inode, offset)| offset == bucket && inode != at)
+            };
+            if let Some(&(inode, offset)) = misplaced {
+                r.add(
+                    "incorrect_lru_entry",
+                    format!(
+                        "lru entry {inode}:{offset}: bucket {bucket}'s fragmentation fill gives \
+                         expected entry at {at}:{bucket}"
+                    ),
+                );
+            } else if !has_expected {
                 r.add(
                     "missing_fragmentation_lru_entry",
                     format!(
@@ -1053,7 +1069,10 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 );
             }
         }
-        for &(at, bucket) in &have {
+        for &(at, bucket) in lru_entries
+            .iter()
+            .filter(|&&(inode, _)| inode >> 61 == LRU_FRAGMENTATION)
+        {
             if !want.contains_key(&(at, bucket)) {
                 r.add(
                     "incorrect_lru_entry",

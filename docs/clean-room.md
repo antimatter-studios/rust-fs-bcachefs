@@ -893,7 +893,13 @@ checker judged each attempt and named what was missing until nothing was.
   position one level up).
 - lru (id 10): a partly filled bucket has a `set` key at
   `(1 << 61 | dirty * 2^31 / bucket_size) : bucket` (S8, and the checker's
-  "missing fragmentation lru entry at pos 2305843009549238272:101:0").
+  "missing fragmentation lru entry at pos 2305843009549238272:101:0"). In
+  differential run 40754536244, changing the inode position of the LRU key
+  for bucket 344 from the fragmentation ID to `U64_MAX` made the reference
+  checker report an incorrect fragmentation LRU entry, naming the expected
+  ID and time from the bucket's alloc key. The checker must therefore detect
+  a `set` key for a partly filled bucket at a different LRU ID as misplaced,
+  as well as detect a missing key or an entry at the wrong time (issue #451).
 - A first lru key on a filesystem without an lru btree needs its root: an
   empty node (header flags as an existing node's with the btree id in the
   low byte, POS_MIN..SPOS_MAX, format 3 u64s 64/64/32, one empty bset), a
