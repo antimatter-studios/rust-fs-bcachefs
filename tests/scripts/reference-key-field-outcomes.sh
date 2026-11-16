@@ -5,9 +5,11 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 sandbox="$(mktemp -d)"
 trap 'rm -r -- "$sandbox"' EXIT
 
-# A target with a deadline of its own fails a group on one slow run, which is
-# what the shared module exists to stop.
-own_deadline="$(grep -lE 'exec timeout |Command::new\("timeout"\)' "$repo"/tests/*.rs "$repo"/tests/common/*.rs |
+# The key-field oracle must use the shared classifier, so repeated runs and
+# private reference failures are handled consistently. Other guest suites may
+# need a dedicated process-group deadline for mounts or commands; their guards
+# own that contract.
+own_deadline="$(grep -lE 'exec timeout |Command::new\("timeout"\)' "$repo"/tests/check_oracle.rs "$repo"/tests/common/*.rs |
     grep -v '/tests/common/reference_runs\.rs$')"
 if [ -n "$own_deadline" ]; then
     echo "FAIL  a guest target runs the reference under its own deadline, not common::reference_runs:" >&2
