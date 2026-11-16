@@ -58,7 +58,7 @@ fn created_files_read_back_and_the_old_ones_are_untouched() {
 #[test]
 fn what_is_refused_is_refused_before_anything_is_written() {
     let img = scratch("write-study/base.img", "local-refused");
-    let before = std::fs::read(&img).unwrap();
+    let before = common::sparse_snapshot(&img, "local-refused-before");
     let dir = {
         let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
         fs.lookup("/d").unwrap()
@@ -84,10 +84,7 @@ fn what_is_refused_is_refused_before_anything_is_written() {
         "no such directory"
     );
     drop(w);
-    assert!(
-        std::fs::read(&img).unwrap() == before,
-        "a refused create wrote to the image"
-    );
+    common::assert_files_equal(&before, &img, "a refused create wrote to the image");
     let unclean = scratch("aged-unclean.img", "local-unclean");
     assert!(
         Writer::open(FileDevice::open_rw(&unclean).unwrap()).is_err(),
@@ -323,16 +320,13 @@ fn a_time_precision_other_than_nanoseconds_is_refused_before_writing() {
         f.write_all(&b).unwrap();
     }
     let _ = SB_OFFSET;
-    let before = std::fs::read(&img).unwrap();
+    let before = common::sparse_snapshot(&img, "local-precision-before");
     match Writer::open(FileDevice::open_rw(&img).unwrap()) {
         Err(fs_bcachefs::Error::Unsupported(m)) if m.contains("precision") => {}
         Ok(_) => panic!("a writer opened a filesystem whose time unit it does not stamp"),
         Err(e) => panic!("{e}"),
     }
-    assert!(
-        std::fs::read(&img).unwrap() == before,
-        "refused, but written"
-    );
+    common::assert_files_equal(&before, &img, "refused, but written");
     // The reader is unaffected: times are reported in the superblock's unit.
     Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
 }
@@ -714,7 +708,7 @@ fn a_directory_cannot_move_below_itself() {
     let a = w.mkdir(d, b"a", 0o755).unwrap();
     let x = w.mkdir(a, b"x", 0o755).unwrap();
     drop(w);
-    let before = std::fs::read(&img).unwrap();
+    let before = common::sparse_snapshot(&img, "local-move-below-before");
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     for into in [a, x] {
         assert!(
@@ -723,10 +717,7 @@ fn a_directory_cannot_move_below_itself() {
         );
     }
     drop(w);
-    assert!(
-        std::fs::read(&img).unwrap() == before,
-        "refused, but written"
-    );
+    common::assert_files_equal(&before, &img, "refused, but written");
 }
 
 /// The names that collide under crc32c (tests/oracle_collisions.rs), as
