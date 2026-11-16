@@ -947,6 +947,12 @@ impl<D: BlockDevice> Writer<D> {
         ns.saturating_sub(self.sb.time_base_lo)
     }
 
+    /// Advance the number recorded in the inode allocation cursor.
+    fn advance_inode_cursor(ino: u64) -> Result<u64> {
+        ino.checked_add(1)
+            .ok_or_else(|| Error::Unsupported("no free inode number".into()))
+    }
+
     /// The next inode number from the allocation cursor, and the cursor
     /// advanced past it (S8: the reference advanced it by one per create).
     fn next_ino(&self) -> Result<(u64, Bkey)> {
@@ -987,7 +993,7 @@ impl<D: BlockDevice> Writer<D> {
             }
         }
         let mut next = cursor;
-        next.value[8..16].copy_from_slice(&(ino + 1).to_le_bytes());
+        next.value[8..16].copy_from_slice(&Self::advance_inode_cursor(ino)?.to_le_bytes());
         Ok((ino, next))
     }
 
@@ -2106,5 +2112,19 @@ impl<D: BlockDevice> Writer<D> {
         i.raw.journal_seq = self.journal_seq;
         t.put(ids::INODES, Some(&old), i.rekey());
         self.commit(t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Writer;
+
+    #[test]
+    fn inode_cursor_at_the_maximum_is_refused_without_overflow() {
+        assert_eq!(
+            Writer::<fs_core::FileDevice>::advance_inode_cursor(u64::MAX - 1).unwrap(),
+            u64::MAX
+        );
+        assert!(Writer::<fs_core::FileDevice>::advance_inode_cursor(u64::MAX).is_err());
     }
 }
