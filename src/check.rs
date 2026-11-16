@@ -962,12 +962,17 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // key, not just reside in an allocated bucket (#163). Recovery rebuilds
     // allocation metadata, so this uses the same clean-image gate as data.
     if let Some(bps) = backpointers {
+        let mut node_locations = BTreeMap::<(u8, Bpos), BTreeSet<u64>>::new();
         for &id in trees.keys() {
             match btree::node_pointers(dev, &sb, id, replay.as_ref()) {
                 Ok(Some(nodes)) => {
                     for (_, key) in nodes {
                         let ptr = btree::NodePtr::from_key(&key)?;
                         for p in ptr.ptrs.iter().filter(|p| p.dev == sb.dev_idx) {
+                            node_locations
+                                .entry((id, key.pos))
+                                .or_default()
+                                .insert(p.offset << 16);
                             if let Some(bp) = bps.get(&(p.offset << 16)) {
                                 btree_backpointer(id, key.pos, sb.btree_node_size(), bp, &mut r);
                             }
@@ -979,6 +984,19 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                     "btree_node",
                     format!("btree {}: {e}", journal::btree_name(id)),
                 ),
+            }
+        }
+        for bp in bps.values() {
+            if misplaced_btree_backpointer(bp, &node_locations) {
+                r.add(
+                    "backpointer_to_missing_ptr",
+                    format!(
+                        "backpointer {}: key is not at the physical position of btree {} node at {}",
+                        bp.pos,
+                        journal::btree_name(bp.value[0]),
+                        Bpos::parse(&bp.value[12..32]).expect("validated btree backpointer position")
+                    ),
+                );
             }
         }
     }
@@ -1943,6 +1961,26 @@ fn btree_backpointer(id: u8, pos: Bpos, sectors: u32, bp: &Bkey, r: &mut Report)
             ),
         );
     }
+}
+
+/// A DATA_BTREE backpointer moved away from every existing node's address
+/// is judged when its target identifies a reachable node (#453). A changed
+/// header at a real node address is not enough evidence: the reference
+/// accepts those field mutations. Missing nodes are not inferred (#230).
+fn misplaced_btree_backpointer(bp: &Bkey, nodes: &BTreeMap<(u8, Bpos), BTreeSet<u64>>) -> bool {
+    let v = &bp.value;
+    if v.len() < 32 || v.get(2) != Some(&DATA_BTREE) {
+        return false;
+    }
+    let Ok(pos) = Bpos::parse(&v[12..32]) else {
+        return false;
+    };
+    nodes
+        .get(&(v[0], pos))
+        .is_some_and(|locations| !locations.contains(&bp.pos.offset))
+        && !nodes
+            .values()
+            .any(|locations| locations.contains(&bp.pos.offset))
 }
 
 /// What a bucket's alloc key decides about its backpointers.
@@ -3347,6 +3385,42 @@ mod tests {
         unjudged.value[12..16].fill(0);
         unjudged.value[16..32].fill(0);
         assert!(check(&unjudged).clean());
+    }
+
+    #[test]
+    fn a_btree_backpointer_for_an_existing_node_must_be_at_its_pointer() {
+        let pos = Bpos {
+            inode: 7,
+            offset: 11,
+            snapshot: 0,
+        };
+        let nodes = BTreeMap::from([
+            ((btree_id::INODES, pos), BTreeSet::from([400 << 16])),
+            ((btree_id::EXTENTS, pos), BTreeSet::from([500 << 16])),
+        ]);
+        let mut value = vec![btree_id::INODES, 2, DATA_BTREE, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&64u32.to_le_bytes());
+        value.extend_from_slice(&pos.snapshot.to_le_bytes());
+        value.extend_from_slice(&pos.offset.to_le_bytes());
+        value.extend_from_slice(&pos.inode.to_le_bytes());
+
+        let correctly_placed = key(KEY_BACKPOINTER, 400 << 16, value.clone());
+        assert!(!misplaced_btree_backpointer(&correctly_placed, &nodes));
+
+        let moved = key(KEY_BACKPOINTER, (400 << 16) - 1, value.clone());
+        assert!(misplaced_btree_backpointer(&moved, &nodes));
+
+        // The independent field-mutation oracle accepts a changed tree id
+        // at a real node address, even when another tree has the same bound.
+        let mut header_changed = correctly_placed.clone();
+        header_changed.value[0] = btree_id::EXTENTS;
+        assert!(!misplaced_btree_backpointer(&header_changed, &nodes));
+
+        // An absent target is not enough evidence to judge a backpointer;
+        // this is the reference-accepted missing-node case from #230.
+        value[12..32].fill(0);
+        let unknown_target = key(KEY_BACKPOINTER, (400 << 16) - 1, value);
+        assert!(!misplaced_btree_backpointer(&unknown_target, &nodes));
     }
 
     /// Backpointer fields observed by the reference tools, checked against

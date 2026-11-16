@@ -1013,6 +1013,22 @@ node's physical address with the superblock's node size, on clean images
 only, as for its other allocation checks. The tests retain both rejected
 lengths and all ten accepted field controls. No reference source was read.
 
+**Displaced node addresses (#453, 2026-11-16).** Replaying the source
+finding on the kept `kernel-rootsnap` image selects the xattrs leaf at
+`2305843009213693951:U64_MAX:U32_MAX`, whose backpointer is at
+`0:490733568:0`. Moving that backpointer's offset down by one is rejected
+by the reference as a backpointer that does not match its btree node. The
+regression asserts both that reference result and this checker's finding.
+A previous version selected an arbitrary node at `SPOS_MAX` instead; the
+reference accepted that different mutation, so it was not evidence for
+the source finding. The independent root and leaf field mutations above
+still pass: a changed tree id at a real node address does not establish
+a misplaced node, even if that id and target bound also name another
+reachable node. The position check therefore reports a displaced key only
+when its target is reachable and its physical position is not occupied by
+any reachable node. All three node-backpointer oracle tests passed in the
+pinned guest with that distinction.
+
 ### Per-snapshot btree counters (#163, 2026-10-27)
 
 Black-box checks in the harness guest, using the reference-made `default`
