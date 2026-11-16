@@ -1922,6 +1922,53 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
+    /// Set an inode's access and modification times from Unix timestamps.
+    /// Inode values are unsigned nanosecond offsets from the superblock's
+    /// time base, so timestamps before that base cannot be represented.
+    pub fn set_times(
+        &mut self,
+        ino: u64,
+        accessed: Option<std::time::SystemTime>,
+        modified: Option<std::time::SystemTime>,
+    ) -> Result<()> {
+        use std::time::UNIX_EPOCH;
+
+        fn offset(time: std::time::SystemTime, base: u64) -> Result<u64> {
+            let since_epoch = time.duration_since(UNIX_EPOCH).map_err(|_| {
+                Error::Unsupported("timestamps before the Unix epoch are not representable".into())
+            })?;
+            let nanos = since_epoch.as_nanos();
+            let base = u128::from(base);
+            let offset = nanos.checked_sub(base).ok_or_else(|| {
+                Error::Unsupported(
+                    "timestamp precedes the filesystem's time base and is not representable".into(),
+                )
+            })?;
+            u64::try_from(offset)
+                .map_err(|_| Error::Unsupported("timestamp exceeds the inode time range".into()))
+        }
+
+        let accessed = accessed
+            .map(|t| offset(t, self.sb.time_base_lo))
+            .transpose()?;
+        let modified = modified
+            .map(|t| offset(t, self.sb.time_base_lo))
+            .transpose()?;
+        let mut i = self.inode(ino)?;
+        let old = i.key.clone();
+        if let Some(atime) = accessed {
+            i.raw.varints[field::ATIME] = atime;
+        }
+        if let Some(mtime) = modified {
+            i.raw.varints[field::MTIME] = mtime;
+        }
+        i.raw.varints[field::CTIME] = self.now();
+        i.raw.journal_seq = self.journal_seq;
+        let mut t = Txn::default();
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
+    }
+
     /// Where xattr `name` of inode `i` is, or would go (#106): from its
     /// slot ([`crate::xattr::slot`]) along the run of taken slots, as a
     /// dirent's is found (S8, the write study's collide and xcollide):

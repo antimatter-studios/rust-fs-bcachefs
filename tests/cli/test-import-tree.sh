@@ -171,8 +171,8 @@ check 'a missing parent makes the tree fail' test "$status" -ne 0
 check 'the missing parent is reported' jreport '.failed == 1 and .completed == 0'
 check 'it changes no byte of the image' cmp -s "$img" "$SANDBOX/before.img"
 
-# Links and times this sink does not carry yet (#284) are refused per item,
-# never dropped; a symbolic link is never followed.
+# Without an explicit preservation option a symbolic link is refused rather
+# than followed or dropped.
 links="$SANDBOX/links"
 mkdir -p "$links"
 printf 'plain\n' >"$links/plain"
@@ -182,12 +182,31 @@ check 'a symbolic link makes the tree partial' test "$status" -ne 0
 check 'the link is refused asking for --preserve=links' jitem /d/nolinks/symlink '.status == "refused" and (.reason | contains("--preserve=links"))'
 check 'the link is not created' absent /d/nolinks/symlink
 check 'the plain file beside it is imported' reads /d/nolinks/plain 'plain'
-run --recursive --preserve=links "$links" /d/links
-check '--preserve=links is partial here' test "$status" -ne 0
-check 'the link is refused by format' jitem /d/links/symlink '.status == "refused" and (.reason | contains("bcachefs"))'
-run --recursive --preserve=times "$links/plain" /d/times
-check '--preserve=times is partial here' test "$status" -ne 0
-check 'times are refused by format' jitem /d/times '.status == "refused" and (.reason | contains("bcachefs"))'
+
+# With --preserve=links,times, the three file names remain one inode, both
+# symlink targets are byte-identical, and the file's times match at nanosecond
+# precision.
+ln "$links/plain" "$links/hard-one"
+ln "$links/plain" "$links/hard-two"
+ln -s "$links/plain" "$links/absolute"
+base_sec="$(fs.bcachefs "$img" stat / | jq -r '.btime')"
+atime_ns="$(((base_sec + 86400) * 1000000000 + 123456789))"
+mtime_ns="$((atime_ns + 1000000001))"
+python3 - "$links/plain" "$atime_ns" "$mtime_ns" <<'PY'
+import os
+import sys
+
+os.utime(sys.argv[1], ns=(int(sys.argv[2]), int(sys.argv[3])))
+PY
+run --recursive --preserve=links,times "$links" /d/links
+check "links and times are preserved ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+check 'all six tree entries complete' jreport '.completed == 6 and .refused == 0 and .failed == 0'
+stat_json="$(fs.bcachefs "$img" stat /d/links/plain)"
+check 'the three names have one inode with link count three' jq -e '.nlink == 3' <<<"$stat_json" >/dev/null
+check 'the file access time is preserved' jq -e --argjson s "$((atime_ns / 1000000000))" --argjson ns "$((atime_ns % 1000000000))" '.atime == $s and .atime_nsec == $ns' <<<"$stat_json" >/dev/null
+check 'the file modification time is preserved' jq -e --argjson s "$((mtime_ns / 1000000000))" --argjson ns "$((mtime_ns % 1000000000))" '.mtime == $s and .mtime_nsec == $ns' <<<"$stat_json" >/dev/null
+check 'the relative symlink target is preserved' jq -e '.target == "plain"' < <(fs.bcachefs "$img" stat /d/links/symlink) >/dev/null
+check 'the absolute symlink target is preserved' jq -e --arg target "$links/plain" '.target == $target' < <(fs.bcachefs "$img" stat /d/links/absolute) >/dev/null
 run --recursive --preserve=sparse "$links/plain" /d/sparse
 check '--preserve=sparse is refused here' test "$status" -ne 0
 check 'holes are refused by format' jitem /d/sparse '.status == "refused" and (.reason | contains("bcachefs"))'
