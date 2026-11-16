@@ -19,6 +19,14 @@
 # GH overrides the gh binary, so the guard can feed it a fake repository.
 set -euo pipefail
 
+report_command_failure() {
+    local status=$?
+    trap - ERR
+    printf 'kept-fixtures: command failed with status %s: %s\n' "$status" "$BASH_COMMAND" >&2
+    exit "$status"
+}
+trap report_command_failure ERR
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gh="${GH:-gh}"
 repo="${GITHUB_REPOSITORY:-antimatter-studios/rust-fs-bcachefs}"
@@ -139,7 +147,7 @@ publish() {
         # Two landings of one key can race; whichever published holds the build.
         cat "$err" >&2
         rm -rf "$work"
-        [ -n "$(digest_of "$tag")" ] || die "cannot create release $tag"
+        [ -n "$(digest_of "$tag")" ] || die "gh release create could not create release $tag"
         echo "kept-fixtures: $tag was published by another run" >&2
         return 0
     fi
@@ -174,7 +182,7 @@ promote() {
     fi
     dir="$(mktemp -d)"
     "$gh" run download "$run" --repo "$repo" --name fixtures --dir "$dir" ||
-        die "CI run $run tested $commit and holds no fixtures artifact"
+        die "gh run download: CI run $run tested $commit and holds no fixtures artifact"
     publish "$dir/fixtures.tar.gz" "$run"
     rm -rf "$dir"
 }
