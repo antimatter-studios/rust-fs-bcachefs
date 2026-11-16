@@ -2129,6 +2129,84 @@ fn cli_imports_are_read_by_the_reference() {
     assert_fsck_clean(&img);
 }
 
+/// Recursive import preserves three names for one inode, opaque symlink
+/// targets, and file times as read by the independent reference mount (#284).
+#[cfg(feature = "cli")]
+#[test]
+fn cli_import_preserves_links_and_times_as_the_reference_does() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    use std::time::Duration;
+
+    let img = scratch("write-study/base.img", "cli-import-preserve-links-times");
+    let source = img.with_extension("source-tree");
+    std::fs::create_dir(&source).unwrap();
+    let plain = source.join("plain");
+    std::fs::write(&plain, b"one inode, three names\n").unwrap();
+    std::fs::hard_link(&plain, source.join("hard-one")).unwrap();
+    std::fs::hard_link(&plain, source.join("hard-two")).unwrap();
+    symlink("plain", source.join("relative")).unwrap();
+    symlink(&plain, source.join("absolute")).unwrap();
+
+    let accessed = std::time::SystemTime::now()
+        + Duration::from_secs(86_400)
+        + Duration::from_nanos(123_456_789);
+    let modified = accessed + Duration::from_secs(1) + Duration::from_nanos(876_543_210);
+    std::fs::File::open(&plain)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(accessed)
+                .set_modified(modified),
+        )
+        .unwrap();
+    let source_times = std::fs::metadata(&plain).unwrap();
+
+    let out = cli_import(
+        &img,
+        &[
+            "--recursive".as_ref(),
+            "--preserve=links,times".as_ref(),
+            source.as_ref(),
+            "/d/preserved".as_ref(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "import with links and times: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_fsck_clean(&img);
+    replay(&img);
+
+    with_reference_mount(&img, |mount| {
+        let path = mount.join("d/preserved/plain");
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.nlink(), 3, "the three names share an inode");
+        for name in ["hard-one", "hard-two"] {
+            assert_eq!(
+                std::fs::metadata(mount.join("d/preserved").join(name))
+                    .unwrap()
+                    .ino(),
+                metadata.ino(),
+                "{name} is a hard link to plain"
+            );
+        }
+        assert_eq!(metadata.atime(), source_times.atime());
+        assert_eq!(metadata.atime_nsec(), source_times.atime_nsec());
+        assert_eq!(metadata.mtime(), source_times.mtime());
+        assert_eq!(metadata.mtime_nsec(), source_times.mtime_nsec());
+        assert_eq!(
+            std::fs::read_link(mount.join("d/preserved/relative")).unwrap(),
+            PathBuf::from("plain")
+        );
+        assert_eq!(
+            std::fs::read_link(mount.join("d/preserved/absolute")).unwrap(),
+            plain
+        );
+    });
+    assert_fsck_clean(&img);
+}
+
 /// One-file imports in a row into a copy of the aged image, each its own
 /// process and each with an extent (#491). The journal is reclaimed on the
 /// way, by a process that did not take the buckets the journal's entries
