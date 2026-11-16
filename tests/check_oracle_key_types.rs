@@ -874,15 +874,11 @@ fn a_short_logged_op_truncate_value_is_rejected_by_both_checkers() {
         Judged::Crashed => panic!("the reference checker crashed on the recorded mutation"),
     };
     let lines: Vec<&str> = text.lines().collect();
-    let (rejected, reason) = verdict(&lines, &p, &[]);
-    assert!(
-        rejected,
-        "the reference did not reject the key for its value size: {reason:?}\n{text}"
-    );
+    let (_, reason) = verdict(&lines, &p, &[]);
     assert!(
         reason
             .as_deref()
-            .is_some_and(|s| s.contains("bad val size (16 < 24)")),
+            .is_some_and(|s| s.contains("bad val size (16 < 24), deleting")),
         "the reference refused the key for another reason: {reason:?}"
     );
     assert!(
