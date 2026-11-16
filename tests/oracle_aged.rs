@@ -56,9 +56,8 @@ fn hard_links_resolve_to_one_inode() {
 /// that only the journal carries, and the device is not written.
 #[test]
 fn an_uncleanly_unmounted_image_is_read_through_its_journal() {
-    use sha2::{Digest, Sha256};
     let path = fixture("aged-unclean.img");
-    let before = Sha256::digest(std::fs::read(&path).unwrap());
+    let before = common::sha256_file(&path);
     let fs = open("aged-unclean").unwrap_or_else(|e| panic!("aged-unclean: {e}"));
     // As many entries under /late as the reference saw after its replay
     // (what the burst's last writes left of it is the reference's call).
@@ -70,6 +69,6 @@ fn an_uncleanly_unmounted_image_is_read_through_its_journal() {
     let late = fs.lookup("/late").unwrap();
     assert_eq!(fs.readdir(late).unwrap().len(), want);
     drop(fs);
-    let after = Sha256::digest(std::fs::read(&path).unwrap());
+    let after = common::sha256_file(&path);
     assert_eq!(before, after, "the image changed while it was read");
 }

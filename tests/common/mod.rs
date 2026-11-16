@@ -67,6 +67,78 @@ pub fn copy_sparse(src: impl AsRef<std::path::Path>, dst: impl AsRef<std::path::
     to.set_len(len).unwrap();
 }
 
+/// Keep an owned sparse snapshot of an image for a later no-write check.
+pub fn sparse_snapshot(src: impl AsRef<std::path::Path>, tag: &str) -> ScratchImage {
+    let snapshot = ScratchDir::new(tag).into_image("snapshot.img");
+    copy_sparse(src, &snapshot);
+    snapshot
+}
+
+/// Assert two images match while holding at most 2 MiB of image data.
+/// On mismatch, report the first differing byte offset.
+pub fn assert_files_equal(
+    expected: impl AsRef<std::path::Path>,
+    actual: impl AsRef<std::path::Path>,
+    context: &str,
+) {
+    use std::io::Read;
+
+    const CHUNK: usize = 1 << 20;
+    let (expected, actual) = (expected.as_ref(), actual.as_ref());
+    let mut expected_file = std::fs::File::open(expected)
+        .unwrap_or_else(|e| panic!("cannot open {}: {e}", expected.display()));
+    let mut actual_file = std::fs::File::open(actual)
+        .unwrap_or_else(|e| panic!("cannot open {}: {e}", actual.display()));
+    let expected_len = expected_file.metadata().unwrap().len();
+    let actual_len = actual_file.metadata().unwrap().len();
+    assert_eq!(
+        expected_len,
+        actual_len,
+        "{context}: image lengths differ at offset {}",
+        expected_len.min(actual_len)
+    );
+
+    let mut expected_buf = vec![0; CHUNK];
+    let mut actual_buf = vec![0; CHUNK];
+    let mut offset = 0u64;
+    while offset < expected_len {
+        let len = usize::try_from((expected_len - offset).min(CHUNK as u64)).unwrap();
+        expected_file.read_exact(&mut expected_buf[..len]).unwrap();
+        actual_file.read_exact(&mut actual_buf[..len]).unwrap();
+        if expected_buf[..len] != actual_buf[..len] {
+            let within = expected_buf[..len]
+                .iter()
+                .zip(&actual_buf[..len])
+                .position(|(left, right)| left != right)
+                .unwrap();
+            panic!(
+                "{context}: first differing byte at offset {}",
+                offset + within as u64
+            );
+        }
+        offset += len as u64;
+    }
+}
+
+/// Hash a file in bounded memory.
+pub fn sha256_file(path: impl AsRef<std::path::Path>) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let path = path.as_ref();
+    let mut file =
+        std::fs::File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display()));
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let len = file.read(&mut buffer).unwrap();
+        if len == 0 {
+            return hash.finalize().into();
+        }
+        hash.update(&buffer[..len]);
+    }
+}
+
 pub fn read_text(name: &str) -> String {
     std::fs::read_to_string(fixture(name)).unwrap()
 }
