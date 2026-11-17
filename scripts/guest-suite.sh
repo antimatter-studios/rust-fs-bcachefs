@@ -19,6 +19,7 @@ set -euo pipefail
     { echo "guest-suite.sh runs INSIDE the harness VM ('chore test:vm')." >&2; exit 1; }
 export FLTH_GUEST=1
 export CARGO_BUILD_JOBS=2
+export CARGO_PROFILE_TEST_DEBUG=0
 
 cd /repo
 # FS_CORE_CALLER names this repository: run directly rather than through
