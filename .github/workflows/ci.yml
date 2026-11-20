@@ -295,6 +295,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: A kept build, or a fresh one?
         id: source
         env:
@@ -537,6 +543,12 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -765,7 +777,7 @@ jobs:
 
   ci-ok-gate:
     if: always()
-    needs: [changes, unit, lint, fixtures, oracle, test-arm64, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
+    needs: [changes-gate, changes, unit-gate, unit, lint-gate, lint, fixtures-gate, fixtures, oracle-gate, oracle, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, cli-gate, cli, semver-gate, semver, coverage-gate, coverage, guest-write-study-gate, guest-write-study, crc128-native]
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
