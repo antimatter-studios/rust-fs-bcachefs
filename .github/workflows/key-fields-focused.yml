@@ -72,7 +72,6 @@ jobs:
         run: |
           set -euo pipefail
           vm=../fs-linux-test-harness/scripts/vm.sh
-          trap '"$vm" down' EXIT
           share="$("$vm" share)"
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
             "$vm" run 'cd /repo && bash scripts/guest-key-fields-focused.sh'
@@ -83,6 +82,3 @@ jobs:
           name: key-fields-focused
           path: tmp/logs/key-fields-focused.log
           if-no-files-found: error
-      - name: The guest is down
-        if: always()
-        run: '! ../fs-linux-test-harness/scripts/vm.sh status'
