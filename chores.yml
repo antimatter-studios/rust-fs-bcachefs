@@ -173,7 +173,8 @@ tasks:
       # #563 adds four stale-backpointer cases.
       # #380 adds fifteen bucket counter cases.
       # #575 adds two extent pointer flag cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 171'
+      # #228's nightly adds one, a per-snapshot counter's btree field.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 172'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
