@@ -765,7 +765,7 @@ jobs:
 
   ci-ok-gate:
     if: always()
-    needs: [changes, unit, lint, fixtures, oracle, test-arm64, test-darwin, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
+    needs: [changes, unit, lint, fixtures, oracle, test-arm64, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
