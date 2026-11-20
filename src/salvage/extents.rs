@@ -55,6 +55,12 @@ pub struct ExtentPiece {
     pub checksum_ok: bool,
     pub node_offset: u64,
     pub journal_seq: u64,
+    /// Device byte offset of the key's bytes, and their length: inline data
+    /// is the last bytes of its key.
+    pub key_at: u64,
+    pub key_bytes: u64,
+    /// For inline data, the device byte its first byte is stored at.
+    pub inline_at: Option<u64>,
 }
 
 /// Why a walk is not the whole file.
@@ -244,6 +250,11 @@ fn piece_of(k: &FoundKey, start: u64, end: u64) -> ExtentPiece {
         checksum_ok: k.checksum_ok,
         node_offset: k.node_offset,
         journal_seq: k.journal_seq,
+        key_at: k.key_at,
+        key_bytes: k.key_bytes,
+        // A key's value is its last bytes.
+        inline_at: (k.key.key_type == key_type::INLINE_DATA)
+            .then(|| (k.key_at + k.key_bytes).saturating_sub(k.key.value.len() as u64)),
     }
 }
 
@@ -258,6 +269,7 @@ fn trim(p: &ExtentPiece, s: u64, e: u64) -> ExtentPiece {
         PieceKind::Inline(bytes) => {
             let to = ((e - p.file_offset) as usize).min(bytes.len());
             *bytes = bytes.get(cut as usize..to).unwrap_or_default().to_vec();
+            out.inline_at = p.inline_at.map(|a| a + cut);
         }
         PieceKind::Data { data_skip, .. } => *data_skip += cut,
         PieceKind::Reflink { index } => *index += cut / 512,

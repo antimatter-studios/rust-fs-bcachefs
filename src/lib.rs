@@ -31,6 +31,7 @@ pub mod salvage;
 pub mod siphash;
 pub mod superblock;
 pub(crate) mod util;
+pub mod volume;
 #[cfg(feature = "write")]
 pub mod write;
 pub mod xattr;

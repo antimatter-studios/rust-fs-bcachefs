@@ -44,12 +44,15 @@ cli = ["dep:clap", "rust-fs-core/cli", "write"]
 pinned-fixtures = ["write"]
 
 [dependencies]
-# Block-device trait surface shared with the sister fs-* drivers. Taken from
-# crates.io by version only, never by path, so another repository can pin
-# this crate by git revision. Local development against an unreleased
-# rust-fs-core overrides it in an untracked .cargo/config.toml (README,
-# "Building").
-rust-fs-core = "0.5"
+# Block-device trait surface shared with the sister fs-* drivers, with the
+# three driver API layers (`layers`). Taken from crates.io by version only,
+# never by path, so another repository can pin this crate by git revision.
+# Local development against an unreleased rust-fs-core overrides it in an
+# untracked .cargo/config.toml (README, "Building").
+rust-fs-core = { version = "0.5", features = ["layers"] }
+# The shared layers' evidence types are plain serde data, and so is this
+# driver's candidate detail. MIT OR Apache-2.0.
+serde = { version = "1", features = ["derive"] }
 # CRC32C (Castagnoli), the default metadata and data checksum. MIT OR Apache-2.0.
 crc32c = "0.6"
 # XXH64 (seed 0), checksum type 7. MIT.

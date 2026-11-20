@@ -13,6 +13,7 @@
 //! The types are this crate's own until the shared salvage traits are
 //! released in rust-fs-core; they are shaped to map onto them.
 
+pub mod adapter;
 mod damage;
 mod extents;
 mod materialize;
@@ -454,6 +455,8 @@ impl Salvage {
                     checksum_ok: bset.verdict == Verdict::Valid,
                     node_offset: node.offset,
                     journal_seq: bset.journal_seq,
+                    key_at: node.offset + k.at as u64,
+                    key_bytes: k.bytes as u64,
                     key: k.key.clone(),
                 });
             }
@@ -477,6 +480,8 @@ impl Salvage {
                     checksum_ok: bset.verdict == Verdict::Valid,
                     node_offset: node.offset,
                     journal_seq: bset.journal_seq,
+                    key_at: node.offset + k.at as u64,
+                    key_bytes: k.bytes as u64,
                     key: k.key.clone(),
                 });
             }
@@ -493,5 +498,8 @@ pub(crate) struct FoundKey {
     pub checksum_ok: bool,
     pub node_offset: u64,
     pub journal_seq: u64,
+    /// Device byte offset of the packed key, and its length.
+    pub key_at: u64,
+    pub key_bytes: u64,
     pub key: Bkey,
 }

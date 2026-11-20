@@ -240,6 +240,25 @@ impl<D: BlockRead> Filesystem<D> {
         out
     }
 
+    /// The device the filesystem reads.
+    pub fn device(&self) -> &D {
+        &self.dev
+    }
+
+    /// The node a directory entry of `dir` names: a subvolume's root for an
+    /// entry naming a subvolume, the entry's inode at the directory's
+    /// snapshot otherwise.
+    pub fn child(&self, dir: Node, d: &Dirent) -> Result<Node> {
+        if d.d_type == DT_SUBVOL {
+            self.subvolume(d.inum as u32)
+        } else {
+            Ok(Node {
+                ino: d.inum,
+                snapshot: dir.snapshot,
+            })
+        }
+    }
+
     /// The node the root subvolume's root directory is.
     pub fn root(&self) -> Node {
         Node {

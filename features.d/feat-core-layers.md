@@ -1,0 +1,4 @@
+## Interfaces
+
+| The shared three layers (`fs_core::layers`, rust-fs-core 0.5): `volume::Volume` implements `VolumeAPI` and `OpenVolume` (every superblock copy, geometry in buckets, health, encrypted and multi-device volumes refused by name), `PrimitiveAPI` (superblock copies, the layout, journal buckets and btree roots as structures) and `FileAPI` over the strict reader, names by their bytes | Supported | Unreleased | #690 | `oracle_conformance.rs` |
+| The shared `SalvageAdapter` (`salvage::adapter::BcachefsSalvage`): walks in file order with holes, unwritten and inline runs, compressed extents decoded by `read_encoded` with their checksums checked, named parent claims (one per hard link); cluster steps and geometry hypotheses are listed missing | Supported | Unreleased | #690 | `oracle_conformance.rs` |

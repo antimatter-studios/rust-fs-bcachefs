@@ -256,7 +256,8 @@ tasks:
       # 311 measured 2026-11-20 with them, 755 lines / 35,808 bytes,
       # tmp/logs/oracle.log.
       # #690 adds nine salvage cases (tests/oracle_salvage.rs).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 316'
+      # #690 adds three conformance cases (tests/oracle_conformance.rs).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 319'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

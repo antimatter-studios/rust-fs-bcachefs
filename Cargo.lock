@@ -271,6 +271,7 @@ dependencies = [
  "poly1305",
  "rust-fs-core",
  "ruzstd",
+ "serde",
  "sha2",
  "twox-hash",
  "unicode-normalization",
