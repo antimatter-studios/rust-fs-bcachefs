@@ -218,7 +218,9 @@ dependencies = [
 
 [[package]]
 name = "rust-fs-core"
-version = "0.4.2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c145374b5807e2dd51fbdd2eb994af911eec5459e44ebef4c8f877bb98c00312"
 
 [[package]]
 name = "rustc_version"

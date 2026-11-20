@@ -42,3 +42,8 @@ tmp/
 
 # Scratch logs from a run somebody watched.
 /tmp-*.log
+
+# A local override of rust-fs-core, for development against an unreleased
+# version (README, "Building"). Never committed: the manifest names a
+# published version only.
+/.cargo/config.toml
