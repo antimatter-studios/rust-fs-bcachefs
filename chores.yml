@@ -250,7 +250,10 @@ tasks:
       # #507 adds four host cases to the measured 289-case baseline.
       # #589 adds one fixture case.
       # #380 adds three bucket counter cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 299'
+      # #690 adds eight primitive-evidence cases (tests/oracle_primitive.rs):
+      # 311 measured 2026-11-20 with them, 755 lines / 35,808 bytes,
+      # tmp/logs/oracle.log.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 307'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
