@@ -24,7 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::Report;
 use crate::bkey::{key_type, Bkey};
 use crate::btree::{self, btree_id, NodePtr};
-use crate::extent::{alloc_v4_gen, compression, parse_entries, Crc, ExtentEntry, Ptr};
+use crate::extent::{
+    alloc_v4_gen, compression, parse_entries, Crc, ExtentEntry, Ptr, PTR_UNWRITTEN,
+};
 use crate::journal::{self, Replay};
 use crate::superblock::{Layout, Superblock};
 use crate::util::le32;
@@ -125,7 +127,10 @@ impl BucketSectors {
             return;
         }
         let bucket = ptr.offset / self.bucket_size;
-        if ptr.flags == 0 || ptr.is_unwritten() {
+        // Only no flag and the unwritten flag alone were measured. A pointer
+        // whose unwritten bit sits beside another flag bit is unwritten
+        // (#575), but its share of a bucket's counters is not observed.
+        if ptr.flags == 0 || ptr.flags == PTR_UNWRITTEN {
             *self.held.entry(bucket).or_default() += sectors;
         } else {
             self.unjudged.insert(bucket);

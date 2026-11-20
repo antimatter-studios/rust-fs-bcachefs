@@ -10,7 +10,8 @@
 //! hexdump against the reference lister's printed values (S3, S4):
 //!
 //! ```text
-//! ptr    bit 0 = 1; bits 1..3 flags (0b100 unwritten, the rest unread);
+//! ptr    bit 0 = 1; bits 1..3 flags (0b001 cached, 0b100 unwritten,
+//!        0b010 accepted by the checker, meaning still open);
 //!        bits 4..47 sector offset;
 //!        bits 48..55 device; bits 56..63 generation   (device and
 //!        generation: only ever 0 in the fixtures -- an open question)
@@ -50,9 +51,14 @@ pub struct Ptr {
 /// extents whose pointers carry flags 0b100 (word bit 3), each printed
 /// `unwritten` by the reference lister, and one pointer with no flag where
 /// 4 KiB were then written. The same in a file without `nocow` made
-/// `reservation` keys instead. The other flag bits, which S1 says mark
-/// cached pointers, are still unobserved.
+/// `reservation` keys instead. The unwritten bit also applies when the
+/// other pointer flag bits are set (#575, S3).
 pub const PTR_UNWRITTEN: u8 = 0b100;
+
+/// The cached-pointer bit: the reference checker reports
+/// `extent_ptrs_all_invalid_but_cached` for flag values 1, 3, 5 and 7,
+/// but accepts 0, 2, 4 and 6 (#575, S3).
+pub const PTR_CACHED: u8 = 0b001;
 
 /// The generation a bucket's `alloc_v4` key records: byte 4 of its second
 /// word (docs/clean-room.md, "Allocating space": word 1 holds the flags in
@@ -64,7 +70,7 @@ pub fn alloc_v4_gen(value: &[u8]) -> Option<u8> {
 impl Ptr {
     /// Whether this pointer marks an unwritten extent ([`PTR_UNWRITTEN`]).
     pub fn is_unwritten(&self) -> bool {
-        self.flags == PTR_UNWRITTEN
+        self.flags & PTR_UNWRITTEN != 0
     }
 
     /// Whether this pointer may be read on device `dev_idx`, whose bucket
@@ -77,8 +83,9 @@ impl Ptr {
     /// cached pointers ... from dirty pointers, and mark unwritten
     /// reservations". A pointer at another device is not on this one; a
     /// stale pointer names a reused bucket; an unwritten pointer is judged
-    /// like any other ([`PTR_UNWRITTEN`]), and a pointer with any other flag
-    /// has a meaning (cached) this reader has never observed and refuses.
+    /// like any other ([`PTR_UNWRITTEN`]). A cached pointer is refused
+    /// ([`PTR_CACHED`]); the second flag bit does not make a pointer cached,
+    /// and the reference checker accepts it (#575).
     pub fn check(&self, dev_idx: u8, bucket_gen: Option<u8>) -> crate::Result<()> {
         if self.dev != dev_idx {
             return Err(crate::Error::Corrupt(format!(
@@ -87,9 +94,9 @@ impl Ptr {
                 self.offset, self.dev
             )));
         }
-        if self.flags != 0 && !self.is_unwritten() {
+        if self.flags & PTR_CACHED != 0 {
             return Err(crate::Error::Unsupported(format!(
-                "pointer to sector {} carries flags {:#05b} (cached?): not read",
+                "pointer to sector {} carries flags {:#05b} (cached): not read",
                 self.offset, self.flags
             )));
         }
@@ -409,6 +416,43 @@ impl DataExtent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_flags_are_refused_only_when_the_cached_bit_is_set() {
+        for flags in 0..8 {
+            let pointer = Ptr {
+                dev: 0,
+                offset: 5952,
+                gen: 3,
+                flags,
+            };
+            assert_eq!(
+                pointer.check(0, Some(3)).is_ok(),
+                flags & 1 == 0,
+                "pointer flags {flags:#05b}"
+            );
+            assert!(pointer.check(1, Some(3)).is_err());
+            assert!(pointer.check(0, Some(2)).is_err());
+            assert!(pointer.check(0, None).is_err());
+        }
+    }
+
+    #[test]
+    fn the_unwritten_pointer_bit_is_independent_of_the_other_flags() {
+        for flags in 0..8 {
+            let pointer = Ptr {
+                dev: 0,
+                offset: 5952,
+                gen: 0,
+                flags,
+            };
+            assert_eq!(
+                pointer.is_unwritten(),
+                flags & PTR_UNWRITTEN != 0,
+                "pointer flags {flags:#05b}"
+            );
+        }
+    }
 
     #[test]
     fn a_crc_offset_is_set_where_the_reference_keeps_it() {
