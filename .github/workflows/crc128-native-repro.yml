@@ -14,9 +14,19 @@ env:
   CARGO_BUILD_JOBS: "2"
 
 jobs:
+  crc128-native-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   crc128-native:
     name: crc128 overwrite (reference FUSE, harness guest)
-    runs-on: ubuntu-24.04
+    needs: crc128-native-gate
+    runs-on: ${{ needs.crc128-native-gate.outputs.runner }}
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4

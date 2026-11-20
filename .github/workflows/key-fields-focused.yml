@@ -19,8 +19,18 @@ env:
   KEPT_TARBALL: 6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 
 jobs:
+  key-fields-focused-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   key-fields-focused:
-    runs-on: ubuntu-24.04
+    needs: key-fields-focused-gate
+    runs-on: ${{ needs.key-fields-focused-gate.outputs.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

@@ -386,7 +386,7 @@ upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-
 check(len(upload) == 1 and "if" not in upload[0], "the fixtures artifact is not uploaded on both paths")
 for name, consumer in ci["jobs"].items():
     needs = consumer.get("needs", [])
-    if "fixtures" in ([needs] if isinstance(needs, str) else needs) and name != "ci-ok":
+    if "fixtures" in ([needs] if isinstance(needs, str) else needs) and name != "ci-ok" and not name.endswith("-gate"):
         text = json.dumps(consumer["steps"])
         check("actions/download-artifact" in text, f"{name} needs fixtures and does not read the artifact")
         check("kept-fixtures" not in text and "chore fixtures" not in text, f"{name} gets fixtures its own way")
