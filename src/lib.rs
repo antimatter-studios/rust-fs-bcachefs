@@ -27,6 +27,7 @@ pub mod fs;
 pub mod inode;
 pub mod journal;
 pub mod primitive;
+pub mod salvage;
 pub mod siphash;
 pub mod superblock;
 pub(crate) mod util;

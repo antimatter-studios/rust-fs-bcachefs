@@ -58,6 +58,9 @@ pub struct BsetEvidence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeKey {
     pub bset: usize,
+    /// Byte offset of the packed key within the node, and its length.
+    pub at: usize,
+    pub bytes: usize,
     pub key: Bkey,
 }
 
@@ -200,7 +203,12 @@ pub fn parse_node(b: &[u8], offset: u64, ctx: &NodeContext) -> Option<NodeEviden
                     break;
                 }
                 match bkey::decode(&b[p..kend], format) {
-                    Ok(key) => node.keys.push(NodeKey { bset: index, key }),
+                    Ok(key) => node.keys.push(NodeKey {
+                        bset: index,
+                        at: p,
+                        bytes: n * 8,
+                        key,
+                    }),
                     Err(e) => {
                         key_error = Some(format!("the key at byte {p}: {e}"));
                         break;
