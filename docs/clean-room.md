@@ -893,7 +893,13 @@ checker judged each attempt and named what was missing until nothing was.
   position one level up).
 - lru (id 10): a partly filled bucket has a `set` key at
   `(1 << 61 | dirty * 2^31 / bucket_size) : bucket` (S8, and the checker's
-  "missing fragmentation lru entry at pos 2305843009549238272:101:0").
+  "missing fragmentation lru entry at pos 2305843009549238272:101:0"). In
+  differential run 40754536244, changing the inode position of the LRU key
+  for bucket 344 from the fragmentation ID to `U64_MAX` made the reference
+  checker report an incorrect fragmentation LRU entry, naming the expected
+  ID and time from the bucket's alloc key. The checker must therefore detect
+  a `set` key for a partly filled bucket at a different LRU ID as misplaced,
+  as well as detect a missing key or an entry at the wrong time (issue #451).
 - A first lru key on a filesystem without an lru btree needs its root: an
   empty node (header flags as an existing node's with the btree id in the
   low byte, POS_MIN..SPOS_MAX, format 3 u64s 64/64/32, one empty bset), a
@@ -1012,6 +1018,22 @@ checker compares the length of an existing backpointer at each reachable
 node's physical address with the superblock's node size, on clean images
 only, as for its other allocation checks. The tests retain both rejected
 lengths and all ten accepted field controls. No reference source was read.
+
+**Displaced node addresses (#453, 2026-11-16).** Replaying the source
+finding on the kept `kernel-rootsnap` image selects the xattrs leaf at
+`2305843009213693951:U64_MAX:U32_MAX`, whose backpointer is at
+`0:490733568:0`. Moving that backpointer's offset down by one is rejected
+by the reference as a backpointer that does not match its btree node. The
+regression asserts both that reference result and this checker's finding.
+A previous version selected an arbitrary node at `SPOS_MAX` instead; the
+reference accepted that different mutation, so it was not evidence for
+the source finding. The independent root and leaf field mutations above
+still pass: a changed tree id at a real node address does not establish
+a misplaced node, even if that id and target bound also name another
+reachable node. The position check therefore reports a displaced key only
+when its target is reachable and its physical position is not occupied by
+any reachable node. All three node-backpointer oracle tests passed in the
+pinned guest with that distinction.
 
 ### Per-snapshot btree counters (#163, 2026-10-27)
 
@@ -3457,16 +3479,25 @@ classes the baseline did not hold. Each reproduces on the host from its seed:
 the emitter's verdicts match the report. Black-box output only; no reference
 source was read.
 
-**An inode_v3 value's tail (#435), not settled.** Seed 1661113 sets value
-bytes 96..104 of the inode of a file in `default.img`, `block4k.img` and
-`lz4.img` to the word 1. The varints of its 21 fields then end at byte 102,
-with `dir` and `dir_offset` 0, and the old bytes of `dir_offset` stay behind
-them. The reference checker calls all three clean (exit 0), and its lister
-prints `bi_dir=0` and `bi_dir_offset=0` for that inode. This checker refuses
-the value as "inode_v3 has bytes after its last field", and still does. Whether
-bytes after the last field make an inode invalid is not settled by the reference
-checker's exit status alone. Accepting them would make this checker call more
-images clean, so it waits on the kernel module's own verdict (#435).
+**An inode_v3 value's tail (#435).** Seed 1661113 sets value bytes 96..104 of
+the inode of a file in `default.img`, `block4k.img` and `lz4.img` to the word
+1. The varints of its 21 fields then end at byte 102, with `dir` and
+`dir_offset` 0, and the old bytes of `dir_offset` stay behind them. The
+reference checker calls all three clean (exit 0), and its lister prints
+`bi_dir=0` and `bi_dir_offset=0` for that inode.
+
+Guest regressions for #435 also clear the field count on the inode of
+`/many/file-0200.txt` in a copy of `default.img`, keeping its original value
+bytes, and append eight bytes ending in `0x55` to that file inode's value,
+adjusting its btree byte counter by eight. The test checks that every declared
+inode field stays unchanged. Replacing the original final byte is not a
+portable tail mutation: fresh fixture builds can use it for a declared field.
+The reference checker 1.39.7 calls both images clean. This checker now reads only
+the declared varints and ignores all remaining value bytes, including nonzero
+padding. `tests/check_oracle.rs` repeats both mutations against fresh copies
+and requires both checkers to call them clean. The kernel module's verdict on
+these tail mutations has not been measured; this support is limited to the
+observed reference-checker behavior.
 
 **A per-snapshot counter's btree.** Seed 1661092 copies `kernel-rootsnap.img`'s
 accounting key at `0x05fdffffff000000:0:0` (snapshot 4294967293, extents) one
@@ -3495,7 +3526,16 @@ should be 72" (and 0:426, 64 against 56), then "backpointer doesn't match
 extent it points to" for `2147483915:8:U32_MAX`, and `scanning for missing
 backpointers in 1/2048 buckets`. So it reports the shape wherever it looks, and
 it looks only at a bucket whose totals do not balance. The finding is kept,
-and the class is in the baseline against #604.
+and the class is in the baseline against #604. The guest regression
+`a_shared_extent_sector_is_reported_when_bucket_totals_balance` keeps both
+same-bucket fixtures and the cross-bucket control measured against the pinned
+reference. Physical placement varies between fixture builds: in the kept
+fixture archive used on 2026-11-16, the originally selected `block4k` files
+both occupy bucket 432, at sectors 0 and 8 within it. The regression therefore
+selects adjacent one-extent files whose decoded pointers actually cross a
+bucket boundary for that control, and asserts the placement before mutation.
+The required reference rejection is unchanged; inode numbers alone do not
+establish a cross-bucket case.
 
 ## Confirmation
 
