@@ -61,6 +61,7 @@ require(len(cases) == 648, "expected 648 executed cases, including eight control
 require({(c["fixture"], c["seed"]) for c in cases} == expected, "the replay's fixtures or seeds changed")
 normal = differential.controls(out, cases)
 needle = "snapshot tree points to subvolume that does not point to snapshot in this tree"
+claim = "snapshot 4294967295 is claimed by subvolume 1, which it backrefs, and also by 2"
 observed = False
 crashes = 0
 for case in cases:
@@ -79,8 +80,12 @@ for case in cases:
     if case["id"] == "kernel-1659511":
         require(case["what"] == "btree 8 key at 0:2:0: offset changed, insert committed",
                 "kernel-1659511 no longer has the recorded mutation")
-        require(case["signature"] == "check:snapshot_tree_to_wrong_subvol", "the exact corruption was not named")
-        require(matches and ref["status"] == 1, "the reference did not reproduce the recorded rejection")
+        require(case["signature"] == "check:snapshot_claimed_twice",
+                "the pinned first finding changed")
+        require(matches, "the reference did not report the snapshot-tree corruption")
+        require(any(claim in line for line in ref["lines"]),
+                "the reference did not report the duplicate snapshot claim")
+        require(ref["status"] == 1, "the reference did not reject the mutation")
         observed = True
 require(observed, "the exact non-crashing reference rejection was not observed")
 message = f"snapshot-tree-subvolume: 648 cases, eight clean controls; #265 resolved; {crashes} reference crashes (counts only)"

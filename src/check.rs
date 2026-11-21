@@ -2412,6 +2412,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (BACKPOINTERS, KEY_BACKPOINTER) => Some(("backpointer", 32)),
         (SNAPSHOTS, KEY_SNAPSHOT) => Some(("snapshot", SNAP_MIN_BYTES)),
         (SUBVOLUMES, KEY_SUBVOLUME) => Some(("subvolume", SUBVOL_MIN_BYTES)),
+        // Nightly differential run 43591206493: the reference rejects a
+        // logged_op_truncate value shorter than 24 bytes.
+        (LOGGED_OPS, KEY_LOGGED_OP_TRUNCATE) => Some(("logged_op_truncate", 24)),
         _ => None,
     };
     if let Some((kind, minimum)) = minimum_value.filter(|(_, minimum)| k.value.len() < *minimum) {
@@ -4335,12 +4338,24 @@ mod tests {
 
     /// The logged_ops inode allocation cursor, at 1:1:0 (S8).
     const KEY_INODE_ALLOC_CURSOR: u8 = 35;
+    const KEY_LOGGED_OP_TRUNCATE: u8 = 32;
 
     fn cursor(inode: u64, snapshot: u32) -> Bkey {
         let mut k = key(KEY_INODE_ALLOC_CURSOR, 1, vec![0; 16]);
         k.pos.inode = inode;
         k.pos.snapshot = snapshot;
         k
+    }
+
+    #[test]
+    fn a_logged_op_truncate_value_needs_24_bytes() {
+        let mut short = key(KEY_LOGGED_OP_TRUNCATE, 2, vec![0; 16]);
+        short.pos.inode = 1;
+        assert_eq!(field_kinds(LOGGED_OPS, &short), ["bkey_val_size_too_small"]);
+
+        let mut exact = short;
+        exact.value.resize(24, 0);
+        assert_eq!(field_kinds(LOGGED_OPS, &exact), Vec::<&str>::new());
     }
 
     #[test]
@@ -4659,6 +4674,9 @@ mod tests {
 
         for kt in [KEY_LOGGED_OP_TRUNCATE, KEY_LOGGED_OP_FINSERT] {
             k.key_type = kt;
+            if kt == KEY_LOGGED_OP_TRUNCATE {
+                k.value.resize(24, 0);
+            }
             let mut report = Report::default();
             check_key_fields(SUBVOLUME_CHILDREN, &k, &mut report);
             assert_eq!(report.problems.len(), 1, "type {kt}: {report:?}");

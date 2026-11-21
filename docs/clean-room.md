@@ -3523,3 +3523,24 @@ of `differential.yml` reach the same kind of change there: #256's two, #258's,
 this crate's tests now record them. Seed 74 of #219 reaches something else, so
 seed 206 stands in for it: one extent's stored checksum changed and nothing else,
 with the reference's verdicts on it taken by the same job.
+
+## Nightly differential run 43591206493 (#662, 2026-11-14)
+
+The run changed `logged_ops` key `1:2:0` to `logged_op_truncate` while keeping
+its 16-byte value. The reference checker refused it with `bad val size
+(16 < 24)`. `tests/check_oracle_key_types.rs` recreates that mutation in the
+guest and checks both verdicts; the checker reports
+`bkey_val_size_too_small`. The unit boundary test confirms that 24 bytes is
+accepted and shorter values are refused.
+
+## Pinned snapshot-tree replay (#609, now #662)
+
+The `kernel-1659511` mutation from the kept fixture changes the snapshot of
+subvolume 2 to `U32_MAX`. In reference run 43763749415, the checker reported
+both that the snapshot tree points to a subvolume whose snapshot belongs to
+another tree and that snapshot `U32_MAX` is claimed by subvolumes 1 and 2. Our
+checker reports `snapshot_claimed_twice` first and
+`snapshot_tree_to_wrong_subvol` afterward. The pinned replay now checks the
+stable first finding, both reference messages, and the reference's rejection;
+`tests/oracle_differential_snapshot_tree_subvolume.rs` separately keeps the
+#265 finding required by the original issue.

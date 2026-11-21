@@ -292,6 +292,7 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
     (old_work / 'keep').touch()
     processes = []
     cases = []
+    outputs = {}
     # Each wait follows the supervisor's trace, which grows with every command
     # it runs. However slow the host, a working supervisor keeps moving; one
     # that has stopped does not, and fails here whatever the load. MEASURED on
@@ -309,12 +310,17 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
     wait_for = progress.wait_for
     await_ready = progress.await_ready
 
-    def start(label, mode):
+    def start(label, mode, output=None):
         case = sandbox / label
         case.mkdir()
+        if output is None:
+            output = sandbox / f'fixtures-{label}'
+            output.mkdir()
+            (output / 'cached.json').write_text('published manifest from another job')
+        outputs[case] = output
         # The host's own setsid wins; tests/scripts/support is for a host with none.
         env = dict(os.environ, PATH=os.pathsep.join((str(tools), os.environ['PATH'], str(support))),
-                   BCACHEFS_REF_ROOT=str(root), BCACHEFS_FIXTURE_OUT=str(fixtures),
+                   BCACHEFS_REF_ROOT=str(root), BCACHEFS_FIXTURE_OUT=str(output),
                    BCACHEFS_FIXTURE_WATCHDOG=str(watchdog), BCACHEFS_FIXTURE_STUDY=str(study),
                    FIXTURE_CASE=str(case), FIXTURE_MODE=mode, WATCHDOG_PID='inherited-not-owned',
                    FIXTURE_STAND_IN_BOUND=str(CASE_LIMIT))
@@ -357,13 +363,26 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                 ran['descendant'] += 1
         assert (legacy / 'keep.img').read_text() == 'unmarked legacy image'
         assert (old_work / 'keep').exists()
-        assert cached.read_text() == 'published manifest from another job'
+        assert (outputs[case] / 'cached.json').read_text() == 'published manifest from another job'
         if not retained: assert any(e['kind'] == 'remove' for e in records)
         ran['signal' if status > 128 else 'status'] += 1
         return scratch
 
     passed = False
     try:
+        if wanted('interrupted-output'):
+            partial = sandbox / 'partial-fixtures'
+            partial.mkdir()
+            stale = partial / 'default.img'
+            stale.write_bytes(b'filesystem left by an interrupted build')
+            proc, case = start('interrupted-output', 'format-fail', partial)
+            wait_for(case, 'the supervisor to refuse pre-existing images',
+                     lambda: proc.poll() is not None)
+            log = (case / 'log').read_text()
+            assert proc.returncode == 1, ('pre-existing output status', proc.returncode, log)
+            assert 'default.img' in log and 'chore fixtures:clean' in log, log
+            assert stale.read_bytes() == b'filesystem left by an interrupted build'
+            assert not (case / 'events').exists(), 'tools started before preflight refusal'
         for mode, status in [('format-fail', 31), ('check-fail', 1),
                              ('mount-fail', 1), ('copy-fail', 34)]:
             if not wanted(mode): continue
@@ -413,8 +432,8 @@ with tempfile.TemporaryDirectory(prefix='guest-fixture-cleanup-test.') as tmp:
                 proc.send_signal(sig)
                 finish(proc, case, 128 + sig)
         if wanted('concurrent'):
-            first, a = start('concurrent-a', 'format-hold')
-            second, b = start('concurrent-b', 'format-hold')
+            first, a = start('concurrent-a', 'format-hold', fixtures)
+            second, b = start('concurrent-b', 'format-hold', fixtures)
             await_ready(first, a)
             await_ready(second, b)
             a_root, b_root = events(a)[0]['scratch'], events(b)[0]['scratch']
