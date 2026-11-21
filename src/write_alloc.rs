@@ -650,7 +650,7 @@ impl<D: BlockDevice> Writer<D> {
 
     /// Add a `btree_root` entry for btree `id` at the end of the clean
     /// field, growing the field and the superblock.
-    fn add_root_entry(&mut self, id: u8, key: &[u8]) -> Result<()> {
+    pub(super) fn add_root_entry(&mut self, id: u8, key: &[u8]) -> Result<()> {
         let mut p = super::SB_HEADER_BYTES;
         let raw = &mut self.sb_raw;
         while p + 8 <= raw.len() {
