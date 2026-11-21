@@ -27,10 +27,20 @@ jobs:
     with:
       fresh_fixtures: true
 
+  compare-gate:
+    needs: gate
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   compare:
     name: the fresh build against the kept one
-    needs: gate
-    runs-on: ubuntu-24.04
+    needs: [gate, compare-gate]
+    runs-on: ${{ needs.compare-gate.outputs.runner }}
     timeout-minutes: 30
     # contents: write, to keep this build when no build is kept for this key;
     # actions: read, for this run's artifact.
@@ -39,6 +49,9 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - uses: actions/download-artifact@v4
         with:
           name: fixtures
@@ -66,11 +79,22 @@ jobs:
         if: steps.source.outputs.kept == 'true'
         run: python3 -I scripts/fixtures-compare.py "$RUNNER_TEMP/kept/fixtures.tar.gz" "$RUNNER_TEMP/fresh/fixtures.tar.gz"
 
+  file-gate:
+    if: failure() && github.event_name == 'schedule'
+    needs: [gate, compare]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   file:
     name: file a failed night
-    needs: [gate, compare]
+    needs: [gate, compare, file-gate]
     if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.file-gate.outputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read

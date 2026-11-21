@@ -101,13 +101,21 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
-  # Replay an independently recorded positive observation, then deliberately
-  # damage each observation. A failed read alone is not integrity evidence:
-  # fsck passes both images, but only the exact mutated file must return EIO.
+  default74-read-controls-gate:
+    if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   default74-read-controls:
     name: default-206 read evidence rejection controls
     if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
-    runs-on: ubuntu-24.04
+    needs: default74-read-controls-gate
+    runs-on: ${{ needs.default74-read-controls-gate.outputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -127,6 +135,16 @@ jobs:
       - name: The pinned job reads exactly one complete observation from its test's log
         run: bash scripts/pinned-default74-observation-controls.sh
 
+  pinned-default74-gate:
+    if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   # Each case's expected values belong to one fixtures build, so it is judged
   # only over that build, fetched by its release and digest and refused on any
   # mismatch. The run fails unless exactly that one test ran and passed.
@@ -137,7 +155,8 @@ jobs:
   pinned-default74:
     name: pinned default-206 (#219, kept fixtures sha256:6edbb7c0)
     if: github.event_name == 'pull_request' || inputs.fixture_run == 'kept'
-    runs-on: ubuntu-24.04
+    needs: pinned-default74-gate
+    runs-on: ${{ needs.pinned-default74-gate.outputs.runner }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -146,6 +165,9 @@ jobs:
       PIN_DIGEST: "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7"
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -235,13 +257,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  differential-gate:
+    if: ${{ !cancelled() }}
+    needs: [pinned-default74, default74-read-controls]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   # Not gated on the pinned jobs: they are skipped where their fixtures are
   # not judged, and a failure of theirs fails the run on its own.
   differential:
-    needs: [pinned-default74, default74-read-controls]
+    needs: [pinned-default74, default74-read-controls, differential-gate]
     if: ${{ !cancelled() }}
     name: differential (this crate vs the reference checker, damaged images)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.differential-gate.outputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 90
     # issues: write, for filing a failed scheduled run (the last step);
     # actions: read, for the fixtures of the newest green main run.
@@ -251,6 +284,9 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       # #226's retained proof: the reference's read of case default-74 and its
       # binding to the bytes of artifact 11977252185. Those bytes no longer exist,
       # so no run can judge it, and only a dispatch naming their run reaches it,

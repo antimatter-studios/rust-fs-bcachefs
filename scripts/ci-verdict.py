@@ -15,7 +15,20 @@ FULL = {
     "coverage",
 }
 FOCUSED = {"guest-write-study", "crc128-native"}
-ALL = QUICK | FULL | FOCUSED
+BASE = QUICK | FULL | FOCUSED
+
+# Every job but the reusable-workflow caller has a `<job>-gate` job that picks
+# its runner. A gate runs exactly when its job does, so it is judged the same
+# way; `ci-ok-gate` picks ci-ok's runner and runs every time.
+GATED = BASE - {"crc128-native"}
+
+
+def with_gates(names):
+    gates = {f"{name}-gate" for name in names if name in GATED}
+    return set(names) | gates | {"ci-ok-gate"}
+
+
+ALL = with_gates(BASE)
 
 
 def verdict(needs, event, reproducer, code):
@@ -28,13 +41,13 @@ def verdict(needs, event, reproducer, code):
         }.get(reproducer)
         if selected is None or code != "":
             return ["invalid isolated evidence selection or unexpected change output"]
-        required = {selected}
+        required = with_gates({selected})
     else:
         if code not in {"true", "false"}:
             return ["change classification must explicitly be true or false"]
         if event == "workflow_dispatch" and code != "true":
             return ["full dispatch must run every full tier"]
-        required = QUICK | (FULL if code == "true" else set())
+        required = with_gates(QUICK | (FULL if code == "true" else set()))
     errors = []
     for name in sorted(ALL):
         expected = "success" if name in required else "skipped"
@@ -59,6 +72,7 @@ def check_contract():
     ]
     checked = 0
     for event, reproducer, code, required in cases:
+        required = with_gates(required)
         needs = {
             name: {"result": "success" if name in required else "skipped"}
             for name in ALL

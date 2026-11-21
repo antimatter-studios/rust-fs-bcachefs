@@ -22,12 +22,28 @@ env:
   FLTH_SHARED_CPUS: "4"
 
 jobs:
+  crc128-native-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   crc128-native:
     name: crc128 overwrite (reference FUSE, harness guest)
-    runs-on: ubuntu-24.04
+    needs: crc128-native-gate
+    runs-on: ${{ needs.crc128-native-gate.outputs.runner }}
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Owned FUSE lifecycle and refusal controls
         run: bash tests/scripts/guest-build-fixtures-cleans-up.sh
       - name: Keep the guard's diagnostic log
@@ -56,11 +72,6 @@ jobs:
           key: ${{ steps.vm-host.outputs.box-cache-key }}
       - name: Reproduce only the native crc128 overwrite
         run: nice -n 10 bash scripts/repro-crc128-overwrite.sh
-      - name: No run is still using the guest
-        # The shared guest stays up after a run (harness v0.7.0); `vm:down`
-        # stops it only when no suite is using it.
-        if: always()
-        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
       - name: Keep native transcripts
         if: always()
         uses: actions/upload-artifact@v4
