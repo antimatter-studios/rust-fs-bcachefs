@@ -1724,6 +1724,109 @@ fn both_checkers_reject_a_per_snapshot_key_count_out_of_step() {
     );
 }
 
+/// Hash-table whiteouts remain counted keys, including their 40 unpacked
+/// bytes (#415). These images were made by removing colliding names through
+/// the reference mount, so both dirents and xattrs keep a real hash whiteout.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_count_hash_whiteouts_in_snapshot_accounting() {
+    use fs_bcachefs::bkey::key_type;
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const ACCOUNTING: u8 = 20;
+    const KEY_ACCOUNTING: u8 = 34;
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    for (name, tree, tree_name) in [
+        ("collide-unlink", btree_id::DIRENTS, "dirents"),
+        ("xcollide-remove", btree_id::XATTRS, "xattrs"),
+    ] {
+        let dir = ScratchDir::new("check-hash-whiteout-snapshot");
+        assert_seen_by_reference(&dir);
+        let control = dir.into_image(format!("{name}-control.img"));
+        common::copy_sparse(fixture(&format!("write-study/{name}.img")), &control);
+        let (bad, text) = reference_finds_a_problem(&control);
+        assert!(!bad, "the unchanged {name} fixture must be clean:\n{text}");
+        let ours = check(&FileDevice::open(&control).unwrap()).unwrap();
+        assert!(ours.clean(), "unchanged {name}: {:?}", ours.problems);
+
+        let dev = FileDevice::open(&control).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        assert!(sb.is_clean(), "the {name} snapshot counters must be judged");
+        let keys = btree::walk(&dev, &sb, tree).unwrap();
+        let held: Vec<_> = keys
+            .iter()
+            .filter(|key| {
+                key.pos.snapshot == u32::MAX
+                    && !matches!(
+                        key.key_type,
+                        key_type::DELETED | key_type::WHITEOUT | key_type::EXTENT_WHITEOUT
+                    )
+            })
+            .collect();
+        let whiteouts: Vec<_> = held
+            .iter()
+            .filter(|key| key.key_type == key_type::HASH_WHITEOUT)
+            .collect();
+        assert!(!whiteouts.is_empty(), "{name} must retain a hash whiteout");
+        assert!(whiteouts.iter().all(|key| key.value.is_empty()));
+        let whiteout_contribution = [whiteouts.len() as u64, 40 * whiteouts.len() as u64];
+        let want = held.iter().fold([0u64; 2], |[count, bytes], key| {
+            [count + 1, bytes + 40 + key.value.len() as u64]
+        });
+        let counter_inode = 0x05ff_ffff_ff00_0000 | (u64::from(tree) << 16);
+        let counter = btree::walk(&dev, &sb, ACCOUNTING)
+            .unwrap()
+            .into_iter()
+            .find(|key| {
+                key.key_type == KEY_ACCOUNTING
+                    && key.pos.inode == counter_inode
+                    && key.value.len() >= 16
+            })
+            .expect("the reference-made image counts this btree at the all-ones snapshot");
+        let have =
+            [0, 1].map(|i| u64::from_le_bytes(counter.value[i * 8..i * 8 + 8].try_into().unwrap()));
+        assert_eq!(
+            have, want,
+            "{name} includes its hash-whiteout keys and bytes"
+        );
+        drop(dev);
+
+        for (field, field_name) in [(0, "keys"), (1, "bytes")] {
+            let dir = ScratchDir::new("check-omitted-hash-whiteout");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("{name}-omitted-{field_name}.img"));
+            common::copy_sparse(&control, &img);
+            let mut wrong = counter.clone();
+            let omitted = have[field]
+                .checked_sub(whiteout_contribution[field])
+                .unwrap();
+            wrong.value[field * 8..field * 8 + 8].copy_from_slice(&omitted.to_le_bytes());
+            let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            writer.insert(ACCOUNTING, vec![wrong]).unwrap();
+            drop(writer);
+
+            let (bad, text) = reference_finds_a_problem(&img);
+            assert!(
+                bad && text.contains("accounting mismatch for snapshot")
+                    && text.contains(&format!("btree={tree_name}")),
+                "{name} omitted {field_name}: {text}"
+            );
+            let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+            assert!(
+                ours.problems.iter().any(|problem| {
+                    problem.kind == "accounting_mismatch" && problem.detail.contains(tree_name)
+                }),
+                "{name} omitted {field_name}: {:?}",
+                ours.problems
+            );
+        }
+    }
+}
+
 /// A per-snapshot counter's btree is 32 bits after its snapshot id. Nightly
 /// differential run 42217255346 copied kernel-rootsnap.img's extents counter
 /// one inode up, which sets the btree's third byte: the reference read the
