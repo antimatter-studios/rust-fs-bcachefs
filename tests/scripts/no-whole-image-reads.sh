@@ -37,6 +37,9 @@ allowed = {
     "tests/fuzz_decoders.rs": {
         "&path": (1, "each bounded corpus input is passed to the decoder as complete bytes"),
     },
+    "tests/oracle_conformance.rs": {
+        'fixture("kernel-reuse.img")': (1, "the shared Driver needs owned damaged-image buffers; its input is capped at 64 MiB"),
+    },
     "tests/oracle_check.rs": {
         'fixture(&format!("{set}.img"))': (1, "fixture bytes are patched to make damaged checker inputs"),
     },
