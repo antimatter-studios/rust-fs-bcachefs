@@ -139,6 +139,13 @@ timeout() { run_owned timeout "$@"; }
 # Both host and chroot see this invocation's files, without binding or
 # sweeping shared paths. Published fixtures are deliberately outside it.
 mkdir -p "$out" "$ROOT/var/tmp"
+mapfile -t existing_images < <(find "$out" -maxdepth 1 -type f -name '*.img' -print | sort)
+if ((${#existing_images[@]})); then
+    echo "fixtures: existing images may be left by an interrupted build; refusing to overwrite them:" >&2
+    printf '  %s\n' "${existing_images[@]}" >&2
+    echo "fixtures: run 'chore fixtures:clean' and retry" >&2
+    exit 1
+fi
 scratch="$(mktemp -d "$ROOT/var/tmp/fixture-build.XXXXXXXX")"
 owner="fixture-build:$$:$scratch"
 printf '%s\n' "$owner" >"$scratch/.owner"

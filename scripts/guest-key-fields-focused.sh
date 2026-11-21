@@ -22,7 +22,7 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
                     a_sized_bucket_gens_key_is_refused_by_the_reference \
                     an_xattr_key_in_the_dirents_btree_is_refused_by_the_reference
                 do
-                    cargo test --locked --features write --test write_oracle \
+                    scripts/test-scratch-run.sh cargo test --locked --features write --test write_oracle \
                         "$case_name" -- --exact --test-threads=1
                 done
             '\''
