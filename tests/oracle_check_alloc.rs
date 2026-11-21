@@ -427,6 +427,40 @@ fn an_lru_entry_no_bucket_fill_matches_is_reported() {
 }
 
 #[test]
+fn a_fragmentation_lru_entry_under_another_lru_id_is_reported() {
+    let (img, bucket, at) = half_bucket_file("lru-wrong-id");
+    let mut misplaced = keys(&img, LRU)
+        .into_iter()
+        .find(|k| k.key_type == SET && k.pos == at)
+        .expect("the bucket's fragmentation lru entry");
+    let gone = Bkey {
+        key_type: key_type::DELETED,
+        size: 0,
+        version_hi: 0,
+        version_lo: 0,
+        pos: at,
+        value: Vec::new(),
+    };
+    misplaced.pos.inode = u64::MAX;
+
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    w.insert(LRU, vec![gone, misplaced]).unwrap();
+    drop(w);
+
+    let report = check::check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.kind == "incorrect_lru_entry"
+                && p.detail.contains(&format!("bucket {bucket}"))),
+        "bucket {bucket}'s fragmentation entry at {at} moved to LRU id U64_MAX was not reported: \
+         {:?}",
+        report.problems
+    );
+}
+
+#[test]
 fn a_piece_of_a_checksummed_region_whose_backpointer_is_gone_is_reported() {
     // On the aged image the reference overwrote the middle of
     // /over/middle.bin, leaving pieces of checksummed regions; a piece's
