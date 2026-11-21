@@ -1057,11 +1057,34 @@ whiteouts are not counted. With them left out, every counter of every
 reference-made fixture agrees with the btree's keys at that exact
 snapshot: the count of keys other than `deleted`, `whiteout` and
 `extent_whiteout`, and their bytes at the unpacked size, 40 plus the
-value's length. Whether a `hash_whiteout` is counted was not measured
-here; the writer counts the ones it makes. The checker compares those two
-counters, on clean images only, as for its other allocation checks. The
+value's length. The follow-up below confirms that `hash_whiteout` keys
+are counted; the writer also counts the ones it makes. The checker compares
+those two counters, on clean images only, as for its other allocation checks. The
 third counter (data sectors) is not judged; nothing was measured about it.
 No reference source was read.
+
+#### Hash-whiteout snapshot counts (#415, #644, 2026-11-16)
+
+Black-box checks in the pinned harness guest used the reference-made
+`write-study/collide-unlink` and `write-study/xcollide-remove` images. Each
+retains one empty-value `hash_whiteout` after a colliding dirent or xattr
+is removed. Both images have clean shutdowns and are accepted by both
+checkers. At snapshot 4294967295, the dirents counter records 7 keys and
+432 bytes, and the xattrs counter records 29 keys and 1792 bytes. These
+totals include the hash-whiteout as one key and 40 unpacked bytes; removing
+it from the count would make either total too small.
+
+The guest regression
+`both_checkers_count_hash_whiteouts_in_snapshot_accounting` verifies the
+retained hash-whiteout, independently sums the keys and unpacked bytes,
+and compares the stored snapshot counter with those sums. On separate
+copies of each image it subtracts either the hash-whiteout's key count
+or its unpacked bytes from that counter. The reference reports
+"accounting mismatch for snapshot" for the affected btree in all four
+cases, and this checker reports `accounting_mismatch` for the same tree.
+This establishes the inclusion rule for both removed dirents and removed
+xattrs without changing the third counter's unmeasured status. No
+reference source was read.
 
 ### Reconcile work keys (#163, 2026-10-27)
 
