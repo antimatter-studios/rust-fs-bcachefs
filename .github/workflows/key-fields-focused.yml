@@ -6,15 +6,17 @@ on:
     paths:
       - .github/workflows/key-fields-focused.yml
       - scripts/guest-key-fields-focused.sh
+      - tests/scripts/key-fields-focused-uses-kept-assets.sh
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
 
 env:
   CHORE_VERSION: "0.11.0"
   CARGO_BUILD_JOBS: "2"
+  KEPT_TAG: differential-fixtures-1
+  KEPT_TARBALL: 6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 
 jobs:
   key-fields-focused:
@@ -26,17 +28,22 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: Pinned siblings
         run: chore siblings
-      - name: Retained physical image binding and rejection controls
+      - name: Fetch durable fixture and physical image read evidence
         env:
           GH_TOKEN: ${{ github.token }}
+          READ_DIGEST: 33232537b5b1862123aca61ce9a75d34c4fdaa588d1f9a969338932cef5a43b6
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/12011667570/zip" > "$RUNNER_TEMP/native.zip"
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/11977252185/zip" > "$RUNNER_TEMP/fixtures.zip"
-          python3 tests/default74_native_proof.py "$RUNNER_TEMP/native.zip" "$RUNNER_TEMP/fixtures.zip"
-          mkdir -p "$RUNNER_TEMP/fixture-archive" .vm-share
-          unzip -q "$RUNNER_TEMP/fixtures.zip" -d "$RUNNER_TEMP/fixture-archive"
-          tar -xzf "$RUNNER_TEMP/fixture-archive/fixtures.tar.gz" -C .vm-share
+          bash scripts/kept-fixtures.sh fetch "$KEPT_TAG" "$KEPT_TARBALL" "$RUNNER_TEMP/fixtures"
+          mkdir -p "$RUNNER_TEMP/default206-read"
+          gh release download "$KEPT_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern default206-reference.zip --dir "$RUNNER_TEMP/default206-read" --clobber
+          echo "$READ_DIGEST  $RUNNER_TEMP/default206-read/default206-reference.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/default206-read/default206-reference.zip" \
+            -d "$RUNNER_TEMP/default206-read/evidence"
+          python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default206-read/evidence"
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh

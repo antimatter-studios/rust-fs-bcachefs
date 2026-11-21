@@ -336,6 +336,8 @@ esac
     check(r.returncode == 0 and "release create" not in calls, "a key that has a build was published again")
     r, _ = kept("publish", str(scratch / "asset"), "123", FAKE_API="miss", FAKE_CREATE="fail")
     check(r.returncode != 0, "a failed create with no release left was not a failure")
+    check("release create" in r.stderr,
+          f"a failed publication did not name its command: {r.stderr!r}")
     r, _ = kept("publish", str(scratch / "absent"), "123", FAKE_API="miss")
     check(r.returncode != 0, "an absent tarball was published")
 
@@ -351,6 +353,8 @@ esac
           "a commit with no queue run did not warn and go on")
     r, _ = kept("promote", base, FAKE_API="miss", FAKE_RUN="555", FAKE_ARTIFACT="no")
     check(r.returncode != 0, "a green queue run with no artifact was not a failure")
+    check("gh run download" in r.stderr,
+          f"a failed promotion did not name its command: {r.stderr!r}")
 
 # --- The workflows ask for what the key cannot see. --------------------------
 
