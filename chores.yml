@@ -282,9 +282,12 @@ tasks:
     # #546 and #542 print 89 lines / 5378 bytes, which 84 / 5000 refused with
     # exit 65. About 30% headroom is 116 lines / 7000 bytes, which also holds
     # this change's 99 bytes and Bash 3.2's 282.
+    # MEASURED 2026-11-16 with #653's Cargo target-directory guard on macOS
+    # arm64: all scripts pass and print 110 lines / 6449 bytes. Thirty percent
+    # headroom, rounded up, is 143 lines / 8384 bytes.
     cmds:
       - |
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 116 7000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 143 8384 -- bash -c '
           set -u
           failed=0
           for t in tests/scripts/*.sh; do
@@ -539,9 +542,14 @@ tasks:
       OUT: 'dist'
     cmds:
       - 'rustup target add {{.TRIPLE}}'
-      - 'cargo build --release --target {{.TRIPLE}}'
-      - 'mkdir -p "{{.OUT}}/include"'
-      - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
+      - |
+        set -eu
+        target_dir="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+        cargo build --locked --release --target '{{.TRIPLE}}'
+        library="$target_dir/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a"
+        test -f "$library"
+        mkdir -p "{{.OUT}}/include"
+        cp "$library" "{{.OUT}}/lib{{.LIBNAME}}.a"
       - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
       - 'cp "../rust-fs-core/include/fs_core.h" "{{.OUT}}/include/fs_core.h"'
       # The library links its dependencies in, so their notices go with it (#155).
