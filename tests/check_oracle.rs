@@ -3752,6 +3752,75 @@ fn both_checkers_reject_a_backpointer_at_a_snapshot() {
     }
 }
 
+/// Reproduce #453's xattrs leaf backpointer, whose target is the first
+/// quarter of the key space. Moving its physical position one byte back
+/// crosses a bucket boundary, and the reference reports the misplaced key.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_btree_backpointer_moved_off_its_node() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const BACKPOINTERS: u8 = 13;
+    const KEY_BACKPOINTER: u8 = 28;
+    let target = Bpos {
+        inode: (1u64 << 61) - 1,
+        offset: u64::MAX,
+        snapshot: u32::MAX,
+    };
+    let dir = ScratchDir::new("check-moved-btree-backpointer");
+    assert_seen_by_reference(&dir);
+    let img = dir.into_image("kernel-rootsnap.img");
+    common::copy_sparse(fixture("kernel-rootsnap.img"), &img);
+    let (control_status, control_text) = reference_on_key_field(&img);
+    assert_eq!(control_status, 0, "unchanged control: {control_text}");
+    assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+
+    let dev = FileDevice::open(&img).unwrap();
+    let sb = Superblock::read(&dev).unwrap();
+    let original = btree::walk(&dev, &sb, BACKPOINTERS)
+        .unwrap()
+        .into_iter()
+        .find(|key| {
+            key.key_type == KEY_BACKPOINTER
+                && key.value.first() == Some(&btree_id::XATTRS)
+                && key.value.get(2) == Some(&3)
+                && key.value.len() >= 32
+                && Bpos::parse(&key.value[12..32]).is_ok_and(|pos| pos == target)
+        })
+        .expect("the kernel-rootsnap xattrs leaf from #453 has its backpointer");
+    drop(dev);
+
+    let mut moved = original.clone();
+    moved.pos.offset -= 1;
+    let deleted = Bkey {
+        key_type: key_type::DELETED,
+        value: Vec::new(),
+        ..original.clone()
+    };
+    let mut keys = vec![moved.clone(), deleted];
+    keys.sort_by_key(|key| key.pos);
+    let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    writer.insert(BACKPOINTERS, keys).unwrap();
+    drop(writer);
+
+    let (reference_status, reference_text) = reference_on_key_field(&img);
+    assert_eq!(reference_status, 9, "{reference_text}");
+    assert!(
+        reference_text.contains("backpointer doesn't match btree node it points to"),
+        "{reference_text}"
+    );
+    let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+    assert!(
+        ours.problems
+            .iter()
+            .any(|problem| problem.kind == "backpointer_to_missing_ptr"),
+        "the misplaced node backpointer was not reported: {:?}",
+        ours.problems
+    );
+}
+
 /// A backpointer's level (value byte 1) of 5 is "backpointer level bad:
 /// 5 >= 4"; the reference accepted 4 in the same probe.
 #[cfg(feature = "write")]
@@ -3932,6 +4001,35 @@ fn both_checkers_accept_a_file_inode_with_hash_type_zero() {
         |w| w & !(0xf << 20),
         None,
     );
+}
+
+/// The reference checker ignores old varints left after an inode_v3 field
+/// count is reduced (#435).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_an_inode_v3_with_a_reduced_field_count() {
+    both_checkers_judge_an_inode_key("default", "/many/file-0200.txt", |k| {
+        let flags = u64::from_le_bytes(k.value[16..24].try_into().unwrap());
+        k.value[16..24].copy_from_slice(&(flags & !(0xff << 24)).to_le_bytes());
+        None
+    });
+}
+
+/// The reference checker accepts nonzero bytes appended after a file inode's
+/// declared fields, without changing any existing field (#435).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_accept_a_file_inode_with_nonzero_tail_bytes() {
+    both_checkers_judge_an_inode_key("default", "/many/file-0200.txt", |k| {
+        let before = fs_bcachefs::inode::InodeV3Raw::parse(&k.value).unwrap();
+        k.value.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x55]);
+        assert_eq!(
+            fs_bcachefs::inode::InodeV3Raw::parse(&k.value).unwrap(),
+            before,
+            "the appended tail must not change the declared inode fields"
+        );
+        None
+    });
 }
 
 /// Bits 32..36 of the word, 3 in every fixture, are read as fields_start,
@@ -4427,4 +4525,149 @@ fn both_checkers_agree_on_every_extent_pointer_flag_value() {
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+/// The checker reports an unclaimed sector when two files share one extent
+/// pointer, even when the reference's bucket totals keep it from looking.
+/// The block4k case is a control: its sectors cross buckets, so the reference
+/// also reports the stale backpointer.
+#[cfg(feature = "write")]
+#[test]
+fn a_shared_extent_sector_is_reported_when_bucket_totals_balance() {
+    use fs_bcachefs::bkey::{key_type, Bpos};
+    use fs_bcachefs::btree::{self, btree_id};
+    use fs_bcachefs::extent::DataExtent;
+    use fs_bcachefs::write::Writer;
+
+    for (set, source, reference_reports) in [
+        (
+            "default",
+            Bpos {
+                inode: 2147483914,
+                offset: 1,
+                snapshot: u32::MAX,
+            },
+            false,
+        ),
+        (
+            "lz4",
+            Bpos {
+                inode: 2147483924,
+                offset: 1,
+                snapshot: u32::MAX,
+            },
+            false,
+        ),
+        (
+            "block4k",
+            Bpos {
+                inode: 2147483915,
+                offset: 8,
+                snapshot: u32::MAX,
+            },
+            true,
+        ),
+    ] {
+        let dir = ScratchDir::new("check-shared-extent-sector");
+        assert_seen_by_reference(&dir);
+        let image = dir.into_image(format!("{set}.img"));
+        common::copy_sparse(fixture(&format!("{set}.img")), &image);
+        let (control_status, control_text) = reference_on_key_field(&image);
+        assert_eq!(control_status, 0, "{set} unchanged control: {control_text}");
+        assert!(check(&FileDevice::open(&image).unwrap()).unwrap().clean());
+
+        let initial = FileDevice::open(&image).unwrap();
+        let sb = Superblock::read(&initial).unwrap();
+        let extents = btree::walk(&initial, &sb, btree_id::EXTENTS).unwrap();
+        let bucket_size = u64::from(sb.members().unwrap()[usize::from(sb.dev_idx)].bucket_size);
+        // Fixture builds can place the seed's two files in one bucket even
+        // with 4 KiB blocks. The rejection control must actually straddle a
+        // bucket boundary, rather than infer placement from inode numbers.
+        let source = if reference_reports {
+            extents
+                .windows(2)
+                .find_map(|pair| {
+                    let [first, second] = pair else {
+                        unreachable!()
+                    };
+                    let a = DataExtent::from_key(first).ok()?;
+                    let b = DataExtent::from_key(second).ok()?;
+                    (first.pos.snapshot == u32::MAX
+                        && first.pos.inode.checked_add(1) == Some(second.pos.inode)
+                        && first.pos.offset == u64::from(first.size)
+                        && first.pos.offset == second.pos.offset
+                        && first.size == second.size
+                        && a.ptr.dev == b.ptr.dev
+                        && a.ptr.offset / bucket_size != b.ptr.offset / bucket_size)
+                        .then_some(first.pos)
+                })
+                .expect("the block4k fixture has adjacent one-extent files across buckets")
+        } else {
+            source
+        };
+        let original = extents
+            .iter()
+            .find(|key| key.key_type == key_type::EXTENT && key.pos == source)
+            .expect("the measured source extent is present")
+            .clone();
+        let overwritten_pos = Bpos {
+            inode: source.inode + 1,
+            ..source
+        };
+        let overwritten = extents
+            .iter()
+            .find(|key| key.key_type == key_type::EXTENT && key.pos == overwritten_pos)
+            .expect("the next file's only extent is present")
+            .clone();
+        assert_eq!(
+            DataExtent::from_key(&original).unwrap().ptr.offset / bucket_size
+                != DataExtent::from_key(&overwritten).unwrap().ptr.offset / bucket_size,
+            reference_reports,
+            "{set}: the control's physical bucket placement must match its verdict"
+        );
+
+        let mut duplicate = original.clone();
+        duplicate.pos = overwritten_pos;
+        {
+            let mut writer = Writer::open(FileDevice::open_rw(&image).unwrap()).unwrap();
+            writer
+                .insert(btree_id::EXTENTS, vec![duplicate.clone()])
+                .unwrap();
+        }
+
+        let device = FileDevice::open(&image).unwrap();
+        let sb = Superblock::read(&device).unwrap();
+        let extents = btree::walk(&device, &sb, btree_id::EXTENTS).unwrap();
+        assert!(extents.contains(&original), "{set}: source extent changed");
+        assert!(
+            extents.contains(&duplicate),
+            "{set}: replacement was not stored"
+        );
+        assert!(!extents.contains(&overwritten), "{set}: old extent remains");
+        assert_eq!(
+            DataExtent::from_key(&original).unwrap().ptr,
+            DataExtent::from_key(&duplicate).unwrap().ptr,
+            "{set}: both files must point to the same sector"
+        );
+
+        let (reference_status, reference_text) = reference_on_key_field(&image);
+        assert_eq!(
+            reference_status,
+            if reference_reports { 9 } else { 0 },
+            "{set}: {reference_text}"
+        );
+        assert_eq!(
+            reference_text.contains("backpointer doesn't match extent it points to"),
+            reference_reports,
+            "{set}: {reference_text}"
+        );
+        let ours = check(&device).unwrap();
+        assert!(
+            ours.problems
+                .iter()
+                .any(|problem| problem.kind == "backpointer_to_missing_ptr"),
+            "{set}: {:?}",
+            ours.problems
+        );
+    }
 }
