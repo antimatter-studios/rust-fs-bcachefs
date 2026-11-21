@@ -76,6 +76,18 @@ chore staticlib    # dist/libfs_bcachefs.a and its headers
 chore cli:install  # the tools, staged in tmp/cli
 ```
 
+`rust-fs-core` is a crates.io dependency, named by version only, so another
+repository can depend on this crate by git revision. To build against an
+unreleased `rust-fs-core` checkout, override it locally in
+`.cargo/config.toml`, which git ignores:
+
+```toml
+[patch.crates-io]
+rust-fs-core = { path = "../rust-fs-core" }
+```
+
+Remove the override before pushing: CI builds the published version.
+
 ## Listing trees
 
 `fs.bcachefs disk.img ls -R --max-depth 8 --limit 1000 /dir` walks in

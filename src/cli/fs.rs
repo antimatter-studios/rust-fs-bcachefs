@@ -297,6 +297,7 @@ fn run(m: &ArgMatches) -> Result<Outcome, CliError> {
                     transfer::TimeOptions::from_matches(sub)?,
                     xattrs,
                 )
+                .map(tree_export_outcome)
             } else {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
             }
@@ -973,6 +974,17 @@ fn ls_recursive(
     Ok(report)
 }
 
+/// Recursive export keeps its established nonzero status for partial trees.
+/// The shared core also serves salvage commands, whose partial output uses a
+/// separate status; that new distinction must not change existing exports.
+fn tree_export_outcome(outcome: Outcome) -> Outcome {
+    if outcome.code == fs_core::cli::output::EXIT_PARTIAL {
+        outcome.with_code(fs_core::cli::output::EXIT_FAILED)
+    } else {
+        outcome
+    }
+}
+
 /// A library error as the CLI contract has it. `NotFound` is the library's
 /// "the path or key does not exist" (the C ABI's ENOENT), so it is the
 /// contract's `not_found` kind, still exit 1, which a script matches
@@ -1000,6 +1012,21 @@ fn opening(e: fs_bcachefs::Error) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_export_preserves_its_status_and_report_contract() {
+        for code in [0, 1, 2, 3, 4, 5, 6, 255] {
+            let report = Json::object([("completed", Json::UInt(1))]);
+            let outcome = tree_export_outcome(
+                Outcome::report(report.clone())
+                    .with_text("one file")
+                    .with_code(code),
+            );
+            assert_eq!(outcome.code, if code == 5 { 1 } else { code });
+            assert_eq!(outcome.report, Some(report));
+            assert_eq!(outcome.text.as_deref(), Some("one file"));
+        }
+    }
 
     /// The `kind` the JSON error carries, as compact JSON.
     fn json_kind(e: &CliError) -> Option<String> {
