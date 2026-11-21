@@ -40,10 +40,10 @@ use fs_core::BlockRead;
 /// internal UUID, read little-endian. INFERRED: the XOR is the same for
 /// every entry of every fixture.
 pub const JSET_MAGIC_BASE: u64 = 0x2452_35c1_a362_5032;
-const JSET_HEADER: usize = 56;
+pub(crate) const JSET_HEADER: usize = 56;
 /// Where an encrypted jset's ciphertext starts: after its u64s.
 const JSET_ENCRYPTED: usize = 44;
-const FLAG_NO_FLUSH: u32 = 1 << 5;
+pub(crate) const FLAG_NO_FLUSH: u32 = 1 << 5;
 /// The superblock field naming the journal's buckets.
 pub const FIELD_JOURNAL_V2: u32 = 9;
 
@@ -316,7 +316,7 @@ fn parse_jset_checked(
 }
 
 /// The sub-entries of the jset at the start of `b`, which ends at `end`.
-fn parse_entries(b: &[u8], end: usize) -> Result<Vec<JsetEntry>> {
+pub(crate) fn parse_entries(b: &[u8], end: usize) -> Result<Vec<JsetEntry>> {
     let mut entries = Vec::new();
     let mut p = JSET_HEADER;
     while p + 8 <= end {

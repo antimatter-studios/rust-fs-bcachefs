@@ -285,7 +285,7 @@ impl Superblock {
 
     /// Header and bounds only: copy selection precedes optional-field
     /// validation (S3, #261). Checksum validation still precedes selection.
-    fn parse_header(b: &[u8]) -> Result<Self> {
+    pub(crate) fn parse_header(b: &[u8]) -> Result<Self> {
         if b.len() < SB_HEADER_BYTES {
             return Err(Error::Corrupt("superblock shorter than its header".into()));
         }
@@ -423,7 +423,7 @@ impl Superblock {
         Ok(sb)
     }
 
-    fn read_bytes_at(dev: &dyn BlockRead, sector: u64) -> Result<Vec<u8>> {
+    pub(crate) fn read_bytes_at(dev: &dyn BlockRead, sector: u64) -> Result<Vec<u8>> {
         let at = sector
             .checked_mul(512)
             .ok_or_else(|| Error::Corrupt(format!("superblock sector {sector} overflows")))?;
@@ -511,7 +511,7 @@ impl Superblock {
         ((self.flags[1] >> 4) & 0xf) as u8
     }
 
-    fn verify_checksum(&self, b: &[u8]) -> Result<()> {
+    pub(crate) fn verify_checksum(&self, b: &[u8]) -> Result<()> {
         let stored = le64(&self.csum, 0);
         let t = self.csum_type();
         if !crate::csum::is_known(t) {

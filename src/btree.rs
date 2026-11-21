@@ -36,8 +36,8 @@ pub const BSET_MAGIC_BASE: u64 = 0x9013_5c78_b99e_07f5;
 pub fn node_magic(uuid: &[u8; 16]) -> u64 {
     BSET_MAGIC_BASE ^ le64(uuid, 0)
 }
-const HEADER_BSET: usize = 136;
-const BSET_HEADER: usize = 24;
+pub(crate) const HEADER_BSET: usize = 136;
+pub(crate) const BSET_HEADER: usize = 24;
 /// Deeper than any real btree; a cycle or a corrupt level stops here.
 const MAX_DEPTH: u32 = 16;
 
@@ -418,7 +418,7 @@ fn decrypt_node(b: &mut [u8], block: usize, key: &crate::crypt::MasterKey) -> Re
 }
 
 /// How many bytes of the 16-byte checksum field a type uses.
-fn csum_mask(t: u8) -> u64 {
+pub(crate) fn csum_mask(t: u8) -> u64 {
     match t {
         1 | 5 => 0xffff_ffff,
         _ => u64::MAX,
