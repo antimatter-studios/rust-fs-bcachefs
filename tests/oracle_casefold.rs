@@ -199,7 +199,7 @@ fn the_writer_refuses_to_change_a_casefolded_directory() {
     let dir = common::ScratchDir::new("casefold");
     let img = dir.join("casefold.img");
     common::copy_sparse(fixture("casefold.img"), &img);
-    let before = std::fs::read(&img).unwrap();
+    let before = common::sparse_snapshot(&img, "casefold-before");
     let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
     let root = fs_bcachefs::inode::ROOT_INO;
     match w.create_file(root, b"new.txt", b"new\n", 0o644) {
@@ -211,6 +211,5 @@ fn the_writer_refuses_to_change_a_casefolded_directory() {
         other => panic!("mkdir in a casefolded directory: {other:?}"),
     }
     drop(w);
-    let after = std::fs::read(&img).unwrap();
-    assert!(after == before, "the image changed");
+    common::assert_files_equal(&before, &img, "the image changed");
 }

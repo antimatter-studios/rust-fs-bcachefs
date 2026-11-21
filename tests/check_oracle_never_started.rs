@@ -230,9 +230,10 @@ fn both_checkers_agree_on_every_superblock_edit() {
     let sb = superblock_bytes(&formatted);
     // The table's images are this image, byte for byte, unedited.
     let unedited = written(&never_started::image(&sb, On::All, |_| {}));
-    assert_eq!(
-        std::fs::read(&formatted).unwrap(),
-        std::fs::read(&unedited).unwrap()
+    common::assert_files_equal(
+        &formatted,
+        &unedited,
+        "the unedited table image differs from the formatted image",
     );
     let mut mismatches = Vec::new();
     for case in CASES {

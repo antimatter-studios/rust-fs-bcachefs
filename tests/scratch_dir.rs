@@ -91,6 +91,39 @@ fn an_image_path_cannot_escape_its_owner() {
     assert!(dir.path().is_dir());
 }
 
+#[test]
+fn image_comparison_reports_the_first_difference_across_chunks() {
+    use sha2::{Digest, Sha256};
+
+    const CHUNK: usize = 1 << 20;
+    let dir = ScratchDir::new("image-comparison");
+    let expected = dir.join("expected.img");
+    let actual = dir.join("actual.img");
+    let expected_bytes = vec![0x5a; CHUNK + 64];
+    std::fs::write(&expected, &expected_bytes).unwrap();
+    std::fs::write(&actual, &expected_bytes).unwrap();
+    common::assert_files_equal(&expected, &actual, "equal images");
+    let expected_digest: [u8; 32] = Sha256::digest(&expected_bytes).into();
+    assert_eq!(common::sha256_file(&expected), expected_digest);
+
+    let mut changed = expected_bytes;
+    changed[CHUNK + 17] = 0xa5;
+    std::fs::write(&actual, changed).unwrap();
+    let failure = std::panic::catch_unwind(|| {
+        common::assert_files_equal(&expected, &actual, "different images");
+    })
+    .unwrap_err();
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic");
+    assert!(
+        message.contains(&format!("offset {}", CHUNK + 17)),
+        "the difference offset was not reported: {message}"
+    );
+}
+
 /// The copy holds the source's bytes, its length even when it ends in zeros, and
 /// no allocated blocks for its zero blocks (#504).
 #[test]
@@ -100,26 +133,27 @@ fn a_sparse_copy_holds_the_same_bytes_in_fewer_blocks() {
     // APFS leaves no hole for a gap of a few MiB; this is the size of a fixture.
     const LEN: usize = 64 * 1024 * 1024;
     let dir = common::ScratchDir::new("sparse-copy");
-    let mut image = vec![0u8; LEN];
-    // Across a read of the copy's own size, in the first block, and unaligned.
-    image[0] = 1;
-    image[1024 * 1024 - 1] = 2;
-    image[1024 * 1024] = 3;
-    image[3 * 1024 * 1024 + 17] = 4;
     let (src, dst) = (dir.join("full.img"), dir.join("sparse.img"));
-    std::fs::write(&src, &image).unwrap();
-    {
-        let file = std::fs::File::open(&src).unwrap();
-        file.sync_all().unwrap();
+    let mut source = std::fs::File::create(&src).unwrap();
+    let zeroes = vec![0; 1024 * 1024];
+    for _ in 0..LEN / zeroes.len() {
+        std::io::Write::write_all(&mut source, &zeroes).unwrap();
     }
+    use std::io::{Seek, SeekFrom, Write};
+    for (offset, byte) in [
+        (0, 1),
+        (1024 * 1024 - 1, 2),
+        (1024 * 1024, 3),
+        (3 * 1024 * 1024 + 17, 4),
+    ] {
+        source.seek(SeekFrom::Start(offset)).unwrap();
+        source.write_all(&[byte]).unwrap();
+    }
+    source.sync_all().unwrap();
+    drop(source);
 
     common::copy_sparse(&src, &dst);
-    {
-        let file = std::fs::File::open(&dst).unwrap();
-        file.sync_all().unwrap();
-    }
-
-    assert!(std::fs::read(&dst).unwrap() == image, "the bytes differ");
+    common::assert_files_equal(&src, &dst, "the sparse copy differs");
     let (full, sparse) = (
         std::fs::metadata(&src).unwrap().blocks(),
         std::fs::metadata(&dst).unwrap().blocks(),
@@ -132,8 +166,5 @@ fn a_sparse_copy_holds_the_same_bytes_in_fewer_blocks() {
     // A copy over an existing longer file leaves nothing of it.
     std::fs::write(&dst, vec![0xffu8; LEN + 4096]).unwrap();
     common::copy_sparse(&src, &dst);
-    assert!(
-        std::fs::read(&dst).unwrap() == image,
-        "an old file survives"
-    );
+    common::assert_files_equal(&src, &dst, "an old file survives");
 }

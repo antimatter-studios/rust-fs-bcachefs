@@ -221,7 +221,7 @@ fn what_the_formatter_was_told_reads_as_the_printer_says() {
 #[test]
 fn what_the_reference_lists_it_makes_at_that_start_and_does_not_keep() {
     let image = format(&["--version=1.38"]);
-    let bytes = std::fs::read(&image).unwrap();
+    let before = common::sparse_snapshot(&image, "read-never-started-before");
     let mut seeds = BTreeSet::new();
     let mut entries = BTreeSet::new();
     for _ in 0..3 {
@@ -239,18 +239,12 @@ fn what_the_reference_lists_it_makes_at_that_start_and_does_not_keep() {
             .find(|line| line.trim_start().starts_with("hash_seed="))
             .expect("the lister shows the root's seed");
         seeds.insert(seed.to_owned());
-        assert!(
-            std::fs::read(&image).unwrap() == bytes,
-            "the lister changed the image"
-        );
+        common::assert_files_equal(&before, &image, "the lister changed the image");
     }
     assert_eq!(seeds.len(), 3, "each start makes its own root");
     assert_eq!(entries.len(), 3, "each start hashes its own entry");
     assert_refused(&image, "1.38");
-    assert!(
-        std::fs::read(&image).unwrap() == bytes,
-        "the read tools changed the image"
-    );
+    common::assert_files_equal(&before, &image, "the read tools changed the image");
 }
 
 /// The lister's `NAME -> INODE type dir`, for each entry in the root.
