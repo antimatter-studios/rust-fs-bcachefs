@@ -15,9 +15,10 @@ use fs_core::BlockRead;
 const BOUNDS: Bounds = Bounds {
     minimum_floor: 14,
     feature_bits_end: 24,
-    metadata_replicas_max: 4,
+    metadata_replicas_max: 1,
     shard_inode_numbers_bits_max: 15,
 };
+const FIELD_JOURNAL_V2: u32 = 9;
 /// The reference says a filesystem without it is no longer supported.
 const FEATURE_NEW_EXTENT_OVERWRITE: u64 = 1 << 9;
 /// The reference refuses it with the superblock beside a member marked as holding
@@ -27,6 +28,12 @@ const FEATURE_BIT_21: u64 = 1 << 21;
 /// Judge `sb`, read from `sector` of `dev`.
 pub(super) fn judge(sb: &Superblock, sector: u64, dev: &dyn BlockRead, r: &mut Report) {
     superblock_rules::judge(sb, sector, dev, &BOUNDS, r);
+    if sb.field(FIELD_JOURNAL_V2).is_none() {
+        r.add(
+            "invalid_sb_journal",
+            "started superblock has no journal_v2 field",
+        );
+    }
     if sb.features[0] & FEATURE_NEW_EXTENT_OVERWRITE == 0 {
         r.add("invalid_sb_features", "new_extent_overwrite is not set");
     }

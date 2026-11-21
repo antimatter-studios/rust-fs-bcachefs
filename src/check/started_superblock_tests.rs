@@ -71,3 +71,15 @@ fn every_superblock_edit_of_a_started_image_has_the_reference_verdict() {
         .collect();
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
+
+#[test]
+fn a_started_superblock_without_a_journal_is_reported_as_damage() {
+    let case = cases::CASES
+        .iter()
+        .find(|case| case.name == "started superblock has no journal_v2 field")
+        .expect("the missing-journal case is in the measured table");
+    match check(&edited(case.on, case.edit)) {
+        Ok(report) => assert!(!report.clean(), "missing journal was accepted"),
+        Err(error) => panic!("missing journal returned an unrelated error: {error}"),
+    }
+}
