@@ -9,7 +9,11 @@ for verb in write put; do
         check "$verb documents --$option" grep -q -- "--$option" "$SANDBOX/help"
     done
     check "$verb has an input-file example" grep -q 'fs.bcachefs disk.img write /hello.txt --from hello.txt' "$SANDBOX/help"
+    check "$verb documents the one-entry journal limit" grep -q 'one journal entry' "$SANDBOX/help"
 done
+fs.bcachefs image.img rm --help >"$SANDBOX/help" 2>"$SANDBOX/err"
+check 'rm --help succeeds without an image' test $? -eq 0
+check 'rm documents the one-entry journal limit' grep -q 'one journal entry' "$SANDBOX/help"
 rust-fs-bcachefs generate man "$SANDBOX/share" >"$SANDBOX/out" 2>"$SANDBOX/err"
 check 'man page generation succeeds' test $? -eq 0
 check 'the write man page exists' test -s "$SANDBOX/share/man/man1/fs.bcachefs-write.1"
