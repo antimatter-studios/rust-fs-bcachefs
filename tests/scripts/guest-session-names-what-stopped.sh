@@ -198,6 +198,7 @@ df_after=29000000
 peak=
 kill_sampler=
 ci=
+shared_root=
 
 # scenario NAME STATUS QEMU GUEST CONSOLE STATE IO: one run; sets out, rc, state.
 scenario() {
@@ -213,6 +214,7 @@ scenario() {
             PATH="$stubs:$PATH" GS_STATE="$state" GS_QEMU="$3" GS_GUEST="$4" \
                 GS_STATUS="$6" GS_IO="$7" FS_BCACHEFS_GUEST_ANSWER_LIMIT=2 \
                 GS_DF_BEFORE="$df_before" GS_DF_AFTER="$df_after" CI="$ci" \
+                FLTH_SHARED_ROOT="$shared_root" \
                 GS_PEAK="$peak" GS_KILL_SAMPLER="$kill_sampler" GS_REAL_SLEEP="$REAL_SLEEP" \
                 TMPDIR="$state/tmp" \
                 timeout "$WATCHDOG" bash scripts/guest-session.sh "$tmp/suite" "$2" 2>&1
@@ -479,6 +481,20 @@ status_is 0
 silent "guest-session: FAILED"
 df_after=29000000
 
+# A shared guest's host-disk growth includes other sessions, so do not report it
+# as this run's use or let it pass a CI budget check as if it were trustworthy.
+shared_root="$tmp/projects"
+scenario shared-guest-off-ci 0 alive answers "a line" "VM status: running" "I/O status: ok"
+status_is 0
+says "this run's use of the host's disk could not be judged: the harness guest is shared"
+silent "this run used"
+ci=true
+scenario shared-guest-ci 0 alive answers "a line" "VM status: running" "I/O status: ok"
+status_is 66
+says "FAILED: this run's use of the host's disk could not be judged: the harness guest is shared"
+ci=
+shared_root=
+
 # The overlay gives back what the guest deletes, so the budget is judged against
 # the lowest free space the run saw. Over the budget at the peak and under it at
 # the end is the run that #530 is about: on a smaller runner it would have stopped.
@@ -564,9 +580,9 @@ session_ends ends-on-hup 0 HUP 129
 session_ends ends-killed 0 KILL 137
 
 # The guest suite goes through it, and CI uploads where the console is kept.
-sed -n '/^  test:vm:$/,/^  [a-z:_-]*:$/p' "$REPO/chores.yml" | grep -qF 'scripts/guest-session.sh' ||
+sed -n '/^  test:vm:$/,/^  [a-z:_-]*:$/p' "$REPO/chores.yml" | grep -F 'scripts/guest-session.sh' >/dev/null ||
     fail "chores.yml: test:vm does not run through scripts/guest-session.sh"
-sed -n '/^  suite-in-vm:$/,/^  cli:$/p' "$REPO/.github/workflows/ci.yml" | grep -qF 'path: tmp/logs/*.log' ||
+sed -n '/^  suite-in-vm:$/,/^  cli:$/p' "$REPO/.github/workflows/ci.yml" | grep -F 'path: tmp/logs/*.log' >/dev/null ||
     fail "ci.yml: suite-in-vm does not upload tmp/logs/*.log, where the console is kept"
 
 [ "$fails" -eq 0 ] || exit 1

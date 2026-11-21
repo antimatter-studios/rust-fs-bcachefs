@@ -14,8 +14,10 @@ mod common;
 #[path = "common/writer_superblock.rs"]
 mod writer_superblock;
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 use common::{fixture, ScratchDir, ScratchImage};
 use fs_bcachefs::bkey::key_type;
@@ -30,6 +32,94 @@ use fs_core::FileDevice;
 /// mount point the read-back uses inside it.
 const REF_ROOT: &str = "/srv/ref-trixie";
 const MNT: &str = "/mnt/write-oracle";
+const REFERENCE_PROCESS_LIMIT: &str = "120";
+const REFERENCE_MOUNT_LIMIT: &str = "600";
+const MOUNT_COMMAND_LIMIT: &str = "5";
+
+/// Run an external process under GNU timeout, with a short kill grace so a
+/// reference process that ignores TERM cannot outlive its test.
+fn deadline_command(program: &str, seconds: &str) -> Command {
+    let mut command = Command::new("timeout");
+    command
+        .args(["--verbose", "--kill-after=5", seconds, program])
+        .env("LC_ALL", "C");
+    command
+}
+
+/// Keep a long-lived FUSE daemon in the wrapper's process group so cleanup can
+/// stop the whole group after unmounting. The daemon itself still has a hard
+/// deadline if a test or guest operation gets stuck.
+fn mount_deadline_command() -> Command {
+    let mut command = Command::new("timeout");
+    command
+        .args([
+            "--foreground",
+            "--verbose",
+            "--kill-after=5",
+            REFERENCE_MOUNT_LIMIT,
+            "bcachefs-ref",
+        ])
+        .env("LC_ALL", "C");
+    command
+}
+
+fn wait_for_process(child: &mut Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_mount(host_mnt: &Path) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mounted = deadline_command("mountpoint", MOUNT_COMMAND_LIMIT)
+            .args(["-q", host_mnt.to_str().unwrap()])
+            .status()
+            .is_ok_and(|status| status.success());
+        if mounted {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Stop the timeout wrapper and every process in its private process group.
+fn stop_process_group(child: &mut Child) {
+    let pgid = child.id() as libc::pid_t;
+    // SAFETY: the wrapper is started in its own process group below.
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+    assert!(
+        wait_for_process(child, Duration::from_secs(5)),
+        "the reference process group did not exit after SIGKILL"
+    );
+}
+
+#[test]
+fn a_reference_process_deadline_stops_a_hung_child() {
+    let output = deadline_command("sh", "1")
+        .args(["-c", "sleep 30"])
+        .output()
+        .expect("GNU timeout is installed in the harness guest");
+    assert_eq!(output.status.code(), Some(124));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("timeout: sending signal"),
+        "the timeout diagnostic is retained"
+    );
+}
 
 fn require_guest() {
     assert!(
@@ -73,7 +163,10 @@ fn scratch(fixture_name: &str, test: &str) -> ScratchImage {
 }
 
 fn reference(args: &[&str]) -> (bool, String) {
-    let out = Command::new("bcachefs-ref").args(args).output().unwrap();
+    let out = deadline_command("bcachefs-ref", REFERENCE_PROCESS_LIMIT)
+        .args(args)
+        .output()
+        .unwrap();
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.success(), text)
@@ -104,7 +197,7 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
     // said last is the reason (CI run 38006023802: "Transport endpoint is
     // not connected" and nothing else).
     let log = img.with_extension("fuse.log");
-    let mut child = Command::new("bcachefs-ref")
+    let mut child = mount_deadline_command()
         .args([
             "fusemount",
             "-f",
@@ -115,31 +208,42 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
+        .process_group(0)
         .spawn()
         .unwrap();
-    let mounted = (0..60).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        Command::new("mountpoint")
-            .args(["-q", host_mnt.to_str().unwrap()])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    });
-    assert!(
-        mounted,
-        "the reference implementation did not mount {}",
-        img.display()
-    );
+    let mounted = wait_for_mount(&host_mnt);
+    if !mounted {
+        let _ = deadline_command("fusermount3", MOUNT_COMMAND_LIMIT)
+            .args(["-uz", host_mnt.to_str().unwrap()])
+            .status();
+        stop_process_group(&mut child);
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        panic!(
+            "the reference implementation did not mount {}; last output:\n{}",
+            img.display(),
+            said.lines()
+                .rev()
+                .take(30)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
     // The mount comes down whether `f` passes or panics, so one test that
     // kills the daemon cannot leave a dead mount for every test after it.
     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&host_mnt)));
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = Command::new("fusermount3")
+    let _ = deadline_command("fusermount3", MOUNT_COMMAND_LIMIT)
         .args(["-uz", host_mnt.to_str().unwrap()])
         .status();
+    let stopped = wait_for_process(&mut child, Duration::from_secs(30));
+    if !stopped {
+        stop_process_group(&mut child);
+    }
     match out {
-        Ok(v) => v,
+        Ok(v) if stopped => v,
+        Ok(_) => panic!("the reference mount did not stop within 30 seconds after unmount"),
         Err(panic) => {
             let said = std::fs::read_to_string(&log).unwrap_or_default();
             let tail: Vec<&str> = said.lines().rev().take(30).collect();
@@ -196,19 +300,14 @@ fn both_checkers_judge_a_bucket_holding_pieces_of_compressed_extents() {
 
     let host_mnt = PathBuf::from(format!("{REF_ROOT}{MNT}"));
     std::fs::create_dir_all(&host_mnt).unwrap();
-    let mut daemon = Command::new("bcachefs-ref")
+    let mut daemon = mount_deadline_command()
         .args(["fusemount", "-f", "-o", "rw,noatime", path, MNT])
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(img.with_extension("fuse.log")).unwrap())
+        .process_group(0)
         .spawn()
         .unwrap();
-    let mounted = (0..60).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        Command::new("mountpoint")
-            .args(["-q", host_mnt.to_str().unwrap()])
-            .status()
-            .is_ok_and(|s| s.success())
-    });
+    let mounted = wait_for_mount(&host_mnt);
     assert!(mounted, "the reference implementation did not mount {path}");
     let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         use std::os::unix::fs::FileExt;
@@ -232,16 +331,12 @@ fn both_checkers_judge_a_bucket_holding_pieces_of_compressed_extents() {
             file.sync_all().unwrap();
         }
     }));
-    let _ = Command::new("fusermount3")
+    let _ = deadline_command("fusermount3", MOUNT_COMMAND_LIMIT)
         .args(["-uz", host_mnt.to_str().unwrap()])
         .status();
-    let stopped = (0..60).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        matches!(daemon.try_wait(), Ok(Some(_)))
-    });
+    let stopped = wait_for_process(&mut daemon, Duration::from_secs(30));
     if !stopped {
-        let _ = daemon.kill();
-        let _ = daemon.wait();
+        stop_process_group(&mut daemon);
     }
     if let Err(panic) = written {
         std::panic::resume_unwind(panic);
@@ -1070,7 +1165,7 @@ fn links_attributes_and_xattrs_are_read_by_the_reference() {
         );
         // getfattr is installed in the reference tools' chroot
         // (scripts/vm-setup.sh), where the mount is at MNT.
-        let out = Command::new("chroot")
+        let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
             .args([
                 REF_ROOT,
                 "getfattr",
@@ -1107,7 +1202,7 @@ fn long_xattr_names_set_here_are_read_by_the_reference() {
         for (name, value) in [("user.greeting", "hello"), ("user.on-a-directory", "dir")] {
             // By name, so the reference looks the xattr up rather than
             // listing every one.
-            let out = Command::new("chroot")
+            let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
                 .args([
                     REF_ROOT,
                     "getfattr",
@@ -1302,7 +1397,7 @@ fn colliding_xattrs_set_here_are_read_by_the_reference() {
     with_reference_mount(&img, |_| {
         for (i, name) in names.iter().enumerate() {
             let value = if i == 1 { "again" } else { name };
-            let out = Command::new("chroot")
+            let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
                 .args([
                     REF_ROOT,
                     "getfattr",
@@ -2548,7 +2643,7 @@ fn cli_tree_imports_are_read_by_the_reference() {
 /// without its line naming the path, sorted: every name, every value in hex.
 #[cfg(feature = "cli")]
 fn listed_by_the_reference(path: &str) -> Vec<String> {
-    let out = Command::new("chroot")
+    let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
         .args([
             REF_ROOT,
             "getfattr",
@@ -2582,7 +2677,7 @@ fn listed_by_the_reference(path: &str) -> Vec<String> {
 /// empty one with no `-v`, which is how it sets an empty value.
 #[cfg(feature = "cli")]
 fn set_on_host(path: &Path, name: &str, value: &str) {
-    let mut set = Command::new("chroot");
+    let mut set = deadline_command("chroot", REFERENCE_PROCESS_LIMIT);
     set.args([REF_ROOT, "setfattr", "-n", name]);
     if !value.is_empty() {
         set.args(["-v", value]);

@@ -83,6 +83,11 @@ codegen-units = 1
 opt-level = 3
 panic = "unwind"  # required for catch_unwind at the FFI boundary
 
+# Test binaries need enough optimization for the oracle matrix, but not the
+# whole-program LTO and single codegen unit used for shipped release builds.
+[profile.test]
+opt-level = 1
+
 [profile.dev]
 opt-level = 1
 panic = "unwind"
