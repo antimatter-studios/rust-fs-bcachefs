@@ -40,14 +40,14 @@ while True:
     for name, job in jobs.items():
         needs = job.get("needs", [])
         needs = [needs] if isinstance(needs, str) else needs
-        if name != "ci-ok" and set(needs) & expected:
+        if name not in ("ci-ok", "ci-ok-gate") and set(needs) & expected:
             expanded.add(name)
     if expanded == expected:
         break
     expected = expanded
 assert full == expected, (full, expected)
 assert {"unit", "lint", "semver"}.isdisjoint(full), "quick jobs are never exempt"
-focused = {"guest-write-study", "crc128-native"}
+focused = {"guest-write-study", "guest-write-study-gate", "crc128-native"}
 assert focused <= set(jobs)
 assert events["workflow_call"]["inputs"]["reproducer"]["default"] == "full"
 
@@ -125,7 +125,7 @@ for name in success.keys() - focused:
             assert verdict("false", bad).returncode != 0, ("quick", name, state)
 for selected, reproducer in [("guest-write-study", "write-study-lifecycle"),
                              ("crc128-native", "crc128-native")]:
-    isolated = {n: {"result": "success" if n == selected else "skipped"} for n in success}
+    isolated = {n: {"result": "success" if n in (selected, selected + "-gate", "ci-ok-gate") else "skipped"} for n in success}
     assert verdict("", isolated, "workflow_dispatch", reproducer).returncode == 0
     for name in isolated:
         for state in ["success", "failure", "cancelled", "skipped"]:

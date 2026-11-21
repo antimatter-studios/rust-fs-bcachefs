@@ -15,9 +15,19 @@ permissions:
   contents: read
 
 jobs:
+  keep-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   keep:
     name: keep the landed tree's fixtures
-    runs-on: ubuntu-24.04
+    needs: keep-gate
+    runs-on: ${{ needs.keep-gate.outputs.runner }}
     timeout-minutes: 30
     # contents: write, to create the release; actions: read, for the queue run's
     # artifact.
