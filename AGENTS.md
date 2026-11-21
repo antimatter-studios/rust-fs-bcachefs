@@ -393,7 +393,7 @@ Pull requests, including every layer of a native `gh stack`, run the quick
 jobs: `unit` (unit tier and shell guards), `lint` and `semver`. A pull request
 that changes the fixture key runs the full pipeline too, as below. The merge
 queue runs the full pipeline (`fixtures`, `oracle`, `test-arm64`,
-`test-darwin`, `suite-in-vm`, `cli`, `coverage`) on its exact merge tree, and
+`suite-in-vm`, `cli`, `coverage`) on its exact merge tree, and
 so do tags, `workflow_dispatch` and a release calling `ci.yml`. A push to
 `main` runs the quick jobs without repeating the queue's oracle work. `ci-ok`
 fails any failed, cancelled or skipped job, except a full job skipped on a
