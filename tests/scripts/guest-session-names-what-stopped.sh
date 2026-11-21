@@ -564,9 +564,9 @@ session_ends ends-on-hup 0 HUP 129
 session_ends ends-killed 0 KILL 137
 
 # The guest suite goes through it, and CI uploads where the console is kept.
-sed -n '/^  test:vm:$/,/^  [a-z:_-]*:$/p' "$REPO/chores.yml" | grep -qF 'scripts/guest-session.sh' ||
+sed -n '/^  test:vm:$/,/^  [a-z:_-]*:$/p' "$REPO/chores.yml" | grep -F 'scripts/guest-session.sh' >/dev/null ||
     fail "chores.yml: test:vm does not run through scripts/guest-session.sh"
-sed -n '/^  suite-in-vm:$/,/^  cli:$/p' "$REPO/.github/workflows/ci.yml" | grep -qF 'path: tmp/logs/*.log' ||
+sed -n '/^  suite-in-vm:$/,/^  cli:$/p' "$REPO/.github/workflows/ci.yml" | grep -F 'path: tmp/logs/*.log' >/dev/null ||
     fail "ci.yml: suite-in-vm does not upload tmp/logs/*.log, where the console is kept"
 
 [ "$fails" -eq 0 ] || exit 1
