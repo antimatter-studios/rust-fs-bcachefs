@@ -1293,12 +1293,21 @@ fn write_through_the_reference_mount(img: &Path, ino: u64, bytes: usize) {
         file.write_all(&vec![0; bytes])?;
         file.sync_all()
     })();
-    let unmounted = Command::new("fusermount3")
-        .args(["-u", mount.to_str().unwrap()])
-        .status()
-        .unwrap();
+    // The mount can still be busy for a moment after the last write is synced,
+    // on a loaded guest: ask again, and stop as soon as it is no longer a mount.
+    let unmounted = (0..20).any(|attempt| {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Command::new("fusermount3")
+            .args(["-u", mount.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+            || !is_mounted()
+    });
     let _ = daemon.wait();
-    assert!(unmounted.success(), "{}: not unmounted", img.display());
+    assert!(unmounted, "{}: not unmounted", img.display());
     wrote.unwrap();
 }
 
