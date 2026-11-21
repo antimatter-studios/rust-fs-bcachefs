@@ -50,7 +50,7 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
             )
             .arg(journal())
             .after_help(
-                "Examples:\n  printf 'hello\\n' | fs.bcachefs disk.img write /hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt --mode 640 --journal\n\nput is an identical alias. --mode sets permissions only when creating a file.",
+                "Examples:\n  printf 'hello\\n' | fs.bcachefs disk.img write /hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt\n  fs.bcachefs disk.img write /hello.txt --from hello.txt --mode 640 --journal\n\nput is an identical alias. --mode sets permissions only when creating a file. Each --journal write is one journal entry; a write that does not fit one journal bucket is refused, and an existing file is left unchanged.",
             ),
     )
     .subcommand(
@@ -71,7 +71,7 @@ pub fn subcommands(cmd: Cmd) -> Cmd {
             .about("(experimental) Remove a file or symlink")
             .arg(path("path", "The name to remove"))
             .arg(journal())
-            .after_help("Examples:\n  fs.bcachefs disk.img rm /hello.txt\n  fs.bcachefs disk.img rm /srv/link --journal"),
+            .after_help("Examples:\n  fs.bcachefs disk.img rm /hello.txt\n  fs.bcachefs disk.img rm /srv/link --journal\n\nEach --journal removal is one journal entry. Removing a file whose extents do not fit one journal bucket is refused, and the file is left in place."),
     )
     .subcommand(
         Cmd::new("rmdir")

@@ -400,7 +400,14 @@ impl<D: BlockDevice> Writer<D> {
     /// Replace btree `id`'s root key in the clean field (same length).
     fn set_root(&mut self, id: u8, level: u8, key: &Bkey) -> Result<()> {
         let bytes = encode_key(key)?;
-        let (off, len) = self.clean_root_span(id)?;
+        let (off, len) = match self.clean_root_span(id) {
+            Ok(span) => span,
+            Err(Error::NotFound(_)) => {
+                self.add_root_entry(id, &bytes)?;
+                self.clean_root_span(id)?
+            }
+            Err(error) => return Err(error),
+        };
         if len != bytes.len() {
             return Err(Error::Corrupt("the new root key's length differs".into()));
         }
@@ -940,6 +947,12 @@ impl<D: BlockDevice> Writer<D> {
         ns.saturating_sub(self.sb.time_base_lo)
     }
 
+    /// Advance the number recorded in the inode allocation cursor.
+    fn advance_inode_cursor(ino: u64) -> Result<u64> {
+        ino.checked_add(1)
+            .ok_or_else(|| Error::Unsupported("no free inode number".into()))
+    }
+
     /// The next inode number from the allocation cursor, and the cursor
     /// advanced past it (S8: the reference advanced it by one per create).
     fn next_ino(&self) -> Result<(u64, Bkey)> {
@@ -980,7 +993,7 @@ impl<D: BlockDevice> Writer<D> {
             }
         }
         let mut next = cursor;
-        next.value[8..16].copy_from_slice(&(ino + 1).to_le_bytes());
+        next.value[8..16].copy_from_slice(&Self::advance_inode_cursor(ino)?.to_le_bytes());
         Ok((ino, next))
     }
 
@@ -1922,6 +1935,53 @@ impl<D: BlockDevice> Writer<D> {
         self.commit(t)
     }
 
+    /// Set an inode's access and modification times from Unix timestamps.
+    /// Inode values are unsigned nanosecond offsets from the superblock's
+    /// time base, so timestamps before that base cannot be represented.
+    pub fn set_times(
+        &mut self,
+        ino: u64,
+        accessed: Option<std::time::SystemTime>,
+        modified: Option<std::time::SystemTime>,
+    ) -> Result<()> {
+        use std::time::UNIX_EPOCH;
+
+        fn offset(time: std::time::SystemTime, base: u64) -> Result<u64> {
+            let since_epoch = time.duration_since(UNIX_EPOCH).map_err(|_| {
+                Error::Unsupported("timestamps before the Unix epoch are not representable".into())
+            })?;
+            let nanos = since_epoch.as_nanos();
+            let base = u128::from(base);
+            let offset = nanos.checked_sub(base).ok_or_else(|| {
+                Error::Unsupported(
+                    "timestamp precedes the filesystem's time base and is not representable".into(),
+                )
+            })?;
+            u64::try_from(offset)
+                .map_err(|_| Error::Unsupported("timestamp exceeds the inode time range".into()))
+        }
+
+        let accessed = accessed
+            .map(|t| offset(t, self.sb.time_base_lo))
+            .transpose()?;
+        let modified = modified
+            .map(|t| offset(t, self.sb.time_base_lo))
+            .transpose()?;
+        let mut i = self.inode(ino)?;
+        let old = i.key.clone();
+        if let Some(atime) = accessed {
+            i.raw.varints[field::ATIME] = atime;
+        }
+        if let Some(mtime) = modified {
+            i.raw.varints[field::MTIME] = mtime;
+        }
+        i.raw.varints[field::CTIME] = self.now();
+        i.raw.journal_seq = self.journal_seq;
+        let mut t = Txn::default();
+        t.put(ids::INODES, Some(&old), i.rekey());
+        self.commit(t)
+    }
+
     /// Where xattr `name` of inode `i` is, or would go (#106): from its
     /// slot ([`crate::xattr::slot`]) along the run of taken slots, as a
     /// dirent's is found (S8, the write study's collide and xcollide):
@@ -2052,5 +2112,19 @@ impl<D: BlockDevice> Writer<D> {
         i.raw.journal_seq = self.journal_seq;
         t.put(ids::INODES, Some(&old), i.rekey());
         self.commit(t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Writer;
+
+    #[test]
+    fn inode_cursor_at_the_maximum_is_refused_without_overflow() {
+        assert_eq!(
+            Writer::<fs_core::FileDevice>::advance_inode_cursor(u64::MAX - 1).unwrap(),
+            u64::MAX
+        );
+        assert!(Writer::<fs_core::FileDevice>::advance_inode_cursor(u64::MAX).is_err());
     }
 }

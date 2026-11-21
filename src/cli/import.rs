@@ -355,6 +355,69 @@ impl TreeSink for Sink<'_> {
         "bcachefs"
     }
 
+    fn create_symbolic_link(&mut self, path: &Path, target: &Path) -> Result<(), CliError> {
+        let p = image_path(path)?;
+        let (dir, name, existing) = write_path(self.target, p, true)?;
+        if existing.is_some() {
+            return Err(CliError::refused_by_state(format!("{p}: already exists")));
+        }
+        #[cfg(unix)]
+        let target = {
+            use std::os::unix::ffi::OsStrExt;
+            target.as_os_str().as_bytes()
+        };
+        #[cfg(not(unix))]
+        let target = target
+            .to_str()
+            .ok_or_else(|| CliError::refused("symbolic-link target is not UTF-8"))?
+            .as_bytes();
+        let result = self
+            .writer()
+            .and_then(|w| w.symlink(dir, &name, target).map(|_| ()).map_err(failed));
+        self.writer = None;
+        result
+    }
+
+    fn create_hard_link(&mut self, path: &Path, existing: &Path) -> Result<(), CliError> {
+        let p = image_path(path)?;
+        let existing = image_path(existing)?;
+        let fs = Filesystem::open(self.target.open()?).map_err(failed)?;
+        let ino = fs.lookup(existing).map_err(failed)?;
+        if !fs.inode(ino).map_err(failed)?.is_file() {
+            return Err(CliError::refused(format!(
+                "{existing}: hard links to non-files are not supported"
+            )));
+        }
+        drop(fs);
+        let (dir, name, taken) = write_path(self.target, p, true)?;
+        if taken.is_some() {
+            return Err(CliError::refused_by_state(format!("{p}: already exists")));
+        }
+        let result = self
+            .writer()
+            .and_then(|w| w.link(ino, dir, &name).map_err(failed));
+        self.writer = None;
+        result
+    }
+
+    fn set_times(
+        &mut self,
+        path: &Path,
+        accessed: Option<std::time::SystemTime>,
+        modified: Option<std::time::SystemTime>,
+    ) -> Result<(), CliError> {
+        let p = image_path(path)?;
+        let ino = Filesystem::open(self.target.open()?)
+            .map_err(failed)?
+            .lookup(p)
+            .map_err(failed)?;
+        let result = self
+            .writer()
+            .and_then(|w| w.set_times(ino, accessed, modified).map_err(failed));
+        self.writer = None;
+        result
+    }
+
     fn set_extended_attribute(
         &mut self,
         path: &Path,
