@@ -18,9 +18,19 @@ permissions:
   issues: write
 
 jobs:
+  watch-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   watch:
     name: S1 is the pinned revision
-    runs-on: ubuntu-24.04
+    needs: watch-gate
+    runs-on: ${{ needs.watch-gate.outputs.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
