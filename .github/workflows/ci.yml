@@ -302,6 +302,11 @@ jobs:
     runs-on: ${{ needs.fixtures-gate.outputs.runner }}
     timeout-minutes: 45
     steps:
+      - name: gh for the gated runner
+        # A gated self-hosted runner has no GitHub CLI, and this job calls gh
+        # (directly, or through scripts/kept-fixtures.sh).
+        if: runner.environment == 'self-hosted'
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         # Only a self-hosted Linux runner lacks it; the hosted image has it.
