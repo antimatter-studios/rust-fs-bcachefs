@@ -77,11 +77,9 @@ impl Ptr {
     /// `bucket_gen` is the generation the allocator currently records for
     /// the pointer's bucket (`None` when the bucket has no alloc key).
     ///
-    /// S1 9.1.3.1: a pointer carries "a generation number that must match
-    /// the bucket's current generation to be valid (stale pointers are
-    /// detected and dropped during reads)", and flags that "distinguish
-    /// cached pointers ... from dirty pointers, and mark unwritten
-    /// reservations". A pointer at another device is not on this one; a
+    /// S1 9.1.3.1 describes generation checks that let readers discard
+    /// pointers to reused buckets, and flags for cached, dirty, or unwritten
+    /// pointers. A pointer at another device is not on this one; a
     /// stale pointer names a reused bucket; an unwritten pointer is judged
     /// like any other ([`PTR_UNWRITTEN`]). A cached pointer is refused
     /// ([`PTR_CACHED`]); the second flag bit does not make a pointer cached,
