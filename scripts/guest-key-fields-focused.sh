@@ -30,7 +30,7 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
 import pathlib, re
 text = pathlib.Path("tmp/logs/key-fields-focused.log").read_text()
 counts = re.findall(r"test result: ok\. (\d+) passed; 0 failed; 0 ignored;", text)
-assert counts == ["16", "1", "1", "1"], counts
-print("key-fields-focused: 19 passed, 0 failed, 0 ignored")
+assert counts == ["30", "1", "1", "1"], counts
+print("key-fields-focused: 33 passed, 0 failed, 0 ignored")
 '\''
     '

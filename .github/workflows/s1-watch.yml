@@ -33,6 +33,11 @@ jobs:
     runs-on: ${{ needs.watch-gate.outputs.runner }}
     timeout-minutes: 10
     steps:
+      - name: gh for the gated runner
+        # A gated self-hosted runner has no GitHub CLI, and this job calls gh
+        # (directly, or through scripts/kept-fixtures.sh).
+        if: runner.environment == 'self-hosted'
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
       - uses: actions/checkout@v4
       - name: Compare S1's PDF with the pin
         env:

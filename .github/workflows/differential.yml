@@ -120,6 +120,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: gh for the gated runner
+        # A gated self-hosted runner has no GitHub CLI, and this job calls gh
+        # (directly, or through scripts/kept-fixtures.sh).
+        if: runner.environment == 'self-hosted'
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
       - uses: actions/checkout@v4
       - name: Fetch the digest-pinned independent read observations
         env:
@@ -164,6 +169,11 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       PIN_DIGEST: "sha256:6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7"
     steps:
+      - name: gh for the gated runner
+        # A gated self-hosted runner has no GitHub CLI, and this job calls gh
+        # (directly, or through scripts/kept-fixtures.sh).
+        if: runner.environment == 'self-hosted'
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
@@ -283,6 +293,11 @@ jobs:
       issues: write
       actions: read
     steps:
+      - name: gh for the gated runner
+        # A gated self-hosted runner has no GitHub CLI, and this job calls gh
+        # (directly, or through scripts/kept-fixtures.sh).
+        if: runner.environment == 'self-hosted'
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
