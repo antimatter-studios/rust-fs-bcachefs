@@ -15,6 +15,14 @@ permissions:
 env:
   CHORE_VERSION: "0.11.0"
   CARGO_BUILD_JOBS: "2"
+  # The shared guest's size. Harness v0.8.0 and later size it by a host
+  # resource profile, which on a GitHub-hosted runner is a small guest (2G,
+  # 2 CPUs). With that size the kernel SIGKILLs test binaries in the guest
+  # (oracle_fuzz_whole_image and check_oracle on #718, run 44964869562). The
+  # size the suites were validated on before the profiles is 4G and 4 CPUs,
+  # as in rust-fs-xfs and rust-fs-btrfs.
+  FLTH_SHARED_MEMORY: 4G
+  FLTH_SHARED_CPUS: "4"
   KEPT_TAG: differential-fixtures-1
   KEPT_TARBALL: 6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 
@@ -44,6 +52,11 @@ jobs:
           python3 scripts/pinned-default74-read-controls.py "$RUNNER_TEMP/default206-read/evidence"
           mkdir -p .vm-share
           tar -xzf "$RUNNER_TEMP/fixtures/fixtures.tar.gz" -C .vm-share
+      - name: Upstream virtiofsd 1.14.0
+        # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
+        # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
+        # match LINUX_HARNESS_REF in chores.yml.
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
