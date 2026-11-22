@@ -67,16 +67,30 @@ env:
   # Static contract declarations for mode-conditional jobs. Runtime ci-ok
   # still requires every applicable job to succeed; these exemptions never
   # authorize a failed, cancelled or unexpectedly skipped dependency.
-  CI_GATE_NON_GATING: "changes unit lint semver guest-write-study crc128-native"
+  CI_GATE_NON_GATING: "changes unit lint semver guest-write-study crc128-native changes-gate unit-gate lint-gate semver-gate guest-write-study-gate ci-ok-gate"
 
 jobs:
+  guest-write-study-gate:
+    if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'write-study-lifecycle'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   guest-write-study:
     name: guest write-study lifecycle (isolated, no fixtures or VM)
     if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'write-study-lifecycle'
-    runs-on: ubuntu-24.04
+    needs: guest-write-study-gate
+    runs-on: ${{ needs.guest-write-study-gate.outputs.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Run only the write-study lifecycle regression
         run: bash tests/scripts/guest-write-study-cleans-up.sh
       - name: Keep the guard's diagnostic log
@@ -90,6 +104,16 @@ jobs:
   crc128-native:
     if: github.event_name == 'workflow_dispatch' && inputs.reproducer == 'crc128-native'
     uses: ./.github/workflows/crc128-native-repro.yml
+
+  changes-gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
 
   # Does this run need the full pipeline? Pull requests, every layer of a
   # stack included, run the quick checks (unit, scripts, lint, semver). The
@@ -106,14 +130,17 @@ jobs:
   changes:
     name: changes (does this need the full pipeline?)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
-    runs-on: ubuntu-24.04
+    needs: changes-gate
+    runs-on: ${{ needs.changes-gate.outputs.runner }}
     outputs:
       code: ${{ steps.c.outputs.code == 'true' || steps.k.outputs.changed == 'true' }}
-      runners: ${{ steps.runners.outputs.runners || '{}' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -136,46 +163,23 @@ jobs:
         id: k
         if: github.event_name == 'pull_request'
         run: bash scripts/fixture-key.sh --changed-from HEAD^1 >> "$GITHUB_OUTPUT"
-      # The runner gate (autobalancer): one pick per gated job. Jobs that
-      # need /dev/kvm (fixtures, suite-in-vm), arm64, macOS and ci-ok stay on
-      # GitHub-hosted runners. Only jobs that will run get a pick.
-      - name: Pick runners
-        id: runners
-        env:
-          ORG: ${{ github.repository_owner }}
-          ACTOR: ${{ github.triggering_actor }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          SENDER: ${{ github.event.sender.login }}
-          GH_ACTOR: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          JOBS="unit lint semver"
-          # oracle, cli and coverage also need `fixtures` (a long VM job), so a pick made here would
-          # expire before they start; picking at the end of `fixtures` would change the fixture key
-          # (scripts/fixture-key.sh hashes that job). They stay on GitHub-hosted runners.
-          ours=true
-          for who in "$ACTOR" "$GH_ACTOR" "$SENDER" "$AUTHOR"; do
-            [ -z "$who" ] || [ "$who" = christhomas ] || ours=false
-          done
-          pick() {
-            $ours || { echo ubuntu-24.04; return; }
-            r=$(curl -fsS --max-time 10 --get https://runner-gate.antimatter-studios.com/pick \
-                  --data-urlencode "org=$ORG" --data-urlencode prefer=antimatter-vps-linux-x64 \
-                  --data-urlencode fallback=ubuntu-24.04 --data-urlencode "actor=$ACTOR" --data-urlencode "author=$AUTHOR" \
-                  --data-urlencode "run=${{ github.run_id }}" --data-urlencode "attempt=${{ github.run_attempt }}" \
-                  --data-urlencode "job=$1") || r=ubuntu-24.04
-            case "$r" in antimatter-vps-linux-x64|ubuntu-24.04) echo "$r" ;; *) echo ubuntu-24.04 ;; esac
-          }
-          runners='{}'
-          for job in $JOBS; do runners=$(jq -c --arg j "$job" --arg r "$(pick "$job")" '. + {($j): $r}' <<<"$runners"); done
-          echo "$runners" | jq . | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+
+  unit-gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
 
   unit:
     name: unit (no tools, no fixtures)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['unit'] || 'ubuntu-24.04' }}
+    needs: [changes, unit-gate]
+    runs-on: ${{ needs.unit-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Build tools for the self-hosted runner
@@ -222,11 +226,22 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  lint-gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   lint:
     name: lint (fmt, clippy, family-check, agents-core, ci-gate, licences)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['lint'] || 'ubuntu-24.04' }}
+    needs: [changes, lint-gate]
+    runs-on: ${{ needs.lint-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Build tools for the self-hosted runner
@@ -260,6 +275,17 @@ jobs:
       - name: chore lint
         run: chore lint
 
+  fixtures-gate:
+    if: needs.changes.outputs.code == 'true'
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   # The reference tools build the fixtures, inside the harness VM, on an
   # x86_64 runner with KVM. Nothing of theirs ever runs on the runner. A build
   # is kept per fixture key, so this fetches one unless this tree's key has none
@@ -271,12 +297,18 @@ jobs:
   # limit leaves 10m for packing and upload; #94's runs hung until 90m.
   fixtures:
     name: fixtures (kept, or built in the harness VM, x86_64 KVM)
-    needs: changes
+    needs: [changes, fixtures-gate]
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.fixtures-gate.outputs.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: A kept build, or a fresh one?
         id: source
         env:
@@ -321,12 +353,6 @@ jobs:
       - name: chore fixtures
         if: steps.source.outputs.kept != 'true'
         run: chore fixtures
-      - name: Stop the shared guest (no run is still using it)
-        # The shared guest stays up after a run (harness v0.7.0). `vm:down`
-        # stops it only when no suite is using it, so a guest still up
-        # afterwards means a run leaked its session.
-        if: steps.source.outputs.kept != 'true'
-        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
       - name: Pack the fixtures, keeping their holes
         if: steps.source.outputs.kept != 'true'
         run: |
@@ -366,12 +392,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  oracle-gate:
+    needs: [changes, fixtures]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   # This crate reads every fixture and must agree with what the reference
   # tools recorded about it, field by field and byte by byte.
   oracle:
     name: oracle (fixtures vs the reference tools' record)
-    needs: [changes, fixtures]
-    runs-on: ubuntu-24.04
+    needs: [changes, fixtures, oracle-gate]
+    runs-on: ${{ needs.oracle-gate.outputs.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -416,17 +452,30 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  test-arm64-gate:
+    needs: fixtures
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-arm64
+
   # GitHub's arm64 runners have no /dev/kvm, so no VM starts here; nothing
   # in the oracle tier needs one -- it reads the images and the reference
   # tools' recorded view of them, which are the same bytes on every
   # architecture.
   test-arm64:
     name: test (aarch64, no KVM on this runner)
-    needs: fixtures
-    runs-on: ubuntu-24.04-arm
+    needs: [fixtures, test-arm64-gate]
+    runs-on: ${{ needs.test-arm64-gate.outputs.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -481,13 +530,32 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  suite-in-vm-gate:
+    needs: fixtures
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
+  # The whole suite compiled and run INSIDE the harness guest: the path a
+  # Mac takes for the Linux tests. No Rust on the runner; the guest installs
+  # the toolchain rust-toolchain.toml pins.
   suite-in-vm:
     name: suite in the guest (the macOS path)
-    needs: fixtures
-    runs-on: ubuntu-24.04
+    needs: [fixtures, suite-in-vm-gate]
+    runs-on: ${{ needs.suite-in-vm-gate.outputs.runner }}
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -526,16 +594,21 @@ jobs:
           name: tier-logs-suite-in-vm
           path: tmp/logs/*.log
           if-no-files-found: error
-      - name: Stop the shared guest (no run is still using it)
-        # The shared guest stays up after a run (harness v0.7.0). `vm:down`
-        # stops it only when no suite is using it, so a guest still up
-        # afterwards means a run leaked its session.
-        run: ../fs-linux-test-harness/scripts/vm.sh down && ! chore vm:status
+
+  cli-gate:
+    needs: [changes, fixtures]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
 
   cli:
     name: cli (the installed tools, on PATH)
-    needs: [changes, fixtures]
-    runs-on: ubuntu-24.04
+    needs: [changes, fixtures, cli-gate]
+    runs-on: ${{ needs.cli-gate.outputs.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -598,14 +671,25 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  semver-gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   semver:
     # `chore check:semver`: this tree's public API against its baseline,
     # refusing a break the version in Cargo.toml does not declare. See
     # scripts/check-semver.sh for which baseline, and why.
     name: semver (public API against its baseline)
     if: github.event_name != 'workflow_dispatch' || inputs.reproducer == 'full'
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners)['semver'] || 'ubuntu-24.04' }}
+    needs: [changes, semver-gate]
+    runs-on: ${{ needs.semver-gate.outputs.runner }}
     timeout-minutes: 30
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.50.0"
@@ -636,12 +720,22 @@ jobs:
         shell: bash
         run: chore check:semver
 
+  coverage-gate:
+    needs: [changes, fixtures]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   # Line coverage of the unit and oracle tiers, failing under a measured
   # floor (chores.yml, task `coverage`).
   coverage:
     name: coverage (unit and oracle tiers)
-    needs: [changes, fixtures]
-    runs-on: ubuntu-24.04
+    needs: [changes, fixtures, coverage-gate]
+    runs-on: ${{ needs.coverage-gate.outputs.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -688,11 +782,22 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  ci-ok-gate:
+    if: always()
+    needs: [changes-gate, changes, unit-gate, unit, lint-gate, lint, fixtures-gate, fixtures, oracle-gate, oracle, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, cli-gate, cli, semver-gate, semver, coverage-gate, coverage, guest-write-study-gate, guest-write-study, crc128-native]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, unit, lint, fixtures, oracle, test-arm64, suite-in-vm, cli, semver, coverage, guest-write-study, crc128-native]
-    runs-on: ubuntu-latest
+    needs: [changes-gate, changes, unit-gate, unit, lint-gate, lint, fixtures-gate, fixtures, oracle-gate, oracle, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, cli-gate, cli, semver-gate, semver, coverage-gate, coverage, guest-write-study-gate, guest-write-study, crc128-native, ci-ok-gate]
+    runs-on: ${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Verdict contract rejects failed, cancelled and unexpected skips
@@ -706,5 +811,5 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPRODUCER: ${{ inputs.reproducer }}
           # Retained as an independently checked declaration for ci-depth.
-          FULL_JOBS: '["fixtures", "oracle", "test-arm64", "suite-in-vm", "cli", "coverage"]'
+          FULL_JOBS: '["fixtures", "fixtures-gate", "oracle", "oracle-gate", "test-arm64", "test-arm64-gate", "suite-in-vm", "suite-in-vm-gate", "cli", "cli-gate", "coverage", "coverage-gate"]'
         run: python3 scripts/ci-verdict.py

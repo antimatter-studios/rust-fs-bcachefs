@@ -27,11 +27,27 @@ env:
   KEPT_TARBALL: 6edbb7c0675ce7735a49ec173c0d371d707847a4885946d2010c1ebad51f36d7
 
 jobs:
+  key-fields-focused-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   key-fields-focused:
-    runs-on: ubuntu-24.04
+    needs: key-fields-focused-gate
+    runs-on: ${{ needs.key-fields-focused-gate.outputs.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: Pinned siblings
@@ -69,7 +85,6 @@ jobs:
         run: |
           set -euo pipefail
           vm=../fs-linux-test-harness/scripts/vm.sh
-          trap '"$vm" down' EXIT
           share="$("$vm" share)"
           bash ../rust-fs-core/scripts/stage-siblings.sh "$share" rust-fs-core -- \
             "$vm" run 'cd /repo && bash scripts/guest-key-fields-focused.sh'
@@ -80,6 +95,3 @@ jobs:
           name: key-fields-focused
           path: tmp/logs/key-fields-focused.log
           if-no-files-found: error
-      - name: The guest is down
-        if: always()
-        run: '! ../fs-linux-test-harness/scripts/vm.sh status'

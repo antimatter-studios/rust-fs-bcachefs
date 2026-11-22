@@ -74,6 +74,13 @@ RECORDS = {
     },
 }
 
+# Each job but crc128-native has a runner gate that runs when its job does; ci-ok-gate always runs.
+for _record in RECORDS.values():
+    for _name, _result in list(_record.items()):
+        if _name != "crc128-native":
+            _record[f"{_name}-gate"] = _result
+    _record["ci-ok-gate"] = "success"
+
 # Event and planner outputs are supplied as CI does, through the process
 # environment. A reusable release invocation uses the full profile.
 PROFILES = [
