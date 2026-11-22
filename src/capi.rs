@@ -412,7 +412,7 @@ pub struct fs_bcachefs_times_t {
 /// precision (nanoseconds) from its time base (`time_base_lo`, nanoseconds
 /// since the epoch):
 /// docs/clean-room.md, "Creating a file".
-fn epoch_time(sb: &crate::superblock::Superblock, raw: u64) -> (i64, u32) {
+pub(crate) fn epoch_time(sb: &crate::superblock::Superblock, raw: u64) -> (i64, u32) {
     let offset =
         i128::from(i64::from_le_bytes(raw.to_le_bytes())) * i128::from(sb.time_precision.max(1));
     let ns = i128::from(sb.time_base_lo) + offset;

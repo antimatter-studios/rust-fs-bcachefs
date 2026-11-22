@@ -9,7 +9,7 @@ vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_bcachefs
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.4.2
+  FS_CORE_REF: v0.5.0
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.5.5 lets a host admit more than one VM. v0.5.6 gives
   # back what a guest deletes and says what stopped a lost guest.
@@ -229,7 +229,9 @@ tasks:
       - 'CARGO_BUILD_JOBS=2 cargo test --locked --features write --test "oracle_*" --test capi --no-run --quiet'
       # MEASURED 2026-11-03 (#507): 293 passing cases, 721 lines / 38,410
       # bytes, including the new four-case binary. Keep room for another binary.
-      - 'CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 760 45000 -- scripts/test-scratch-run.sh cargo test --locked --features write --test "oracle_*" --test capi'
+      # MEASURED 2026-11-20 (#690): 320 passing cases, 767 lines / 36,330 bytes
+      # with the primitive and salvage binaries; 840 keeps room for another.
+      - 'CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 840 45000 -- scripts/test-scratch-run.sh cargo test --locked --features write --test "oracle_*" --test capi'
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
@@ -256,7 +258,12 @@ tasks:
       # #507 adds four host cases to the measured 289-case baseline.
       # #589 adds one fixture case.
       # #380 adds three bucket counter cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 299'
+      # #690 adds eight primitive-evidence cases (tests/oracle_primitive.rs):
+      # 311 measured 2026-11-20 with them, 755 lines / 35,808 bytes,
+      # tmp/logs/oracle.log.
+      # #690 adds nine salvage cases (tests/oracle_salvage.rs).
+      # #690 adds three conformance cases (tests/oracle_conformance.rs).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 319'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

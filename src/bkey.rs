@@ -202,6 +202,20 @@ impl Bkey {
     }
 }
 
+/// Decode an unpacked key (`bkey_i`), as the superblock's clean section and
+/// the journal store them: the current format with no packed fields.
+pub fn decode_unpacked(b: &[u8]) -> Result<Bkey> {
+    decode(
+        b,
+        &BkeyFormat {
+            key_u64s: 5,
+            nr_fields: 6,
+            bits: [0; 6],
+            field_offset: [0; 6],
+        },
+    )
+}
+
 /// Decode the key at the start of `b` (whose length is its `u64s * 8`).
 pub fn decode(b: &[u8], fmt: &BkeyFormat) -> Result<Bkey> {
     if b.len() < 8 {
