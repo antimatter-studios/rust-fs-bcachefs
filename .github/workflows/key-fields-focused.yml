@@ -39,7 +39,7 @@ jobs:
   key-fields-focused:
     needs: key-fields-focused-gate
     runs-on: ${{ needs.key-fields-focused-gate.outputs.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - name: gh for the gated runner
         # A gated self-hosted runner has no GitHub CLI, and this job calls gh

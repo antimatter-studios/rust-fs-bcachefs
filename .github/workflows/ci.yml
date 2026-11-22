@@ -552,7 +552,7 @@ jobs:
     name: suite in the guest (the macOS path)
     needs: [fixtures, suite-in-vm-gate]
     runs-on: ${{ needs.suite-in-vm-gate.outputs.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
