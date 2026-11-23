@@ -50,6 +50,10 @@ fn deadline_command(program: &str, seconds: &str) -> Command {
 /// stop the whole group after unmounting. The daemon itself still has a hard
 /// deadline if a test or guest operation gets stuck.
 fn mount_deadline_command() -> Command {
+    mount_deadline_command_for("bcachefs-ref")
+}
+
+fn mount_deadline_command_for(program: &str) -> Command {
     let mut command = Command::new("timeout");
     command
         .args([
@@ -57,7 +61,7 @@ fn mount_deadline_command() -> Command {
             "--verbose",
             "--kill-after=5",
             REFERENCE_MOUNT_LIMIT,
-            "bcachefs-ref",
+            program,
         ])
         .env("LC_ALL", "C");
     command
@@ -79,9 +83,13 @@ fn wait_for_process(child: &mut Child, grace: Duration) -> bool {
 }
 
 fn wait_for_mount(host_mnt: &Path) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    wait_for_mount_using(host_mnt, "mountpoint", Duration::from_secs(30))
+}
+
+fn wait_for_mount_using(host_mnt: &Path, probe: &str, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
     loop {
-        let mounted = deadline_command("mountpoint", MOUNT_COMMAND_LIMIT)
+        let mounted = deadline_command(probe, MOUNT_COMMAND_LIMIT)
             .args(["-q", host_mnt.to_str().unwrap()])
             .status()
             .is_ok_and(|status| status.success());
@@ -191,35 +199,81 @@ fn assert_fsck_clean(img: &Path) {
 /// Mount the image read-only with the reference implementation, hand the
 /// mount's root (as this process sees it) to `f`, and unmount.
 fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
-    let host_mnt = PathBuf::from(format!("{REF_ROOT}{MNT}"));
-    std::fs::create_dir_all(&host_mnt).unwrap();
+    with_reference_mount_using(
+        img,
+        f,
+        Path::new(REF_ROOT),
+        "bcachefs-ref",
+        "mountpoint",
+        "fusermount3",
+        Duration::from_secs(30),
+    )
+}
+
+fn with_reference_mount_using<T>(
+    img: &Path,
+    f: impl FnOnce(&Path) -> T,
+    root: &Path,
+    mount: &str,
+    probe: &str,
+    unmount: &str,
+    startup_limit: Duration,
+) -> T {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_MOUNT: AtomicU64 = AtomicU64::new(0);
+    let mount_parent = root.join("mnt");
+    std::fs::create_dir_all(&mount_parent).unwrap();
+    let (host_mnt, reference_mnt) = loop {
+        let name = format!(
+            "write-oracle-{}-{}",
+            std::process::id(),
+            NEXT_MOUNT.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = mount_parent.join(&name);
+        match std::fs::create_dir(&path) {
+            Ok(()) => break (path, format!("/mnt/{name}")),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("cannot create reference mount {}: {error}", path.display()),
+        }
+    };
     // The daemon's own output is kept: when it dies under a test, what it
     // said last is the reason (CI run 38006023802: "Transport endpoint is
     // not connected" and nothing else).
     let log = img.with_extension("fuse.log");
-    let mut child = mount_deadline_command()
+    let log_file = match std::fs::File::create(&log) {
+        Ok(file) => file,
+        Err(error) => {
+            std::fs::remove_dir(&host_mnt).expect("remove unused reference mount directory");
+            panic!("cannot create reference log {}: {error}", log.display());
+        }
+    };
+    let mut child = match mount_deadline_command_for(mount)
         .args([
             "fusemount",
             "-f",
             "-o",
             "ro,noatime",
             img.to_str().unwrap(),
-            MNT,
+            &reference_mnt,
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::fs::File::create(&log).unwrap())
+        .stderr(log_file)
         .process_group(0)
         .spawn()
-        .unwrap();
-    let mounted = wait_for_mount(&host_mnt);
+    {
+        Ok(child) => child,
+        Err(error) => {
+            std::fs::remove_dir(&host_mnt).expect("remove unused reference mount directory");
+            panic!("cannot start reference mount: {error}");
+        }
+    };
+    let mounted = wait_for_mount_using(&host_mnt, probe, startup_limit);
     if !mounted {
-        let _ = deadline_command("fusermount3", MOUNT_COMMAND_LIMIT)
-            .args(["-uz", host_mnt.to_str().unwrap()])
-            .status();
         stop_process_group(&mut child);
+        let cleanup = cleanup_reference_mount(&host_mnt, probe, unmount, false);
         let said = std::fs::read_to_string(&log).unwrap_or_default();
         panic!(
-            "the reference implementation did not mount {}; last output:\n{}",
+            "the reference implementation did not mount {}; cleanup: {cleanup:?}; last output:\n{}",
             img.display(),
             said.lines()
                 .rev()
@@ -234,16 +288,20 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
     // The mount comes down whether `f` passes or panics, so one test that
     // kills the daemon cannot leave a dead mount for every test after it.
     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&host_mnt)));
-    let _ = deadline_command("fusermount3", MOUNT_COMMAND_LIMIT)
-        .args(["-uz", host_mnt.to_str().unwrap()])
-        .status();
+    let cleanup = cleanup_reference_mount(&host_mnt, probe, unmount, true);
     let stopped = wait_for_process(&mut child, Duration::from_secs(30));
     if !stopped {
         stop_process_group(&mut child);
     }
+    if cleanup.is_err() && host_mnt.exists() {
+        let retry = cleanup_reference_mount(&host_mnt, probe, unmount, false);
+        if let Err(error) = retry {
+            eprintln!("reference mount cleanup retry failed: {error}");
+        }
+    }
     match out {
-        Ok(v) if stopped => v,
-        Ok(_) => panic!("the reference mount did not stop within 30 seconds after unmount"),
+        Ok(v) if stopped && cleanup.is_ok() => v,
+        Ok(_) => panic!("reference mount cleanup failed: {cleanup:?}; daemon stopped: {stopped}"),
         Err(panic) => {
             let said = std::fs::read_to_string(&log).unwrap_or_default();
             let tail: Vec<&str> = said.lines().rev().take(30).collect();
@@ -252,9 +310,165 @@ fn with_reference_mount<T>(img: &Path, f: impl FnOnce(&Path) -> T) -> T {
                 log.display(),
                 tail.into_iter().rev().collect::<Vec<_>>().join("\n")
             );
+            if !stopped || cleanup.is_err() {
+                eprintln!("reference mount cleanup failed: {cleanup:?}; daemon stopped: {stopped}");
+            }
             std::panic::resume_unwind(panic)
         }
     }
+}
+
+fn cleanup_reference_mount(
+    host_mnt: &Path,
+    probe: &str,
+    unmount: &str,
+    required: bool,
+) -> Result<(), String> {
+    let is_mounted = || {
+        let status = deadline_command(probe, MOUNT_COMMAND_LIMIT)
+            .args(["-q", host_mnt.to_str().unwrap()])
+            .status()
+            .map_err(|error| format!("mountpoint {}: {error}", host_mnt.display()))?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(32) => Ok(false),
+            _ => Err(format!("mountpoint {}: {status}", host_mnt.display())),
+        }
+    };
+    let mut failure = None;
+    if is_mounted()? {
+        match deadline_command(unmount, MOUNT_COMMAND_LIMIT)
+            .args(["-u", host_mnt.to_str().unwrap()])
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => failure = Some(format!("unmount {}: {status}", host_mnt.display())),
+            Err(error) => failure = Some(format!("unmount {}: {error}", host_mnt.display())),
+        }
+    } else if required {
+        failure = Some(format!(
+            "reference mount {} disappeared before unmount",
+            host_mnt.display()
+        ));
+    }
+    if is_mounted()? {
+        return Err(format!(
+            "reference mount {} remains mounted; {failure:?}",
+            host_mnt.display()
+        ));
+    }
+    std::fs::remove_dir(host_mnt)
+        .map_err(|error| format!("remove {}: {error}", host_mnt.display()))?;
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn reference_mount_path(mount: &Path, name: &str) -> String {
+    Path::new("/")
+        .join(mount.strip_prefix(REF_ROOT).unwrap())
+        .join(name)
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+struct MountTestTools {
+    root: ScratchDir,
+    mount: String,
+    probe: String,
+    unmount: String,
+}
+
+impl MountTestTools {
+    fn new(unmount_failure: bool) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = ScratchDir::new("mount-lifecycle");
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let scripts = [
+            ("mount", "#!/bin/sh\nroot=$(dirname \"$(dirname \"$0\")\")\ndir=\"$root$6\"\nprintf '%s' \"$$\" > \"$root/daemon-$(basename \"$5\")\"\ncase \"$5\" in *startup-fail*) exit 7;; esac\ntouch \"$dir/mounted\"\nwhile test -e \"$dir/mounted\"; do sleep .05; done\n"),
+            ("probe", "#!/bin/sh\ntest -e \"$2/mounted\" || exit 32\n"),
+            ("unmount", if unmount_failure { "#!/bin/sh\nrm \"$2/mounted\"\nexit 42\n" } else { "#!/bin/sh\nrm -f \"$2/mounted\"\n" }),
+        ];
+        for (name, contents) in scripts {
+            let path = bin.join(name);
+            std::fs::write(&path, contents).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Self {
+            mount: bin.join("mount").to_str().unwrap().to_owned(),
+            probe: bin.join("probe").to_str().unwrap().to_owned(),
+            unmount: bin.join("unmount").to_str().unwrap().to_owned(),
+            root,
+        }
+    }
+
+    fn run<T>(&self, name: &str, body: impl FnOnce(&Path) -> T) -> T {
+        with_reference_mount_using(
+            &self.root.join(name),
+            body,
+            self.root.path(),
+            &self.mount,
+            &self.probe,
+            &self.unmount,
+            Duration::from_millis(600),
+        )
+    }
+}
+
+#[test]
+fn mount_lifecycle_invocations_have_distinct_paths() {
+    let tools = MountTestTools::new(false);
+    tools.run("outer", |outer| {
+        tools.run("inner", |inner| {
+            assert_ne!(outer, inner);
+            assert!(outer.join("mounted").exists());
+        });
+        assert!(outer.join("mounted").exists());
+    });
+}
+
+#[test]
+fn mount_lifecycle_failed_startup_cleans_owned_directory() {
+    let tools = MountTestTools::new(false);
+    tools.run("outer", |outer| {
+        let result = std::panic::catch_unwind(|| tools.run("startup-fail", |_| ()));
+        assert!(result.is_err());
+        assert!(outer.join("mounted").exists());
+        let mounts = tools.root.join("mnt");
+        assert_eq!(std::fs::read_dir(mounts).unwrap().count(), 1);
+        let pid = std::fs::read_to_string(tools.root.join("daemon-startup-fail")).unwrap();
+        assert!(!Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success());
+    });
+}
+
+#[test]
+fn mount_lifecycle_panic_cleans_and_unmount_failure_fails() {
+    let tools = MountTestTools::new(false);
+    tools.run("outer", |outer| {
+        let mut seen = PathBuf::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tools.run("panic", |path| {
+                seen = path.to_owned();
+                panic!("test panic");
+            })
+        }));
+        assert!(result.is_err());
+        assert!(!seen.exists());
+        assert!(outer.join("mounted").exists());
+    });
+}
+
+#[test]
+fn mount_lifecycle_failed_unmount_is_failure() {
+    let tools = MountTestTools::new(true);
+    assert!(std::panic::catch_unwind(|| tools.run("unmount-fails", |_| ())).is_err());
 }
 
 /// The bytes of a file a compressor can shrink by a set amount: `random` bytes
@@ -1198,14 +1412,14 @@ fn links_attributes_and_xattrs_are_read_by_the_reference() {
             (0o600, 1000, 1000, 2)
         );
         // getfattr is installed in the reference tools' chroot
-        // (scripts/vm-setup.sh), where the mount is at MNT.
+        // (scripts/vm-setup.sh).
         let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
             .args([
                 REF_ROOT,
                 "getfattr",
                 "-d",
                 "--absolute-names",
-                &format!("{MNT}/d/existing"),
+                &reference_mount_path(m, "d/existing"),
             ])
             .output()
             .expect("chroot into the reference tools' root");
@@ -1232,7 +1446,7 @@ fn long_xattr_names_set_here_are_read_by_the_reference() {
         .unwrap();
     drop(w);
     assert_fsck_clean(&img);
-    with_reference_mount(&img, |_| {
+    with_reference_mount(&img, |m| {
         for (name, value) in [("user.greeting", "hello"), ("user.on-a-directory", "dir")] {
             // By name, so the reference looks the xattr up rather than
             // listing every one.
@@ -1243,7 +1457,7 @@ fn long_xattr_names_set_here_are_read_by_the_reference() {
                     "-n",
                     name,
                     "--absolute-names",
-                    &format!("{MNT}/d/existing"),
+                    &reference_mount_path(m, "d/existing"),
                 ])
                 .output()
                 .expect("chroot into the reference tools' root");
@@ -1428,7 +1642,7 @@ fn colliding_xattrs_set_here_are_read_by_the_reference() {
     w.set_xattr(f, names[1].as_bytes(), b"again").unwrap();
     drop(w);
     assert_fsck_clean(&img);
-    with_reference_mount(&img, |_| {
+    with_reference_mount(&img, |m| {
         for (i, name) in names.iter().enumerate() {
             let value = if i == 1 { "again" } else { name };
             let out = deadline_command("chroot", REFERENCE_PROCESS_LIMIT)
@@ -1438,7 +1652,7 @@ fn colliding_xattrs_set_here_are_read_by_the_reference() {
                     "-n",
                     name,
                     "--absolute-names",
-                    &format!("{MNT}/d/plain"),
+                    &reference_mount_path(m, "d/plain"),
                 ])
                 .output()
                 .expect("chroot into the reference tools' root");
@@ -2968,12 +3182,12 @@ fn cli_imported_attributes_are_listed_by_the_reference() {
             ("imported-tree/kept", on_host(&tree.join("kept"))),
         ];
         assert_eq!(expected[0].1.len(), 5, "{:?}", expected[0].1);
-        with_reference_mount(&img, |_| {
+        with_reference_mount(&img, |m| {
             for (name, want) in &expected {
-                let got = listed_by_the_reference(&format!("{MNT}/{name}"));
+                let got = listed_by_the_reference(&reference_mount_path(m, name));
                 assert_eq!(&got, want, "{fixture_name} {name}");
             }
-            let got = listed_by_the_reference(&format!("{MNT}/imported-tree/refused"));
+            let got = listed_by_the_reference(&reference_mount_path(m, "imported-tree/refused"));
             assert!(
                 !got.iter().any(|l| l.contains(refused_name)),
                 "{fixture_name}: {got:?}"
