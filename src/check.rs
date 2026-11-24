@@ -1331,6 +1331,18 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             _ => continue,
         }
         r.extents += 1;
+        if inode_keys
+            .get(&k.pos.inode)
+            .is_some_and(|keys| !inode_key_at_snapshot(keys, k.pos.snapshot))
+        {
+            r.add(
+                "snapshot_key_missing_inode_snapshot",
+                format!(
+                    "extent {} has no inode key at snapshot {}",
+                    k.pos, k.pos.snapshot
+                ),
+            );
+        }
         let Some(i) = inode_seen(&chain(k.pos.snapshot), k.pos.inode) else {
             r.add("extent_without_inode", format!("extent {}", k.pos));
             continue;
@@ -1961,6 +1973,13 @@ fn nearest<'a>(chain: &[u32], keys: &[&'a Bkey]) -> Option<&'a Bkey> {
         .filter_map(|k| Some((chain.iter().position(|&s| s == k.pos.snapshot)?, *k)))
         .min_by_key(|(rank, _)| *rank)
         .map(|(_, k)| k)
+}
+
+/// Whether this inode has its own key at the extent's snapshot. An
+/// ancestor's inode version can be read by a snapshot, but does not account
+/// for an extent key stored at that snapshot (#724).
+fn inode_key_at_snapshot(keys: &[&Bkey], snapshot: u32) -> bool {
+    keys.iter().any(|k| k.pos.snapshot == snapshot)
 }
 
 /// The node-length corruption refused by the reference (#163). Header and
@@ -3265,6 +3284,19 @@ mod snapshot_claims_tests;
 mod tests {
     use super::*;
     use crate::bkey::Bpos;
+
+    #[test]
+    fn extent_snapshot_requires_inode_key_at_the_same_snapshot() {
+        let mut ancestor = key(key_type::INODE_V3, 7, vec![]);
+        ancestor.pos.snapshot = 3;
+        let ancestor_ref = [&ancestor];
+        assert!(!inode_key_at_snapshot(&ancestor_ref, 9));
+
+        let mut child = ancestor.clone();
+        child.pos.snapshot = 9;
+        let both = [&ancestor, &child];
+        assert!(inode_key_at_snapshot(&both, 9));
+    }
 
     #[test]
     fn judged_key_types_match_the_recorded_reference_verdicts() {
