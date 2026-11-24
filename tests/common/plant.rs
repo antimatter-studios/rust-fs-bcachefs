@@ -65,24 +65,29 @@ pub const KEY_TYPES: &[&str] = &[
     "error",
     "cookie",
     "hash_whiteout",
+    // The format names continue in the next group.
     "btree_ptr",
     "extent",
     "reservation",
     "inode",
     "inode_generation",
     "dirent",
+    // The names here correspond to format key variants.
     "xattr",
     "alloc",
     "quota",
     "stripe",
+    // Preserve the published type indexes.
     "reflink_p",
     "reflink_v",
     "inline_data",
+    // Keep the wire-name sequence readable in two groups.
     "btree_ptr_v2",
     "indirect_inline_data",
     "alloc_v2",
     "subvolume",
     "snapshot",
+    // Later variants follow in the same table order.
     "inode_v2",
     "alloc_v3",
     "set",
@@ -90,6 +95,7 @@ pub const KEY_TYPES: &[&str] = &[
     "alloc_v4",
     "backpointer",
     "inode_v3",
+    // The remaining names are less common key types.
     "bucket_gens",
     "snapshot_tree",
     "logged_op_truncate",
@@ -97,6 +103,7 @@ pub const KEY_TYPES: &[&str] = &[
     "accounting",
     "inode_alloc_cursor",
     "extent_whiteout",
+    // The final table entries use the same numeric ordering.
     "logged_op_stripe_update",
     "damage",
     "logged_op_inode_opt_propagate",
