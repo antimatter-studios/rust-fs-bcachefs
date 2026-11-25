@@ -31,7 +31,7 @@ from pathlib import Path
 
 N = 8
 # The S1 revision the committed hashes were made from: 1.39.7+9471c2c,
-# fetched 2026-11-24 from https://bcachefs.org/bcachefs-principles-of-operation.pdf
+# fetched 2026-11-22 from https://bcachefs.org/bcachefs-principles-of-operation.pdf
 PDF_SHA256 = "0494ec017dcb271a0b6991a6e1d10c57d9d6ecfcebf99cc8e74f21ab59e7673d"
 HASHES = Path("tests/data/s1-shingles.bin")
 TEXT_SUFFIXES = (".rs", ".md", ".sh", ".py", ".yml", ".yaml", ".toml", ".h", ".c", ".txt")
