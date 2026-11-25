@@ -680,8 +680,8 @@ impl<D: BlockRead> Filesystem<D> {
             let key_start = k.start_offset().saturating_mul(512);
             match k.key_type {
                 crate::bkey::key_type::EXTENT => {
-                    // S1 9.1.2.1 specifies an error for poisoned extents;
-                    // the reference's mount fails such a read (S8, the `poison`
+                    // S1 9.1.2.1 requires poisoned extents to fail reads;
+                    // the reference mount does so too (S8, the `poison`
                     // image).
                     if crate::extent::poisoned(&k.value)? {
                         return Err(Error::Io(format!(
