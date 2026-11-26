@@ -159,6 +159,9 @@ impl BucketSectors {
             + if journal { self.bucket_size } else { 0 }
     }
 
+    /// Each bucket holding metadata against its alloc key's data type.
+    pub(super) fn judge_data_types(&self, _alloc: &[Bkey], _nbuckets: u64, _r: &mut Report) {}
+
     /// Each alloc key against what its bucket was found to hold.
     pub(super) fn judge(&self, alloc: &[Bkey], r: &mut Report) {
         if self.unreadable {
