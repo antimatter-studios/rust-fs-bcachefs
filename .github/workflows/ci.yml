@@ -274,6 +274,9 @@ jobs:
           tool: cargo-deny
       - name: chore lint
         run: chore lint
+      # An outside project depends on this crate by git alone (#706).
+      - name: An external consumer resolves and builds by git
+        run: bash scripts/check-external-consumer.sh
 
   fixtures-gate:
     if: needs.changes.outputs.code == 'true'
