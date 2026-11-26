@@ -1,5 +1,5 @@
 //! The writer refuses an inode cursor that cannot be advanced without
-//! wrapping, and leaves the requested final name unpublished.
+//! wrapping, writes nothing, and leaves the requested final name unpublished.
 #![cfg(feature = "write")]
 
 mod common;
@@ -40,12 +40,18 @@ fn a_create_at_the_maximum_inode_cursor_is_refused_without_publishing() {
         .unwrap()
         .lookup("/")
         .unwrap();
+    let before = common::sha256_file(&img);
     let result = Writer::open(FileDevice::open_rw(&img).unwrap())
         .unwrap()
         .create_file(root, b"max-cursor", &[], 0o644);
     assert!(
         result.is_err(),
         "the exhausted inode cursor was accepted: {result:?}"
+    );
+    // The whole image, not only the keys looked at below (#704, WRT-06).
+    assert!(
+        common::sha256_file(&img) == before,
+        "the refused create wrote to the image"
     );
 
     let fs = Filesystem::open(FileDevice::open(&img).unwrap()).unwrap();
