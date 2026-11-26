@@ -2193,6 +2193,27 @@ fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     })
 }
 
+/// Where one extent's pointer lands: the device sector, and the offset
+/// within it that its backpointer's position carries, where observed.
+type Claim = (u64, Option<u64>);
+
+fn moved_backpointers(
+    _bps: &BTreeMap<u64, &Bkey>,
+    _claims: &BTreeMap<(u64, u64), Vec<Claim>>,
+    _alloc: &BTreeMap<u64, BucketAlloc>,
+    _bucket_size: u64,
+    _r: &mut Report,
+) {
+}
+
+fn check_btree_counters(
+    _trees: &BTreeMap<u8, Vec<Bkey>>,
+    _node_sectors: u64,
+    _nodes: impl FnMut(u8) -> Result<Option<(u64, u64)>>,
+    _r: &mut Report,
+) {
+}
+
 /// Btree `id`'s own accounting key, `have` (`None` when there is none),
 /// against what its `nodes` add up to: nodes times `node_sectors` sectors,
 /// the nodes, and the interior nodes. S3: the reference's "accounting
@@ -4982,6 +5003,113 @@ mod tests {
         let mut unrelated = Report::default();
         check_key_fields(btree_id::INODES, &k, &mut unrelated);
         assert!(unrelated.clean(), "{unrelated:?}");
+    }
+
+    /// Nightly differential run 45837218401, default.img and block4k.img
+    /// seed 1662678: a second backpointer one offset past an extent's own, in
+    /// the same sector. The reference wants it at the extent's position.
+    #[test]
+    fn a_backpointer_moved_within_its_extents_sector_is_reported() {
+        let mut value = vec![btree_id::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let at = 1000u64 << 16;
+        let own = key(KEY_BACKPOINTER, at, value.clone());
+        let moved = key(KEY_BACKPOINTER, at + 1, value);
+        let bps = BTreeMap::from([(at, &own), (at + 1, &moved)]);
+        let run = |claim: Claim, dirty: u32| {
+            let claims = BTreeMap::from([((2147483766u64, 8u64), vec![claim])]);
+            let alloc = BTreeMap::from([(
+                15u64,
+                BucketAlloc {
+                    gen: 0,
+                    data_type: DATA_USER,
+                    dirty,
+                },
+            )]);
+            let mut r = Report::default();
+            moved_backpointers(&bps, &claims, &alloc, 64, &mut r);
+            r.problems
+        };
+        let problems = run((1000, Some(0)), 8);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "backpointer_to_missing_ptr");
+        assert!(problems[0].detail.contains(&moved.pos.to_string()));
+        // A bucket whose totals balance is passed, as the reference does.
+        assert!(run((1000, Some(0)), 16).is_empty());
+        // An offset with no observed rule is not judged.
+        assert!(run((1000, None), 8).is_empty());
+        // A pointer at another sector is `unclaimed_backpointers`' finding.
+        assert!(run((2000, Some(0)), 8).is_empty());
+    }
+
+    /// Nightly differential run 45837218401, kernel-rootsnap.img seed
+    /// 1662718: "accounting mismatch for btree btree=dirents: got 320 1 1
+    /// should be 320 5 1".
+    #[test]
+    fn every_btree_accounting_key_is_held_to_its_nodes() {
+        let counter = |sectors: u64, nodes: u64, interior: u64| {
+            let mut v = sectors.to_le_bytes().to_vec();
+            v.extend(nodes.to_le_bytes());
+            v.extend(interior.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos.inode = (ACCT_BTREE << 56) | (u64::from(btree_id::DIRENTS) << 48);
+            k
+        };
+        let run = |acct: Bkey| {
+            let trees = BTreeMap::from([(btree_id::DIRENTS, Vec::new()), (ACCOUNTING, vec![acct])]);
+            let mut r = Report::default();
+            check_btree_counters(&trees, 64, |_| Ok(Some((5, 1))), &mut r);
+            r.problems
+        };
+        assert!(run(counter(320, 5, 1)).is_empty());
+        let problems = run(counter(320, 1, 1));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "accounting_mismatch");
+        assert!(problems[0].detail.contains("btree dirents"), "{problems:?}");
+    }
+
+    /// Nightly differential run 45837218401, kernel-rootsnap.img seed
+    /// 1662646: "accounting mismatch for snapshot id=4294967293
+    /// btree=extents: got 2 112 4654105073906763887 should be 2 112 0", over
+    /// two inline_data keys.
+    #[test]
+    fn a_per_snapshot_data_sector_counter_out_of_step_with_its_keys_is_named() {
+        const SNAPSHOT: u32 = u32::MAX - 2;
+        let extent = |key_type: u8, offset: u64, len: usize| {
+            let mut k = key(key_type, offset, vec![0; len]);
+            k.pos.snapshot = SNAPSHOT;
+            k
+        };
+        let judge = |btree: u8, keys: Vec<Bkey>, bytes: u64, sectors: u64| {
+            let mut v = (keys.len() as u64).to_le_bytes().to_vec();
+            v.extend(bytes.to_le_bytes());
+            v.extend(sectors.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos.inode = (ACCT_SNAPSHOT_BTREE << 56)
+                | (u64::from(SNAPSHOT.swap_bytes()) << 24)
+                | (u64::from(btree) << 16);
+            let trees = BTreeMap::from([(btree, keys), (ACCOUNTING, vec![k])]);
+            let mut r = Report::default();
+            check_snapshot_accounting(&trees, &mut r);
+            r.problems
+        };
+        let inline = vec![
+            extent(key_type::INLINE_DATA, 8, 24),
+            extent(key_type::INLINE_DATA, 16, 8),
+        ];
+        assert!(judge(btree_id::EXTENTS, inline.clone(), 112, 0).is_empty());
+        let problems = judge(btree_id::EXTENTS, inline, 112, 4654105073906763887);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "accounting_mismatch");
+        let dirents = vec![extent(key_type::DIRENT, 1, 16)];
+        assert!(judge(btree_id::DIRENTS, dirents.clone(), 56, 0).is_empty());
+        assert_eq!(judge(btree_id::DIRENTS, dirents, 56, 1).len(), 1);
+        // A key type whose data sectors nothing measured leaves them unjudged.
+        let reserved = vec![extent(key_type::RESERVATION, 8, 8)];
+        assert!(judge(btree_id::EXTENTS, reserved, 48, 8).is_empty());
     }
 
     #[test]

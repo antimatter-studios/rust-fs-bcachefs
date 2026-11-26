@@ -182,7 +182,8 @@ tasks:
       # #228's nightly adds one, a per-snapshot counter's btree field.
       # #576 adds five bucket data type unit cases, one oracle case and one
       # native reference case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 177'
+      # #741 adds three unit cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored unit 180'
       # The key-type matrix's reference-output parser cases (#163) need no
       # fixture, so they run here and fail in minutes rather than after the
       # fixture build. The filter keeps the fixture-reading matrix test in
@@ -239,7 +240,7 @@ tasks:
       - |
         status=0
         CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 840 45000 -- scripts/test-scratch-run.sh cargo test --no-fail-fast --locked --features write --test "oracle_*" --test capi || status=$?
-        bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 320 || { [ "$status" -ne 0 ] || status=1; }
+        bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 323 || { [ "$status" -ne 0 ] || status=1; }
         exit "$status"
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
@@ -443,7 +444,8 @@ tasks:
       # #563 adds four unit and three live-reference stale-backpointer cases.
       # #380 adds twenty bucket counter cases: fifteen unit, three oracle and
       # two against the live reference.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 657'
+      # #741 adds six cases: three unit and three oracle.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 663'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
@@ -636,7 +638,8 @@ tasks:
       # #614 adds its six extent checksum unit cases to this tier too.
       # #563 adds its four stale-backpointer unit cases to this tier too.
       # #380 adds fifteen default-feature unit cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 255'
+      # #741 adds three default-feature unit cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored coverage 258'
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare
