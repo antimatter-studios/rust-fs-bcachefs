@@ -22,6 +22,9 @@ mod journal_length;
 #[path = "common/key_field_bytes.rs"]
 mod key_field_bytes;
 #[cfg(feature = "write")]
+#[path = "common/measured_keys.rs"]
+mod measured_keys;
+#[cfg(feature = "write")]
 #[path = "common/nr_inodes.rs"]
 mod nr_inodes;
 #[cfg(feature = "write")]
@@ -4569,6 +4572,47 @@ fn both_checkers_reject_an_inode_count_that_disagrees_with_the_inodes() {
                     ours.problems
                 ));
             }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// Key fields the nightly differential runs measured (#568, #569, #615,
+/// #623), each changed on a copy of a fixture both checkers call clean.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_judge_the_measured_key_fields() {
+    let mut mismatches = Vec::new();
+    for case in measured_keys::CASES {
+        let unchanged = measured_keys::copy(case.set);
+        let (status, text) = reference_on_key_field(&unchanged);
+        assert_eq!(
+            status, 0,
+            "{} must be clean to start from:\n{text}",
+            case.set
+        );
+        assert!(check(&FileDevice::open(&unchanged).unwrap())
+            .unwrap()
+            .clean());
+
+        let (image, position) = measured_keys::plant(case);
+        let (status, text) = reference_on_key_field(&image);
+        let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+        let agreed = match case.verdict {
+            Some((printed, kind)) => {
+                status != 0
+                    && text.contains(printed)
+                    && ours.problems.iter().any(|problem| {
+                        problem.kind == kind && problem.detail.contains(&position.to_string())
+                    })
+            }
+            None => status == 0 && ours.clean(),
+        };
+        if !agreed {
+            mismatches.push(format!(
+                "{case:?} at {position}: reference {status}: {text}\nours: {:?}",
+                ours.problems
+            ));
         }
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
