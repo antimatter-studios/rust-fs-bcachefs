@@ -1,7 +1,7 @@
 //! The `nr_inodes` accounting key of a reference-made fixture changed on a
 //! private copy, for the reference checker and this crate's to judge (#564).
 
-use super::common::{fixture, plant::write_sparse, ScratchDir, ScratchImage};
+use super::common::{copy_sparse, fixture, ScratchDir, ScratchImage};
 use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
 use fs_bcachefs::btree;
 use fs_bcachefs::superblock::Superblock;
@@ -24,10 +24,7 @@ pub const CHANGES: [Change; 2] = [Change::OneMore, Change::Removed];
 /// A private copy of the reference-made fixture.
 pub fn copy(set: &str) -> ScratchImage {
     let image = ScratchDir::new("nr-inodes").into_image("planted.img");
-    write_sparse(
-        &std::fs::read(fixture(&format!("{set}.img"))).unwrap(),
-        &image,
-    );
+    copy_sparse(fixture(&format!("{set}.img")), &image);
     image
 }
 
