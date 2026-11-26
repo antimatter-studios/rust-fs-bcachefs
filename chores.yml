@@ -490,7 +490,8 @@ tasks:
       # test-import-xattrs.sh, four with the line naming what the host stamps:
       # seven lines. Measured on macOS with both passing: 67 lines, 2186 bytes.
       # The bytes keep room for a runner's longer paths.
-      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 68 2570 -- scripts/test-cli.sh'
+      # #704 adds test-import-memory.sh, three fixed lines (under 130 bytes).
+      - 'bash ../rust-fs-core/scripts/tier.sh test:cli cli 71 2700 -- scripts/test-cli.sh'
       # #341 adds 168 export, 11 documentation and 17 kernel export checks.
       # #342 adds 49 recursive export checks.
       # #436 adds test-help-examples.sh: 79 checks (three setup, four per
