@@ -65,6 +65,7 @@ on:
       - .github/workflows/differential.yml
       - scripts/differential-fuzz.sh
       - scripts/differential-fuzz.py
+      - scripts/differential-reference-install.sh
       - scripts/default74_native_proof.py
       - tests/default74_native_proof.py
       - tests/data/default-74-38840695392.patch

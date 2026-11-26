@@ -3615,3 +3615,14 @@ checker reports `snapshot_claimed_twice` first and
 stable first finding, both reference messages, and the reference's rejection;
 `tests/oracle_differential_snapshot_tree_subvolume.rs` separately keeps the
 #265 finding required by the original issue.
+
+## A reconcile_scan cookie at a snapshot (#717)
+
+Nightly differential [run 45422331618](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/45422331618)
+moved the `cookie` key at `0:2305843009213693961:0` of reconcile_scan on
+`kernel.img` to snapshot 1 (seed 1662514) and committed it through the writer's
+raw `insert`. This crate called the image clean. The reference checker 1.39.7
+exits 9, prints "invalid bkey in btree_node btree=reconcile_scan", "nonzero
+snapshot, deleting", and counts `bkey_snapshot_nonzero`. The checker now judges
+this btree and key type by that rule. Other key types and the other reconcile
+btrees were not probed, so they are not judged. No GPL source was read.

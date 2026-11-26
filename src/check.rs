@@ -190,6 +190,7 @@ const ACCT_BTREE: u64 = 6;
 const LOGGED_OPS: u8 = 17;
 const RECONCILE_WORK: u8 = 18;
 const RECONCILE_WORK_PHYS: u8 = 24;
+const RECONCILE_SCAN: u8 = 23;
 const KEY_COOKIE: u8 = 3;
 /// Common type allowances from the complete, one-key-per-image reference
 /// matrix (#305, docs/clean-room.md). Deleted keys do not survive merging
@@ -2466,6 +2467,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (BUCKET_GENS, KEY_BUCKET_GENS),
         (SUBVOLUME_CHILDREN, KEY_SET),
         (btree_id::REFLINK, key_type::REFLINK_V),
+        // Nightly differential run 45422331618 (#717).
+        (RECONCILE_SCAN, KEY_COOKIE),
     ];
     let name = journal::btree_name(id);
     if k.size != 0 && SIZE_ZERO.contains(&(id, k.key_type)) {
@@ -4754,6 +4757,30 @@ mod tests {
             // A freespace run's size is its length in buckets.
             let mut unrelated = Report::default();
             check_key_fields(FREESPACE, &k, &mut unrelated);
+            assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn a_reconcile_scan_cookie_at_a_snapshot_is_named() {
+        // Run 45422331618, kernel seed 1662514: the cookie at
+        // 0:2305843009213693961:0 moved to snapshot 1 is refused as
+        // "nonzero snapshot".
+        for snap in [0, 1, u32::MAX] {
+            let mut k = key(KEY_COOKIE, 2_305_843_009_213_693_961, vec![0; 8]);
+            k.pos.snapshot = snap;
+            let mut report = Report::default();
+            check_key_fields(RECONCILE_SCAN, &k, &mut report);
+            if snap == 0 {
+                assert!(report.clean(), "{report:?}");
+            } else {
+                assert_eq!(report.problems.len(), 1, "{report:?}");
+                assert_eq!(report.problems[0].kind, "bkey_snapshot_nonzero");
+                assert!(report.problems[0].detail.contains(&k.pos.to_string()));
+            }
+
+            let mut unrelated = Report::default();
+            check_key_fields(RECONCILE_WORK, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
         }
     }
