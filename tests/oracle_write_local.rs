@@ -16,6 +16,50 @@ fn scratch(name: &str, test: &str) -> common::ScratchImage {
     img
 }
 
+/// A time the inode cannot hold -- before the Unix epoch, before the
+/// filesystem's time base, or past the range of its nanoseconds -- is refused
+/// before anything is written (#704, WRT-05). A time it can hold is written,
+/// the control.
+#[test]
+fn an_unrepresentable_time_is_refused_and_writes_nothing() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let img = scratch("write-study/base.img", "times-refused");
+    let ino = Filesystem::open(FileDevice::open(&img).unwrap())
+        .unwrap()
+        .lookup("/d/existing")
+        .unwrap();
+    let mut w = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+    let before = common::sha256_file(&img);
+    let good = SystemTime::now();
+    for (what, time) in [
+        ("before the Unix epoch", UNIX_EPOCH - Duration::from_secs(1)),
+        ("before the time base", UNIX_EPOCH),
+        (
+            "past the inode's range",
+            UNIX_EPOCH + Duration::from_secs(40_000_000_000),
+        ),
+    ] {
+        for (accessed, modified) in [(Some(time), Some(good)), (Some(good), Some(time))] {
+            let result = w.set_times(ino, accessed, modified);
+            assert!(
+                matches!(result, Err(Error::Unsupported(_))),
+                "a time {what} was not refused: {result:?}"
+            );
+            assert!(
+                common::sha256_file(&img) == before,
+                "refusing a time {what} wrote to the image"
+            );
+        }
+    }
+    w.set_times(ino, Some(good), Some(good)).unwrap();
+    drop(w);
+    assert!(
+        common::sha256_file(&img) != before,
+        "the control wrote nothing"
+    );
+}
+
 /// The two files the create test makes, in order.
 const CREATES: [(&[u8], &[u8], u32); 2] = [(b"one", b"first\n", 0o644), (b"two", b"", 0o600)];
 
