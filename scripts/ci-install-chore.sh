@@ -31,15 +31,21 @@ else
     sha256_check() { shasum -a 256 -c -; }
 fi
 tarball="chore-${CHORE_VERSION}-${os}-${arch}.tar.gz"
-base="https://github.com/antimatter-studios/chore/releases/download/v${CHORE_VERSION}"
+# CHORE_BASE_URL is the retry test's stand-in server; the checksum check below
+# judges whatever answered.
+base="${CHORE_BASE_URL:-https://github.com/antimatter-studios/chore/releases/download/v${CHORE_VERSION}}"
 dir="${RUNNER_TEMP:-$(mktemp -d)}/chore"
 mkdir -p "$dir"
 # GitHub's release download answers an occasional HTTP 500, and one such
 # answer used to fail the whole job before anything under test ran. Both
 # downloads retry on any error; the checksum check below still guards
 # what was fetched.
-curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dir/$tarball" "$base/$tarball"
-curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dir/checksums.txt" "$base/checksums.txt"
+fetch() {
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay "${CHORE_RETRY_DELAY:-2}" -o "$dir/$1" "$base/$1" ||
+        { echo "ci-install-chore: cannot download $base/$1" >&2; exit 1; }
+}
+fetch "$tarball"
+fetch checksums.txt
 (cd "$dir" && grep " ${tarball}\$" checksums.txt | sha256_check)
 tar -xzf "$dir/$tarball" -C "$dir"
 bin="$(find "$dir" -type f -name chore -perm -u+x | head -1)"

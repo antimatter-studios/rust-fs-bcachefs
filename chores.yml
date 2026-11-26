@@ -231,7 +231,14 @@ tasks:
       # bytes, including the new four-case binary. Keep room for another binary.
       # MEASURED 2026-11-20 (#690): 320 passing cases, 767 lines / 36,330 bytes
       # with the primitive and salvage binaries; 840 keeps room for another.
-      - 'CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 840 45000 -- scripts/test-scratch-run.sh cargo test --locked --features write --test "oracle_*" --test capi'
+      # Every test binary runs, whatever an earlier one did, and the floor
+      # below is judged on a red run too, so a failure names how many cases
+      # ran (#606).
+      - |
+        status=0
+        CARGO_BUILD_JOBS=2 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 840 45000 -- scripts/test-scratch-run.sh cargo test --no-fail-fast --locked --features write --test "oracle_*" --test capi || status=$?
+        bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 319 || { [ "$status" -ne 0 ] || status=1; }
+        exit "$status"
       # Run 38997027177 executed 215 oracle cases; #253/#254 add two,
       # and #218's planted-dirent regressions add three.
       # #247 adds the primary-only bucket-size regression to this tier.
@@ -263,7 +270,6 @@ tasks:
       # tmp/logs/oracle.log.
       # #690 adds nine salvage cases (tests/oracle_salvage.rs).
       # #690 adds three conformance cases (tests/oracle_conformance.rs).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored oracle 319'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
