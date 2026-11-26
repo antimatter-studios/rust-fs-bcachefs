@@ -31,7 +31,7 @@ cd /repo
 FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-run.sh \
     fs-bcachefs /share rust-fs-core -- bash -c '
         set -uo pipefail
-        # The images go on the [cache] disk, not the guest disk: see
+        # The images go in the [cache] directory, which has no size limit: see
         # fs-linux-test-harness.toml. test-scratch-run.sh roots its runs here.
         scratch="$CARGO_TARGET_DIR/test-scratch"
         mkdir -p /cache/test-scratch "$scratch"

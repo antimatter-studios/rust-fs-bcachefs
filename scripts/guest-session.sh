@@ -43,9 +43,15 @@
 # ssh gave up two minutes later. A run that would not fit passes on every other runner, so in CI
 # (CI=true) a run that passes and used more of the disk than DISK_BUDGET_MB fails
 # with status 66, as a tier over its output budget does. A developer's machine is
-# not judged, because other work moves its free space. With FLTH_SHARED_ROOT,
-# the guest itself is shared too: other sessions' writes make host-disk growth an
-# unreliable measure of this run, so that run is not judged.
+# not judged, because other work moves its free space.
+#
+# THE GUEST IS SHARED, and one overlay on the host takes every run's writes (#702).
+# The harness lists who is using it: a marker a process in the machine's sessions
+# directory, `pid, start, project, run`. The sampler reads that list at every look.
+# A live marker of another run, or of a call outside any session, which names no
+# run, means host-disk growth includes writes that are not this run's, so no figure
+# is reported and the run is not judged: in CI it fails. FLTH_SHARED_ROOT, which
+# says the guest is shared on purpose, leaves a run unjudged without looking.
 #
 # WHAT A RUN USED is what stops a guest: the most it held at once. The free space at
 # the end cannot say that, because the overlay gives back what the guest deletes,
@@ -77,6 +83,33 @@ say() { echo "guest-session: $*" >&2; }
 
 free_kb() { df -Pk "$PWD" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
 
+# Prints `project (pid N)` for the first live user of the guest that is not this run.
+# This run is its own run id, or this shell. A marker is live while the process it
+# names is the one that started when it says, as the harness judges it.
+other_run() {
+    local marker pid start name run now
+    for marker in "$sessions"/*; do
+        [ -f "$marker" ] || continue
+        pid='' start='' name='' run=''
+        IFS=$'\t' read -r pid start name run <"$marker" || true
+        case "$pid" in '' | *[!0-9]* | "$$") continue ;; esac
+        [ -z "$run" ] || [ "$run" != "${FLTH_RUN_ID:-}" ] || continue
+        now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')"
+        [ -n "$now" ] && [ "$now" = "$start" ] || continue
+        printf '%s (pid %s)\n' "${name:-unknown}" "$pid"
+        return 0
+    done
+    return 1
+}
+
+# Keeps the first other run seen, whole: one that has left by the end still wrote.
+look_for_other_runs() {
+    local who
+    [ ! -e "$samples/other" ] || return 0
+    who="$(other_run)" || return 0
+    printf '%s\n' "$who" >"$samples/other.new" && mv "$samples/other.new" "$samples/other"
+}
+
 # In the background for as long as COMMAND runs: keeps the lowest free space seen in
 # a file, whole, because the sampler can be stopped at any moment. It stops by itself
 # when the session has gone without stopping it, which a SIGKILL does, within one
@@ -84,6 +117,7 @@ free_kb() { df -Pk "$PWD" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
 sample_free_space() {
     local now low="$free_before"
     while kill -0 "$$" 2>/dev/null; do
+        look_for_other_runs
         now="$(free_kb)"
         if [ -n "$now" ] && [ "$now" -lt "$low" ]; then
             low="$now"
@@ -95,7 +129,7 @@ sample_free_space() {
 }
 
 forget_samples() {
-    rm -f -- "$samples/low" "$samples/low.new"
+    rm -f -- "$samples/low" "$samples/low.new" "$samples/other" "$samples/other.new"
     rmdir -- "$samples"
 }
 
@@ -122,6 +156,7 @@ start_sampling() {
 # Stops the sampler, once, and leaves what it saw in low_seen. A sampler already gone
 # was not stopped by this, and has not seen the rest of the run.
 stop_sampling() {
+    local other
     [ -n "$sampler" ] || return 0
     {
         if kill -0 "$sampler"; then
@@ -133,6 +168,10 @@ stop_sampling() {
     } 2>/dev/null
     sampler=
     low_seen="$(cat "$samples/low" 2>/dev/null)"
+    # One last look, for a run that joined since the sampler's.
+    look_for_other_runs
+    other="$(cat "$samples/other" 2>/dev/null)"
+    [ -z "$other" ] || not_judged="another run used the shared guest: $other"
     forget_samples
 }
 
@@ -299,6 +338,7 @@ report_lost_guest() {
 
 sampler=
 samples=
+sessions=
 low_seen=
 not_judged=
 used_mb=
@@ -321,6 +361,13 @@ host_line
 trap 'stop_sampling; exit 129' HUP
 trap 'stop_sampling; exit 130' INT
 trap 'stop_sampling; exit 143' TERM
+
+machine="$("$VM" config 2>/dev/null | sed -n 's/^machine=//p')"
+if [ -n "$machine" ]; then
+    sessions="$machine/sessions"
+else
+    not_judged="${not_judged:-the harness did not say where it lists the runs on its guest}"
+fi
 
 start_sampling
 
