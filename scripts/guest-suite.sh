@@ -43,21 +43,21 @@ FS_CORE_CALLER=/repo exec bash /share/siblings/rust-fs-core/scripts/guest-rust-r
         # Each cargo test runs in its own scratch root, removed on any exit.
         run=/repo/scripts/test-scratch-run.sh
         # One controlled reference case first, independently of the broad matrix.
-        bash "$run" cargo test --locked --features write --test check_oracle_reconcile_dirent -- --nocapture || failed=1
-        EXPECT_OVERFLOW_CHECKS=1 bash "$run" cargo test --locked --lib --test fuzz_decoders --test scratch_dir "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test "oracle_*" --test capi "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_reconcile_dirent -- --nocapture || failed=1
+        EXPECT_OVERFLOW_CHECKS=1 bash "$run" cargo test --no-fail-fast --locked --lib --test fuzz_decoders --test scratch_dir "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test "oracle_*" --test capi "$@" || failed=1
         # The checker against the reference checker, which only exists in
         # here; the writer makes some of its damaged images.
-        bash "$run" cargo test --locked --features write --test check_oracle "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test check_oracle_snapshot_claims "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test check_oracle_extent_checksum "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test check_oracle_key_types "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test check_oracle_never_started "$@" || failed=1
-        bash "$run" cargo test --locked --features write --test check_oracle_started_superblock "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_snapshot_claims "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_extent_checksum "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_key_types "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_never_started "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features write --test check_oracle_started_superblock "$@" || failed=1
         # The write path, judged by the reference tools that only exist in
         # here; one test at a time, since they share one mount point.
-        RUST_TEST_THREADS=1 bash "$run" cargo test --locked --features cli,write --test write_oracle "$@" || failed=1
+        RUST_TEST_THREADS=1 bash "$run" cargo test --no-fail-fast --locked --features cli,write --test write_oracle "$@" || failed=1
         # The read tools against the reference tools on an image nothing has started.
-        bash "$run" cargo test --locked --features cli,write --test read_oracle_never_started "$@" || failed=1
+        bash "$run" cargo test --no-fail-fast --locked --features cli,write --test read_oracle_never_started "$@" || failed=1
         exit "$failed"
     ' guest-suite "$@"
