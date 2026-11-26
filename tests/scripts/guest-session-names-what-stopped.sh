@@ -40,6 +40,8 @@ WATCHDOG=30
 
 # The stand-in sleep and the stand-in suite wait for real, on this one.
 REAL_SLEEP="$(command -v sleep)"
+# A process's start time, which a session marker records, is asked of this one.
+REAL_PS="$(command -v ps)"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/guest-session.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -76,8 +78,14 @@ STUB
 # As the real file does when sourced: an EXIT trap that keeps the status, and a
 # signal is an exit with its status. A teardown lasts as long as a scenario says,
 # and records how many looks at the disk it saw begin and end around it.
+# It also lists itself among the suites using the guest, as the harness does: one
+# marker a process, `pid, start, project, run`, in the machine's sessions directory.
 cat >"$harness/vm-session.sh" <<'STUB'
 echo "session began" >>"$GS_STATE/order"
+export FLTH_RUN_ID=sandbox-mine
+mkdir -p "$GS_STATE/machine/sessions"
+printf '%s\t%s\t%s\t%s\n' "$$" "$("$GS_REAL_PS" -o lstart= -p "$$" | sed 's/^ *//')" sandbox "$FLTH_RUN_ID" \
+    >"$GS_STATE/machine/sessions/$$"
 teardown() {
     if [ -n "${GS_TEARDOWN_HOLD:-}" ]; then
         printf '%s ' "$(($(wc -l <"$GS_STATE/asked-df")))" >"$GS_STATE/looks-in-teardown"
@@ -94,6 +102,7 @@ STUB
 
 cat >"$stubs/ps" <<'STUB'
 #!/usr/bin/env bash
+case " $* " in *" lstart= "*) exec "$GS_REAL_PS" "$@" ;; esac
 case "$GS_QEMU" in
     alive) echo "4242 /usr/bin/qemu-system-x86_64 -chardev socket,id=mon0,path=$GS_STATE/monitor,server=on,wait=off -drive file=$GS_STATE/machine/disk.img"
         # More than a pipe holds, after the match: a reader that stops at its
@@ -170,6 +179,31 @@ if [ -n "${GS_PEAK:-}" ]; then
     done
     rm -f "$GS_STATE/peak"
 fi
+# Another user of the guest, listed for two looks at the disk and gone before the
+# suite ends. `run` is another run's session, `call` a call outside any session,
+# which names no run, `own` a second process of this run, and `dead` a marker
+# whose process has gone.
+if [ -n "${GS_NEIGHBOUR:-}" ]; then
+    "$GS_REAL_SLEEP" 60 </dev/null >/dev/null 2>&1 &
+    neighbour=$!
+    start="$("$GS_REAL_PS" -o lstart= -p "$neighbour" | sed 's/^ *//')"
+    marker="$GS_STATE/machine/sessions/$neighbour"
+    case "$GS_NEIGHBOUR" in
+        run) printf '%s\t%s\t%s\t%s\n' "$neighbour" "$start" other-driver other-run >"$marker" ;;
+        call) printf '%s\t%s\t%s\n' "$neighbour" "$start" other-driver >"$marker" ;;
+        own) printf '%s\t%s\t%s\t%s\n' "$neighbour" "$start" sandbox "$FLTH_RUN_ID" >"$marker" ;;
+        dead) printf '%s\t%s\t%s\t%s\n' "$neighbour" "an earlier process" other-driver other-run >"$marker" ;;
+    esac
+    seen="$(($(wc -l <"$GS_STATE/asked-df")))"
+    n=0
+    while [ "$n" -lt 100 ] && [ "$(($(wc -l <"$GS_STATE/asked-df")))" -lt "$((seen + 3))" ]; do
+        "$GS_REAL_SLEEP" 0.1
+        n=$((n + 1))
+    done
+    rm -f "$marker"
+    kill "$neighbour"
+    wait "$neighbour" 2>/dev/null
+fi
 if [ -n "${GS_KILL_SAMPLER:-}" ] && [ -e "$GS_STATE/sampler" ]; then
     sampler="$(cat "$GS_STATE/sampler")"
     kill -s KILL -- "-$sampler" 2>/dev/null || kill -s KILL "$sampler" 2>/dev/null
@@ -199,6 +233,7 @@ peak=
 kill_sampler=
 ci=
 shared_root=
+neighbour=
 
 # scenario NAME STATUS QEMU GUEST CONSOLE STATE IO: one run; sets out, rc, state.
 scenario() {
@@ -216,6 +251,7 @@ scenario() {
                 GS_DF_BEFORE="$df_before" GS_DF_AFTER="$df_after" CI="$ci" \
                 FLTH_SHARED_ROOT="$shared_root" \
                 GS_PEAK="$peak" GS_KILL_SAMPLER="$kill_sampler" GS_REAL_SLEEP="$REAL_SLEEP" \
+                GS_NEIGHBOUR="$neighbour" GS_REAL_PS="$REAL_PS" \
                 TMPDIR="$state/tmp" \
                 timeout "$WATCHDOG" bash scripts/guest-session.sh "$tmp/suite" "$2" 2>&1
     )"
@@ -279,6 +315,7 @@ session_ends() {
                 GS_STATUS=x GS_IO=x FS_BCACHEFS_GUEST_ANSWER_LIMIT=2 \
                 GS_DF_BEFORE=30000000 GS_DF_AFTER=29000000 CI=true \
                 GS_PEAK=25000000 GS_HOLD=1 GS_TEARDOWN_HOLD=0.5 GS_REAL_SLEEP="$REAL_SLEEP" \
+                GS_REAL_PS="$REAL_PS" \
                 TMPDIR="$state/tmp" \
                 bash scripts/guest-session.sh "$tmp/suite" "$suite_status"
     ) </dev/null >"$state/out" 2>&1 &
@@ -494,6 +531,39 @@ status_is 66
 says "FAILED: this run's use of the host's disk could not be judged: the harness guest is shared"
 ci=
 shared_root=
+
+# The harness's guest is shared whether or not FLTH_SHARED_ROOT is set (#702).
+# Another run seen on it, however briefly, writes to the same disk, so this run's
+# use cannot be told from that one's: no number is charged to this run.
+for neighbour in run call; do
+    ci=
+    scenario "neighbour-$neighbour-off-ci" 0 alive answers "a line" "VM status: running" "I/O status: ok"
+    status_is 0
+    says "this run's use of the host's disk could not be judged: another run used the shared guest: other-driver"
+    silent "this run used"
+    ci=true
+    scenario "neighbour-$neighbour-ci" 0 alive answers "a line" "VM status: running" "I/O status: ok"
+    status_is 66
+    says "FAILED: this run's use of the host's disk could not be judged: another run used the shared guest"
+    silent "this run used"
+done
+neighbour=run
+scenario neighbour-and-failed 1 alive answers "a line" "VM status: running" "I/O status: ok"
+status_is 1
+silent "guest-session: FAILED"
+scenario neighbour-and-lost 255 gone refused "an ordinary line" x x
+lost
+says "could not be judged: another run used the shared guest"
+silent "this run used"
+
+# This run's own processes, and a marker whose process has gone, are not another run.
+for neighbour in own dead; do
+    scenario "neighbour-$neighbour" 0 alive answers "a line" "VM status: running" "I/O status: ok"
+    status_is 0
+    says "guest-session: this run used 976 MB of the host's disk; its budget is"
+done
+neighbour=
+ci=
 
 # The overlay gives back what the guest deletes, so the budget is judged against
 # the lowest free space the run saw. Over the budget at the peak and under it at
