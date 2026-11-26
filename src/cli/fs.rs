@@ -7,12 +7,14 @@ use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+use clap::builder::Resettable;
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
 use super::device::{Device, Target};
 use fs_bcachefs::inode::{Dirent, Inode, INODE_HAS_CASE_INSENSITIVE};
 use fs_bcachefs::superblock::{format_uuid, Superblock};
 use fs_bcachefs::{fs::Node, Filesystem};
+use fs_core::cli::listing::{bound_reached, recursive_args, ListBounds};
 use fs_core::cli::{transfer, CliError, Format, Json, Outcome, Tool};
 
 pub const TOOL: Tool = Tool {
@@ -178,24 +180,14 @@ fn read_command() -> Cmd {
 }
 
 fn listing_command(name: &'static str) -> Cmd {
-    let bound = |id: &'static str, help: &'static str| {
-        let arg = Arg::new(id)
-            .long(id)
-            .value_name("N")
-            .value_parser(value_parser!(u64))
-            .help(help);
-        if name == "ls" {
-            arg.requires("recursive")
-        } else {
-            arg
-        }
-    };
+    let mut args = recursive_args();
+    // `tree` is `ls --recursive`, so its bounds need no --recursive.
+    if name == "tree" {
+        args = args.map(|arg| arg.requires(Resettable::Reset));
+    }
     Cmd::new(name)
         .about(if name == "ls" { "List a directory: name, type, inode, size" } else { "Alias of ls --recursive" })
-        .arg(Arg::new("recursive").long("recursive").short('R').action(ArgAction::SetTrue)
-            .help("Walk depth first, names sorted as bytes; never follow symlinks"))
-        .arg(bound("max-depth", "Maximum recursive depth (default: 64); PATH's entries are depth 1"))
-        .arg(bound("limit", "Maximum recursive entries (default: 100000)"))
+        .args(args)
         .arg(Arg::new("path").value_name("PATH").value_parser(value_parser!(OsString)).default_value("/"))
         .after_help("Examples:\n  fs.bcachefs disk.img ls /etc\n  fs.bcachefs disk.img ls -R --max-depth 8 --limit 1000 /etc\n  fs.bcachefs disk.img tree /\n\nRecursive entries add volume-absolute path and relative depth. PATH itself is omitted unless it is not a directory (depth 0). Subvolume and snapshot roots carry subvolume and snapshot IDs. Repeated directory identities carry revisited: true and are not entered. Exact fits succeed; one more entry past either bound, or an unreadable directory, keeps the collected report on stdout and names the bound or path on stderr (exit 1). --limit 0 allows no entries; --max-depth 0 none below PATH.")
 }
@@ -873,8 +865,7 @@ fn ls_recursive(
     };
     let root = fs.resolve_bytes(path).map_err(|e| at(path, e))?;
     let inode = fs.inode_at(root).map_err(|e| at(path, e))?;
-    let max_depth = sub.get_one::<u64>("max-depth").copied().unwrap_or(64);
-    let limit = sub.get_one::<u64>("limit").copied().unwrap_or(100_000);
+    let ListBounds { max_depth, limit } = ListBounds::from_matches(sub);
     let mut start = Vec::new();
     for part in path.split(|b| *b == b'/').filter(|p| !p.is_empty()) {
         start.push(b'/');
@@ -889,12 +880,8 @@ fn ls_recursive(
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok::<_, CliError>(entries.into_iter())
     };
-    let reached = |bound, value, path: &[u8]| {
-        CliError::failed(format!(
-            "{bound} {value} reached at {}",
-            String::from_utf8_lossy(path)
-        ))
-    };
+    let reached =
+        |bound, value, path: &[u8]| bound_reached(bound, value, &String::from_utf8_lossy(path));
     let mut rows = Vec::new();
     let walked = (|| {
         if !inode.is_dir() {

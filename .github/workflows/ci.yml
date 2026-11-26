@@ -516,9 +516,12 @@ jobs:
         with:
           tool: cargo-deny
       - name: Cross-build the shipped staticlib for aarch64-apple-darwin
-        # The staticlib a macOS consumer links. A static library is never linked
-        # here, so it builds on Linux without a Mac or Apple's SDK.
-        run: cargo build --locked --release --lib --target aarch64-apple-darwin
+        # The staticlib a macOS consumer links, published to dist/ the way a
+        # consumer gets it. A static library is never linked here, so it builds
+        # on Linux without a Mac or Apple's SDK.
+        run: chore staticlib
+      - name: The published library is an arm64 Mach-O static library
+        run: python3 scripts/check-darwin-staticlib.py dist/libfs_bcachefs.a fs_bcachefs_mount
       - name: chore lint
         run: chore lint
       - name: chore test:unit
