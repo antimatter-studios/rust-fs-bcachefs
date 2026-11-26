@@ -26,7 +26,8 @@ jcheck 'plain ls has no recursive fields' 'all(.[]; (has("path") or has("depth")
 check 'depth 1 is plain ls' test "$(jq -c '[.[]|select(.depth == 1)|del(.path,.depth)]|sort_by(.name)' "$SANDBOX/tree.json")" = "$(jq -c 'sort_by(.name)' "$SANDBOX/root.json")"
 count="$(jq length "$SANDBOX/tree.json")"
 depth="$(jq 'map(.depth)|max' "$SANDBOX/tree.json")"
-for args in 'ls --recursive' tree "ls -R --max-depth $depth --limit $count"; do
+for args in 'ls --recursive' tree "ls -R --max-depth $depth --limit $count" \
+    "tree --max-depth $depth --limit $count" "tree --recursive --max-depth $depth --limit $count"; do
     read -r -a words <<<"$args"
     fs.bcachefs "$img" "${words[@]}" / >"$SANDBOX/again" 2>"$SANDBOX/err"
     check "$args succeeds, including an exact fit" test $? -eq 0
@@ -82,6 +83,13 @@ fs.bcachefs "$SANDBOX/whole.img" ls -R / --offset 1048576 >"$SANDBOX/offset" 2>/
 check 'recursive walk honors the device offset' test $? -eq 0
 check 'offset walk is identical' cmp -s "$SANDBOX/tree.json" "$SANDBOX/offset"
 check 'all listings and refusals leave the image byte-identical' cmp -s "$img" "$SANDBOX/before.img"
+# A bound the caller gave stops the walk where the shared default would not.
+fs.bcachefs "$img" tree --limit "$((count - 1))" / >"$SANDBOX/partial" 2>"$SANDBOX/err"
+check 'one entry past the limit exits 1' test $? -eq 1
+jcheck 'one entry past the limit names it' --arg b "--limit $((count - 1)) reached at " '.error|contains($b)' "$SANDBOX/err"
+fs.bcachefs "$img" ls -R --max-depth "$((depth - 1))" / >"$SANDBOX/partial" 2>"$SANDBOX/err"
+check 'one level past the depth exits 1' test $? -eq 1
+jcheck 'one level past the depth names it' --arg b "--max-depth $((depth - 1)) reached at " '.error|contains($b)' "$SANDBOX/err"
 for verb in ls tree; do
     fs.bcachefs missing.img "$verb" --help >"$SANDBOX/help"
     check "$verb help documents defaults and an example" grep -q '100000' "$SANDBOX/help"
