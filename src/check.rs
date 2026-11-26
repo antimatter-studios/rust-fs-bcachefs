@@ -186,6 +186,8 @@ const UNCOUNTED_KEY_TYPES: [u8; 3] = [
 /// prints as `btree`: the btree's id in the byte below the kind, and its
 /// value is node sectors, nodes and interior nodes (#381).
 const ACCT_BTREE: u64 = 6;
+/// The kind of a compression type's accounting key (S4, #105).
+const ACCT_COMPRESSION: u64 = 4;
 /// The logged_ops, reconcile_work and reconcile_work_phys btrees.
 const LOGGED_OPS: u8 = 17;
 const RECONCILE_WORK: u8 = 18;
@@ -228,7 +230,9 @@ const KEY_TYPES_ALLOWED: &[(u8, &[u8])] = &[
     (LOGGED_OPS, &[32, 33, 35, 37, 39]),
     (RECONCILE_WORK, &[]),
     (19, &[]), // subvolume_children
-    (ACCOUNTING, &[KEY_ACCOUNTING]),
+    // Type 50 has no name: the reference passed a re-stamped node holding it
+    // (nightly run 42475842401, #615).
+    (ACCOUNTING, &[KEY_ACCOUNTING, 50]),
     (21, &[]),                // reconcile_hipri
     (22, &[]),                // reconcile_pending
     (23, &[KEY_BACKPOINTER]), // reconcile_scan
@@ -2451,6 +2455,8 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
         (btree_id::ALLOC, key_type::ALLOC_V4),
         // Differential run 41822822138 (#589).
         (RECONCILE_WORK, KEY_SET),
+        // Nightly differential run 41633956585 (#568).
+        (RECONCILE_WORK_PHYS, KEY_SET),
     ];
     const SNAPSHOT_ZERO: &[(u8, u8)] = &[
         (SUBVOLUMES, KEY_SUBVOLUME),
@@ -2602,7 +2608,9 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 && (k.pos.inode & ((1 << 48) - 1) != 0
                     || k.pos.offset != 0
                     || k.pos.snapshot != 0))
-                || (k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE && k.pos.offset != 0) =>
+                || (k.pos.inode >> 56 == ACCT_SNAPSHOT_BTREE
+                    && (k.pos.offset != 0 || k.pos.snapshot != 0))
+                || (k.pos.inode >> 56 == ACCT_COMPRESSION && k.pos.snapshot != 0) =>
         {
             r.add(
                 "accounting_key_junk_at_end",
@@ -2612,6 +2620,17 @@ fn check_key_fields(id: u8, k: &Bkey, r: &mut Report) {
                 ),
             )
         }
+        // A `set` key has no value. Nightly run 42819634457 saw the reference
+        // delete an accounting key changed into one as "incorrect value size
+        // (24 != 0)" (#623).
+        (ACCOUNTING, KEY_SET) if !v.is_empty() => r.add(
+            "bkey_val_size_nonzero",
+            format!(
+                "btree {name}: set key {} has a {}-byte value",
+                k.pos,
+                v.len()
+            ),
+        ),
         // A backpointer's level is its value's byte 1. The guest probe of
         // 2026-10-27 saw the reference refuse 5 and 255 as "backpointer level
         // bad: 5 >= 4" and accept 3 and 4, on user data and on a btree node
@@ -4825,6 +4844,38 @@ mod tests {
             assert_eq!(report.problems[0].kind, "accounting_mismatch");
             assert!(report.problems[0].detail.contains("holds 2 inodes"));
         }
+    }
+
+    #[test]
+    fn the_measured_accounting_and_reconcile_phys_fields_are_named() {
+        let found = |id: u8, k: &Bkey| {
+            let mut report = Report::default();
+            check_key_fields(id, k, &mut report);
+            report.problems.iter().map(|p| p.kind).collect::<Vec<_>>()
+        };
+        // #568: a size on a reconcile_work_phys set key.
+        let mut phys = key(KEY_SET, 1_560_281_088, vec![]);
+        assert!(found(RECONCILE_WORK_PHYS, &phys).is_empty());
+        phys.size = 1;
+        assert_eq!(found(RECONCILE_WORK_PHYS, &phys), ["bkey_size_nonzero"]);
+
+        // #569: a snapshot on a snapshot or compression accounting key.
+        for kind in [ACCT_SNAPSHOT_BTREE, ACCT_COMPRESSION] {
+            let mut k = key(KEY_ACCOUNTING, 0, vec![0; 24]);
+            k.pos.inode = kind << 56;
+            assert!(found(ACCOUNTING, &k).is_empty(), "kind {kind}");
+            k.pos.snapshot = 1;
+            assert_eq!(
+                found(ACCOUNTING, &k),
+                ["accounting_key_junk_at_end"],
+                "kind {kind}"
+            );
+        }
+
+        // #623: a set key in accounting with a value, and one without.
+        let valued = key(KEY_SET, 0, vec![0; 24]);
+        assert_eq!(found(ACCOUNTING, &valued), ["bkey_val_size_nonzero"]);
+        assert!(found(ACCOUNTING, &key(KEY_SET, 0, vec![])).is_empty());
     }
 
     #[test]
