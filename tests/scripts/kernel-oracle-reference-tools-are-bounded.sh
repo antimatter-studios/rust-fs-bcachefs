@@ -85,6 +85,8 @@ EOF
 #   answers      every reference tool returns
 #   fsck-errors  the reference checker reports errors and returns
 #   hang         a reference tool's container never ends until removed by name
+#   split-listing  the lister writes its progress line in two parts on stderr,
+#                and its keys on stdout between them
 #   wedged       nothing answers once the guest has booted, removal included
 # A stand-in that is never stopped gives up after a minute, past the watchdog,
 # so that nothing outlives this test.
@@ -154,6 +156,15 @@ case "$KO_DOCKER" in
         case "$*" in *" fsck "*)
             echo "stand-in checker: errors"
             exit 1
+            ;;
+        esac
+        ;;
+    split-listing)
+        case "$*" in *" list "*)
+            printf 'stand-in_pass...' >&2
+            echo "u64s 6 type stand-in key"
+            echo " done (0 seconds)" >&2
+            exit 0
             ;;
         esac
         ;;
@@ -272,6 +283,24 @@ case "$build_limit" in
             fail "the build and its removals can exhaust the fixtures job's 45-minute limit"
         ;;
 esac
+
+# A listing's two streams reach the record apart (#703). Written into one file
+# as they arrive, a key lands inside a progress line: no line then starts with
+# the key, and the nightly comparison names a line no other build holds (fresh
+# fixtures runs 45385968765, 45595524229 and 45797683159).
+scenario split-listing 0 split-listing none
+exits 0
+for btree in subvolumes snapshots snapshot_trees inodes dirents extents; do
+    listing="$out/kernel.$btree.txt"
+    grep -qx 'u64s 6 type stand-in key' "$listing" ||
+        fail "$name: kernel.$btree.txt has no line holding the key alone"
+    grep -qx 'stand-in_pass... done (0 seconds)' "$listing" ||
+        fail "$name: kernel.$btree.txt has no line holding the progress alone"
+    [ "$(wc -l <"$listing")" -eq 2 ] || fail "$name: kernel.$btree.txt is not those two lines"
+done
+for left in "$out"/*.stdout "$out"/*.stderr; do
+    [ ! -e "$left" ] || fail "$name: a scratch stream was left among the fixtures: ${left##*/}"
+done
 
 # A reference checker that finds errors is a recorded result, for
 # tests/oracle_kernel.rs to fail on, and not a hang.
