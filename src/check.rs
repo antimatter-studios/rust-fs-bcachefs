@@ -1215,6 +1215,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             bucket_sectors::of_filesystem(dev, &sb, &roots, &trees, replay.as_ref(), b, first),
         ) {
             held.judge(alloc, &mut r);
+            held.judge_data_types(alloc, m.nbuckets, &mut r);
         }
     }
 

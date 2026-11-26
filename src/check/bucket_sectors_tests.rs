@@ -304,3 +304,119 @@ fn a_bucket_holding_a_pointer_with_an_unobserved_flag_is_not_judged() {
         assert_eq!(findings(&h, &[alloc(6, 4, 1, 0)]).len(), 1, "{flags:#b}");
     }
 }
+
+fn type_findings(
+    held: &BucketSectors,
+    keys: &[Bkey],
+    nbuckets: u64,
+) -> Vec<(&'static str, String)> {
+    let mut r = Report::default();
+    held.judge_data_types(keys, nbuckets, &mut r);
+    r.problems.into_iter().map(|p| (p.kind, p.detail)).collect()
+}
+
+fn data_type_finding(detail: &str) -> (&'static str, String) {
+    ("alloc_key_data_type_wrong", detail.to_string())
+}
+
+/// One superblock bucket, one journal bucket and one node's bucket.
+fn metadata() -> BucketSectors {
+    let mut h = held();
+    h.superblock(&Layout {
+        layout_type: 0,
+        sb_max_size_bits: 6,
+        sb_offsets: vec![8],
+    });
+    h.journal(&[(3, 1)]);
+    h.node(&[node_ptr(5 * BUCKET)], 32);
+    h
+}
+
+/// The keys `metadata()` needs: buckets 0 and 1 hold the copy at sectors 8
+/// to 72.
+fn metadata_keys() -> Vec<Bkey> {
+    vec![
+        alloc(0, 1, 64, 0),
+        alloc(1, 1, 8, 0),
+        alloc(3, 2, 64, 0),
+        alloc(5, 3, 32, 0),
+    ]
+}
+
+#[test]
+fn metadata_buckets_with_their_own_data_types_are_clean() {
+    assert_eq!(type_findings(&metadata(), &metadata_keys(), 16), vec![]);
+}
+
+/// The counts agree and only the data type does not (#576).
+#[test]
+fn a_metadata_bucket_with_another_data_type_is_named() {
+    for (at, bucket, got, name, want) in [
+        (0, 0, 3, "btree", "sb"),
+        (2, 3, 3, "btree", "journal"),
+        (3, 5, 4, "user", "btree"),
+    ] {
+        let mut keys = metadata_keys();
+        keys[at].value[14] = got;
+        assert_eq!(
+            type_findings(&metadata(), &keys, 16),
+            vec![data_type_finding(&format!(
+                "bucket 0:{bucket} gen 0 has wrong data_type: got {name}, should be {want}"
+            ))],
+        );
+    }
+}
+
+/// The reference's "bucket 0:2015 gen 0 has wrong data_type: got free,
+/// should be sb": the bucket has no alloc key, or a deleted one.
+#[test]
+fn a_metadata_bucket_with_no_alloc_key_is_named() {
+    for (at, bucket, want) in [(0, 0, "sb"), (2, 3, "journal"), (3, 5, "btree")] {
+        let expected = vec![data_type_finding(&format!(
+            "bucket 0:{bucket} gen 0 has wrong data_type: got free, should be {want}"
+        ))];
+        let mut keys = metadata_keys();
+        keys[at].key_type = key_type::DELETED;
+        keys[at].value.clear();
+        assert_eq!(type_findings(&metadata(), &keys, 16), expected);
+        keys.remove(at);
+        assert_eq!(type_findings(&metadata(), &keys, 16), expected);
+    }
+}
+
+/// A run of buckets with no key is one finding, and a damaged journal field
+/// or bucket count costs no loop over the buckets it names.
+#[test]
+fn a_run_of_buckets_with_no_alloc_key_is_named_once() {
+    let mut h = held();
+    h.journal(&[(10, u64::MAX)]);
+    assert_eq!(
+        type_findings(&h, &[alloc(12, 2, 64, 0)], u64::MAX),
+        vec![
+            data_type_finding(
+                "bucket 0:10 gen 0 has wrong data_type: got free, should be journal \
+                 (and the 1 buckets after it)"
+            ),
+            data_type_finding(&format!(
+                "bucket 0:13 gen 0 has wrong data_type: got free, should be journal \
+                 (and the {} buckets after it)",
+                u64::MAX - 14
+            )),
+        ],
+    );
+}
+
+/// A bucket below the device's first or past its last, a key this checker
+/// does not read, and a bucket holding a pointer with an unobserved flag.
+#[test]
+fn a_metadata_bucket_with_nothing_to_compare_is_not_judged() {
+    let mut h = BucketSectors::new(BUCKET, 0, 4);
+    h.journal(&[(0, 4), (20, 4)]);
+    h.node(&[node_ptr(30 * BUCKET)], 32);
+    h.node(&[node_ptr(5 * BUCKET)], 32);
+    h.extent(8, &value(&[ptr_word(5 * BUCKET, 0b001)]));
+    let mut older = alloc(6, 4, 0, 0);
+    older.key_type = key_type::EXTENT;
+    h.node(&[node_ptr(6 * BUCKET)], 32);
+    assert_eq!(type_findings(&h, &[alloc(5, 4, 0, 0), older], 16), vec![]);
+}

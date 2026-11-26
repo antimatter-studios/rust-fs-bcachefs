@@ -3659,3 +3659,17 @@ requires both checkers to agree.
 - accounting, run 42475842401, `default.img` seed 1661217: a re-stamped node
   holding a key of type 50 is clean to the reference (#615). Only this btree and
   type are accepted; no meaning is inferred.
+
+## A metadata bucket's data type (#576)
+
+Seen on a copy of `default.img` with the third superblock copy's layout offset
+moved down by 64 sectors in every copy, each re-stamped. The reference checker
+1.39.7 exited 9 and printed "bucket 0:2015 gen 0 has wrong data_type: got free,
+should be sb" for the bucket the copy moved into, which had no alloc key (S3,
+black box). No GPL source was read.
+
+The checker therefore requires an alloc key of data type sb, journal or btree
+for each bucket the superblock copies, the journal or a btree node hold, under
+the conditions of "A bucket's sector counters". `tests/check_oracle.rs` changes
+and removes the key of one bucket of each type in the guest and requires the
+reference to print the same line this checker does.

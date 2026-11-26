@@ -25,6 +25,8 @@
 mod backpointer;
 #[path = "common/bucket_counters.rs"]
 mod bucket_counters;
+#[path = "common/bucket_types.rs"]
+mod bucket_types;
 mod common;
 #[path = "common/freespace.rs"]
 mod freespace;
@@ -96,6 +98,25 @@ fn a_bucket_that_counts_an_extent_it_no_longer_holds_is_named() {
             .any(|p| p.kind == planted.kind && planted.expected == p.detail);
         assert!(named, "{}: {:?}", planted.expected, report.problems);
     }
+}
+
+/// A superblock, journal or btree bucket whose alloc key names another data
+/// type, or that has no alloc key (#576): named as the reference prints it
+/// (`tests/check_oracle.rs` holds it to that).
+#[test]
+fn a_metadata_bucket_with_a_wrong_or_missing_alloc_key_is_named() {
+    let mut missed = Vec::new();
+    for planted in bucket_types::plant_all("default") {
+        let report = check::check(&FileDevice::open(&*planted.image).unwrap()).unwrap();
+        if !report
+            .problems
+            .iter()
+            .any(|p| p.kind == "alloc_key_data_type_wrong" && p.detail == planted.expected)
+        {
+            missed.push(format!("{}: {:?}", planted.expected, report.problems));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
 }
 
 fn keys(img: &std::path::Path, id: u8) -> Vec<Bkey> {

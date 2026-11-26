@@ -12,6 +12,9 @@ mod backpointer;
 #[cfg(feature = "write")]
 #[path = "common/bucket_counters.rs"]
 mod bucket_counters;
+#[cfg(feature = "write")]
+#[path = "common/bucket_types.rs"]
+mod bucket_types;
 mod common;
 #[cfg(feature = "write")]
 #[path = "common/freespace.rs"]
@@ -1110,6 +1113,30 @@ fn both_checkers_reject_a_bucket_counter_that_disagrees_with_the_bucket() {
         let ours = check(&FileDevice::open(&*case.image).unwrap()).unwrap();
         let named = ours.problems.iter().any(|p| p.kind == case.kind);
         if status != 9 || !found || !named {
+            disagreements.push(format!(
+                "{}: exit {status}, printed {found}, named {named}\n{text}\n{:?}",
+                case.expected, ours.problems
+            ));
+        }
+    }
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+/// A superblock, journal or btree bucket given another data type, or no
+/// alloc key (#576): the reference prints the data type this crate names.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_a_metadata_bucket_with_a_wrong_or_missing_alloc_key() {
+    let mut disagreements = Vec::new();
+    for case in bucket_types::plant_all("default") {
+        let (status, text) = reference_on_key_field(&case.image);
+        let found = text.contains(&case.expected);
+        let ours = check(&FileDevice::open(&*case.image).unwrap()).unwrap();
+        let named = ours
+            .problems
+            .iter()
+            .any(|p| p.kind == "alloc_key_data_type_wrong" && p.detail == case.expected);
+        if status == 0 || !found || !named {
             disagreements.push(format!(
                 "{}: exit {status}, printed {found}, named {named}\n{text}\n{:?}",
                 case.expected, ours.problems

@@ -15,6 +15,10 @@
 //!   before the primary copy count too;
 //! - nothing is ever cached: no image has shown a cached pointer.
 //!
+//! A bucket the superblock's copies, the journal or a btree node hold also has
+//! an alloc key naming that data type (#576). A user bucket's is judged extent
+//! by extent in `check.rs`.
+//!
 //! What has not been observed leaves its bucket unjudged rather than guessed: a
 //! pointer with a flag other than unwritten. Every loop is over keys, never over
 //! buckets, so a damaged layout or journal field, however large, costs nothing.
@@ -38,6 +42,9 @@ const ALLOC_DATA_TYPE: usize = 14;
 /// The sector the primary superblock is at: what comes before it counts as
 /// superblock in every fixture.
 const SB_PRIMARY_SECTOR: u64 = 8;
+const DATA_SB: u8 = 1;
+const DATA_JOURNAL: u8 = 2;
+const DATA_BTREE: u8 = 3;
 /// The stripes btree, and its key type (S1's order). A stripe's buckets hold
 /// blocks no extent or node names, and no single-device image has shown one.
 const STRIPES: u8 = 6;
@@ -54,6 +61,8 @@ pub(super) struct BucketSectors {
     superblock: Vec<(u64, u64)>,
     /// The journal's buckets, as `(first bucket, count)` ranges.
     journal: Vec<(u64, u64)>,
+    /// Buckets a btree node is in.
+    nodes: BTreeSet<u64>,
     /// Buckets holding something whose count has not been observed.
     unjudged: BTreeSet<u64>,
     /// A value did not parse, so no bucket's count is known.
@@ -69,6 +78,7 @@ impl BucketSectors {
             held: BTreeMap::new(),
             superblock: Vec::new(),
             journal: Vec::new(),
+            nodes: BTreeSet::new(),
             unjudged: BTreeSet::new(),
             unreadable: false,
         }
@@ -104,6 +114,9 @@ impl BucketSectors {
     pub(super) fn node(&mut self, ptrs: &[Ptr], sectors: u64) {
         for ptr in ptrs {
             self.pointer(ptr, sectors);
+            if u64::from(ptr.dev) == self.dev {
+                self.nodes.insert(ptr.offset / self.bucket_size);
+            }
         }
     }
 
@@ -159,6 +172,99 @@ impl BucketSectors {
             + if journal { self.bucket_size } else { 0 }
     }
 
+    /// Each bucket holding metadata against its alloc key's data type.
+    /// The device's buckets are `first_bucket..nbuckets`. Consecutive buckets
+    /// with no alloc key are one finding, naming the first.
+    pub(super) fn judge_data_types(&self, alloc: &[Bkey], nbuckets: u64, r: &mut Report) {
+        if self.unreadable {
+            return;
+        }
+        // The data type and generation of each of this device's alloc keys, by
+        // bucket: `None` for a key this checker does not read.
+        let keys: BTreeMap<u64, Option<(u8, u8)>> = alloc
+            .iter()
+            .filter(|k| k.pos.inode == self.dev)
+            .filter(|k| !matches!(k.key_type, key_type::DELETED | key_type::WHITEOUT))
+            .map(|k| {
+                let read = (k.key_type == key_type::ALLOC_V4)
+                    .then(|| k.value.get(ALLOC_DATA_TYPE))
+                    .flatten()
+                    .map(|&t| (t, alloc_v4_gen(&k.value).unwrap_or(0)));
+                (k.pos.offset, read)
+            })
+            .collect();
+        let bucket_spans = self
+            .superblock
+            .iter()
+            .map(|&(a, b)| (a / self.bucket_size, b.div_ceil(self.bucket_size)));
+        let superblock = merged(bucket_spans.collect());
+        let journal = merged(
+            self.journal
+                .iter()
+                .map(|&(first, count)| (first, first.saturating_add(count)))
+                .collect(),
+        );
+        let nodes = merged(
+            self.nodes
+                .iter()
+                .map(|&b| (b, b.saturating_add(1)))
+                .collect(),
+        );
+        // A bucket in more than one, which only damage makes, is judged as the
+        // first of these it is in.
+        let wanted = [
+            (DATA_SB, &superblock),
+            (DATA_JOURNAL, &journal),
+            (DATA_BTREE, &nodes),
+        ];
+        let want = |bucket: u64| {
+            wanted
+                .iter()
+                .find(|(_, spans)| contains(spans, bucket))
+                .map(|&(t, _)| t)
+        };
+        let judged = |bucket: u64| bucket >= self.first_bucket && bucket < nbuckets;
+        let mut wrong = |bucket: u64, gen: u8, got: u8, should: u8, after: u64| {
+            let mut detail = format!(
+                "bucket {}:{bucket} gen {gen} has wrong data_type: got {}, should be {}",
+                self.dev,
+                data_type_name(got),
+                data_type_name(should),
+            );
+            if after > 0 {
+                detail.push_str(&format!(" (and the {after} buckets after it)"));
+            }
+            r.add("alloc_key_data_type_wrong", detail);
+        };
+        for (&bucket, read) in &keys {
+            let (Some((got, gen)), Some(should)) = (*read, want(bucket)) else {
+                continue;
+            };
+            if got != should && judged(bucket) && !self.unjudged.contains(&bucket) {
+                wrong(bucket, gen, got, should, 0);
+            }
+        }
+        for (data_type, spans) in wanted {
+            for &(start, end) in spans {
+                let (mut next, end) = (start.max(self.first_bucket), end.min(nbuckets));
+                if next >= end {
+                    continue;
+                }
+                // The runs between the keys in the span.
+                let present = keys.range(next..end).map(|(&b, _)| b);
+                for stop in present.chain(std::iter::once(end)) {
+                    if stop > next
+                        && want(next) == Some(data_type)
+                        && !self.unjudged.contains(&next)
+                    {
+                        wrong(next, 0, 0, data_type, stop - next - 1);
+                    }
+                    next = stop.saturating_add(1);
+                }
+            }
+        }
+    }
+
     /// Each alloc key against what its bucket was found to hold.
     pub(super) fn judge(&self, alloc: &[Bkey], r: &mut Report) {
         if self.unreadable {
@@ -202,6 +308,26 @@ impl BucketSectors {
             );
         }
     }
+}
+
+/// `spans`, as `(start, end)` with the end outside, sorted and with those that
+/// overlap or touch made one.
+fn merged(mut spans: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+/// Whether one of the sorted, disjoint `spans` holds `at`.
+fn contains(spans: &[(u64, u64)], at: u64) -> bool {
+    let after = spans.partition_point(|&(start, _)| start <= at);
+    after > 0 && at < spans[after - 1].1
 }
 
 /// What an extent of `size` live sectors holds on disk: those sectors when its
