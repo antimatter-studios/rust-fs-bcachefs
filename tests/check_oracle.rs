@@ -22,6 +22,9 @@ mod journal_length;
 #[path = "common/key_field_bytes.rs"]
 mod key_field_bytes;
 #[cfg(feature = "write")]
+#[path = "common/nr_inodes.rs"]
+mod nr_inodes;
+#[cfg(feature = "write")]
 #[path = "common/replicas_accounting.rs"]
 mod replicas_accounting;
 #[cfg(feature = "write")]
@@ -4529,6 +4532,40 @@ fn both_checkers_judge_replicas_accounting_keys(cases: &[replicas_accounting::Ca
             if !agreed {
                 mismatches.push(format!(
                     "{set} {case:?}: reference {status}: {text}\nours: {:?}",
+                    ours.problems
+                ));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// The `nr_inodes` counter changed, and its key removed, on a copy of a
+/// fixture both checkers call clean (#564).
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_reject_an_inode_count_that_disagrees_with_the_inodes() {
+    let mut mismatches = Vec::new();
+    for set in ["default", "kernel", "kernel-rootsnap"] {
+        for change in nr_inodes::CHANGES {
+            let unchanged = nr_inodes::copy(set);
+            let (status, text) = reference_on_key_field(&unchanged);
+            assert_eq!(status, 0, "{set} must be clean to start from:\n{text}");
+            assert!(check(&FileDevice::open(&unchanged).unwrap())
+                .unwrap()
+                .clean());
+
+            let image = nr_inodes::plant(set, change);
+            let (status, text) = reference_on_key_field(&image);
+            let ours = check(&FileDevice::open(&image).unwrap()).unwrap();
+            let agreed = status != 0
+                && text.contains("accounting mismatch for nr_inodes")
+                && ours.problems.iter().any(|problem| {
+                    problem.kind == "accounting_mismatch" && problem.detail.contains("nr_inodes")
+                });
+            if !agreed {
+                mismatches.push(format!(
+                    "{set} {change:?}: reference {status}: {text}\nours: {:?}",
                     ours.problems
                 ));
             }
