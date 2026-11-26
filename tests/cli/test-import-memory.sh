@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # `fs.bcachefs import` streams: its peak memory does not grow with its input
-# (#704, WRT-01), from a file, from stdin and from a tree. Each large import
-# is measured against a 1 MiB one of the same kind, so what the tool needs to
-# open the image is not counted against it. A program that reads the same
-# input whole is the control: the measurement must see that.
+# (#704, WRT-01), from a file, from stdin and from a tree. An import is
+# measured against one of twice its size, both larger than the 16 MiB the tool
+# gathers before it commits, so what the tool needs whatever the input is not
+# counted against it. A program that reads the same inputs whole is the
+# control: the measurement must see that.
 source "$(dirname "$0")/lib.sh"
 need_image aged
 base="$FIXTURES/aged.img"
 
-# The input, and how much more memory than a 1 MiB import a large one may
-# use. The tool gathers at most 16 MiB before it commits and copies a run to
-# commit it, so twice that and the extents' bookkeeping stay under the bound,
-# which is well under the input.
+# The two inputs, and how much more memory the larger may use: half of what it
+# adds to the input. The first full measurement (run 45729432681) peaked near
+# 84 MiB for 16 MiB tree files and for a 64 MiB file alike, against 20 MiB for
+# 1 MiB: the gathered run and its copies, which every large import holds.
+HALF_MIB=32
 LARGE_MIB=64
-BOUND_KIB=$((48 * 1024))
+BOUND_KIB=$((16 * 1024))
 
 # peak_kib STDIN COMMAND...: COMMAND's peak resident memory in KiB on stdout,
 # its own output discarded, its stderr kept in $SANDBOX/err and its status
@@ -36,15 +38,15 @@ bytes() {
 while n:
     step = min(n, 1 << 20); sys.stdout.buffer.write(r.randbytes(step)); n -= step' "$1" "$2"
 }
-bytes 1 704 >"$SANDBOX/small"
+bytes "$HALF_MIB" 704 >"$SANDBOX/small"
 bytes "$LARGE_MIB" 705 >"$SANDBOX/large"
 mkdir -p "$SANDBOX/small-tree" "$SANDBOX/large-tree"
-bytes 1 706 >"$SANDBOX/small-tree/one"
+for n in 1 2; do bytes $((HALF_MIB / 2)) $((710 + n)) >"$SANDBOX/small-tree/part-$n"; done
 for n in 1 2 3 4; do bytes $((LARGE_MIB / 4)) $((706 + n)) >"$SANDBOX/large-tree/part-$n"; done
 
-# bounded WHAT SMALL_PEAK LARGE_PEAK
+# bounded WHAT HALF_PEAK LARGE_PEAK
 bounded() {
-    check "$1: a ${LARGE_MIB} MiB import peaked at $3 KiB, a 1 MiB one at $2 KiB" \
+    check "$1: a ${LARGE_MIB} MiB import peaked at $3 KiB, a ${HALF_MIB} MiB one at $2 KiB" \
         test "$(($3 - $2))" -lt "$BOUND_KIB"
 }
 
@@ -54,7 +56,8 @@ img="$SANDBOX/memory.img"
 cp --sparse=always "$base" "$img"
 small="$(peak_kib /dev/null fs.bcachefs "$img" import --verify "$SANDBOX/small" /memory-small)"
 status=$?
-check "the small file import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+check "the half-size file import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+cp --sparse=always "$base" "$img"
 large="$(peak_kib /dev/null fs.bcachefs "$img" import --verify "$SANDBOX/large" /memory-large)"
 status=$?
 check "the large file import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
@@ -66,7 +69,8 @@ check 'the large file import reads back whole' cmp -s "$SANDBOX/large" "$SANDBOX
 cp --sparse=always "$base" "$img"
 small="$(peak_kib "$SANDBOX/small" fs.bcachefs "$img" import - /memory-small)"
 status=$?
-check "the small stdin import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+check "the half-size stdin import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+cp --sparse=always "$base" "$img"
 large="$(peak_kib "$SANDBOX/large" fs.bcachefs "$img" import - /memory-large)"
 status=$?
 check "the large stdin import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
@@ -78,7 +82,8 @@ check 'the large stdin import reads back whole' cmp -s "$SANDBOX/large" "$SANDBO
 cp --sparse=always "$base" "$img"
 small="$(peak_kib /dev/null fs.bcachefs "$img" import --recursive "$SANDBOX/small-tree" /memory-small)"
 status=$?
-check "the small tree import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+check "the half-size tree import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
+cp --sparse=always "$base" "$img"
 large="$(peak_kib /dev/null fs.bcachefs "$img" import --recursive "$SANDBOX/large-tree" /memory-large)"
 status=$?
 check "the large tree import ($(cat "$SANDBOX/err"))" test "$status" -eq 0
