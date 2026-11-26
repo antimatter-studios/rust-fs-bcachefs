@@ -20,7 +20,9 @@ import yaml
 
 repo = pathlib.Path(sys.argv[1])
 guest = (repo / "scripts/guest-suite.sh").read_text()
-runs = re.findall(r"cargo test[^\n]*", guest)
+# The commands, not the comments that name them.
+code = "\n".join(line for line in guest.splitlines() if not line.lstrip().startswith("#"))
+runs = re.findall(r"cargo test[^\n]*", code)
 assert len(runs) >= 10, f"FAIL  guest-suite.sh runs {len(runs)} cargo test commands"
 for run in runs:
     assert "--no-fail-fast" in run, f"FAIL  guest-suite.sh stops at a failing binary: {run}"
