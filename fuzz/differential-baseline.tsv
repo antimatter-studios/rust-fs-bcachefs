@@ -121,6 +121,4 @@ ours-only	key-inode	check:backpointer_to_missing_ptr	#604: The reference checker
 # rule, so neither is listed.
 ours-only	key-value	check:accounting_underflow	#701: this crate reports an accounting underflow after a changed accounting value the reference accepts
 ref-only	key-snapshot	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#701: the checker misses a per-snapshot dirents count after a dirent moves between snapshots
-ref-only	key-inode	check_allocations...accounting mismatch for nr_inodes :	#701: the checker misses a missing nr_inodes accounting counter (ACCOUNTING-SRC-04)
-ref-only	key-type	check_allocations...accounting mismatch for nr_inodes :	#701: the checker misses a missing nr_inodes accounting counter (ACCOUNTING-SRC-04)
 ours-only	node	check:inode_i_sectors_wrong	#701: this crate reports a wrong inode sector total on a re-stamped node the reference accepts
