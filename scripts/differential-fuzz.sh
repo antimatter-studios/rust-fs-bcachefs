@@ -72,22 +72,7 @@ cleanup() {
 trap cleanup EXIT
 echo "differential: installing the reference tools $REF_VERSION in a Debian 13 container"
 docker run -d --name "$ctr" --memory 6g -v "$out:/work" debian:trixie sleep infinity >/dev/null
-docker exec -e REF_VERSION="$REF_VERSION" "$ctr" bash -euc '
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends ca-certificates curl >/dev/null
-    install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL -o /etc/apt/keyrings/apt.bcachefs.org.asc https://apt.bcachefs.org/apt.bcachefs.org.asc
-    echo "deb [signed-by=/etc/apt/keyrings/apt.bcachefs.org.asc] https://apt.bcachefs.org/trixie bcachefs-tools-release main" \
-        >/etc/apt/sources.list.d/apt.bcachefs.org.list
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends "bcachefs-tools=1:$REF_VERSION" >/dev/null
-    bcachefs version
-' >"$out/reference-install.log" 2>&1 || {
-    status=$?
-    echo "differential: the reference tools did not install (status $status); see $out/reference-install.log" >&2
-    exit 1
-}
+bash scripts/differential-reference-install.sh "$ctr" "$REF_VERSION" "$out/reference-install.log" || exit 1
 
 # DIFFERENTIAL_KEEP names cases (space-separated) whose patch, mutation and
 # reference output are kept under $out/kept when judged without a crash.

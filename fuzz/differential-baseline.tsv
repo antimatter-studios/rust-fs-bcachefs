@@ -112,3 +112,15 @@ ref-only	key-size	invalid bkey in btree_node btree=reconcile_work level=#: u#s #
 # Two extents left sharing one sector inside one bucket: the reference does not
 # look at a bucket whose totals balance, and this crate's finding is kept.
 ours-only	key-inode	check:backpointer_to_missing_ptr	#604: The reference checker passes two extents that share one sector when both lie in one bucket
+
+# Nightly runs 44906296989 (2026-11-21, main 13d1e31, first seed 1662240) and
+# 45422331618 (2026-11-24, main 84b86de, first seed 1662480), reference checker
+# 1.39.7, 80 cases a fixture: the classes still unresolved, each a counter the
+# accounting contract of #701 covers (#717). Their extents counterpart of the
+# dirents line was fixed by #726, and the reconcile_scan cookie class by #717's
+# rule, so neither is listed.
+ours-only	key-value	check:accounting_underflow	#701: this crate reports an accounting underflow after a changed accounting value the reference accepts
+ref-only	key-snapshot	check_allocations...accounting mismatch for snapshot id=# btree=dirents:	#701: the checker misses a per-snapshot dirents count after a dirent moves between snapshots
+ref-only	key-inode	check_allocations...accounting mismatch for nr_inodes :	#701: the checker misses a missing nr_inodes accounting counter (ACCOUNTING-SRC-04)
+ref-only	key-type	check_allocations...accounting mismatch for nr_inodes :	#701: the checker misses a missing nr_inodes accounting counter (ACCOUNTING-SRC-04)
+ours-only	node	check:inode_i_sectors_wrong	#701: this crate reports a wrong inode sector total on a re-stamped node the reference accepts
