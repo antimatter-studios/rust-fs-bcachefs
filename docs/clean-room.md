@@ -3626,3 +3626,18 @@ exits 9, prints "invalid bkey in btree_node btree=reconcile_scan", "nonzero
 snapshot, deleting", and counts `bkey_snapshot_nonzero`. The checker now judges
 this btree and key type by that rule. Other key types and the other reconcile
 btrees were not probed, so they are not judged. No GPL source was read.
+
+## The nr_inodes counter against the inodes (#564)
+
+Nightly differential [run 41633956585](https://github.com/antimatter-studios/rust-fs-bcachefs/actions/runs/41633956585)
+changed the position of the accounting key at POS_MIN on `default.img` (seed
+1660827). The reference checker 1.39.7 exits 9 and prints "accounting mismatch
+for nr_inodes : got 1 should be 316", counted as `accounting_mismatch`. Later
+runs printed "got 0 should be 7" on `kernel-rootsnap.img`, where no key was left
+at POS_MIN.
+
+The checker counts the `inode`, `inode_v2` and `inode_v3` keys of the inodes
+btree, in every snapshot, and compares a cleanly shut down filesystem's counter
+with that number. That this count is the reference's is held by every fixture
+checking clean, and by `check_oracle.rs`, which changes and removes the key in the
+guest and requires both checkers to report it. No GPL source was read.

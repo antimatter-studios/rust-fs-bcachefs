@@ -387,6 +387,7 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     check_replicas_entries(&trees, &sb, &mut r);
     if sb.is_clean() {
         check_replicas_counters(&trees, &sb, &mut r);
+        check_inode_count(&trees, &mut r);
     }
     // A btree's own accounting key holds its nodes' sectors, its nodes and
     // its interior nodes (#381). Judged for logged_ops, the btree run
@@ -3001,6 +3002,8 @@ fn check_alloc_v4_value(name: &str, k: &Bkey, r: &mut Report) {
 /// judge on read (#219): `nr_inodes`, `replicas` and `dev_data_type`.
 const ACCT_NR_INODES: u64 = 0;
 const ACCT_REPLICAS: u64 = 2;
+/// The key types that are an inode: `inode`, `inode_v2` and `inode_v3`.
+const INODE_KEY_TYPES: [u8; 3] = [key_type::INODE, 23, key_type::INODE_V3];
 /// The superblock field listing replicas entries, its one form any fixture
 /// has (S3: `03 01 00`, btree on device 0).
 const FIELD_REPLICAS_V0: u32 = 3;
@@ -3188,6 +3191,38 @@ fn check_replicas_entries(trees: &BTreeMap<u8, Vec<Bkey>>, sb: &Superblock, r: &
                 format!("replicas accounting key {at} holds data of unknown type {data_type}"),
             );
         }
+    }
+}
+
+/// The `nr_inodes` accounting key, at POS_MIN, counts the inode keys the
+/// inodes btree holds, in every snapshot; with no key there it counts none
+/// (#564: the reference's "accounting mismatch for nr_inodes : got 1 should be
+/// 316" after a change to the key's position). Recovery can leave accounting
+/// stale, so compare only a clean filesystem.
+fn check_inode_count(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
+    let (Some(inodes), Some(accounting)) = (trees.get(&btree_id::INODES), trees.get(&ACCOUNTING))
+    else {
+        return;
+    };
+    let held = inodes
+        .iter()
+        .filter(|k| INODE_KEY_TYPES.contains(&k.key_type))
+        .count() as u64;
+    let said = accounting
+        .iter()
+        .find(|k| {
+            k.key_type == KEY_ACCOUNTING
+                && k.pos.inode == ACCT_NR_INODES
+                && k.pos.offset == 0
+                && k.pos.snapshot == 0
+        })
+        .and_then(|k| k.value.get(..8))
+        .map_or(0, |word| le64(word, 0));
+    if said != held {
+        r.add(
+            "accounting_mismatch",
+            format!("nr_inodes: the btree holds {held} inodes; the accounting says {said}"),
+        );
     }
 }
 
@@ -4758,6 +4793,37 @@ mod tests {
             let mut unrelated = Report::default();
             check_key_fields(FREESPACE, &k, &mut unrelated);
             assert!(unrelated.clean(), "{unrelated:?}");
+        }
+    }
+
+    #[test]
+    fn an_inode_count_that_disagrees_with_the_inodes_is_named() {
+        // Run 41633956585 (#564): the key at POS_MIN moved away, and the
+        // reference wanted the inodes it found.
+        let inodes = vec![
+            key(key_type::INODE_V3, 4096, vec![0; 8]),
+            key(key_type::INODE_V3, 4097, vec![0; 8]),
+            // Not an inode: an inode_generation.
+            key(9, 4098, vec![0; 8]),
+        ];
+        let counter = |count: u64| key(KEY_ACCOUNTING, 0, count.to_le_bytes().to_vec());
+        let report = |accounting: Vec<Bkey>| {
+            let mut report = Report::default();
+            let trees =
+                BTreeMap::from([(btree_id::INODES, inodes.clone()), (ACCOUNTING, accounting)]);
+            check_inode_count(&trees, &mut report);
+            report
+        };
+
+        let clean = report(vec![counter(2)]);
+        assert!(clean.clean(), "{clean:?}");
+        let mut moved = counter(2);
+        moved.pos.offset = 1;
+        for accounting in [vec![counter(1)], vec![counter(3)], vec![moved], vec![]] {
+            let report = report(accounting);
+            assert_eq!(report.problems.len(), 1, "{report:?}");
+            assert_eq!(report.problems[0].kind, "accounting_mismatch");
+            assert!(report.problems[0].detail.contains("holds 2 inodes"));
         }
     }
 
