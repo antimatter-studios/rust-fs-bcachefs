@@ -22,12 +22,10 @@ dir = ".vm-share"
 
 [cache]
 # Not a cache: a small disk for the test images, which scripts/guest-suite.sh
-# mounts as the scratch area. On the guest's own disk, images that are written
-# and deleted reach new blocks of the disposable overlay on the host until it has
-# touched most of the guest's free space. On a runner with 14 GB free that filled
-# the host's disk and stopped the guest (#504). Since harness v0.5.6 the overlay
-# gives deleted blocks back, but its peak still counts, and this disk bounds it.
-# Since harness v0.7.0 the guest is shared and /cache is a directory of its
-# own with no size limit (harness #157), so this no longer bounds the scratch
-# area.
+# mounts as the scratch area. NOTHING LIMITS ITS SIZE: since harness v0.7.0 the
+# guest is shared and /cache is a directory on the guest's own disk (harness #157),
+# so `size` below is not enforced. A write past it succeeds, and only a full guest
+# disk stops one, for every run on the guest. Nothing here may rely on that size.
+# What watches the disk is scripts/guest-session.sh's budget for the host's
+# overlay, which a full host disk would otherwise stop the guest on (#504).
 size = "2G"
