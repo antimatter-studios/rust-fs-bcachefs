@@ -3641,3 +3641,21 @@ btree, in every snapshot, and compares a cleanly shut down filesystem's counter
 with that number. That this count is the reference's is held by every fixture
 checking clean, and by `check_oracle.rs`, which changes and removes the key in the
 guest and requires both checkers to report it. No GPL source was read.
+
+## Four key fields from the nightly differential runs (#700)
+
+Each is a verdict the reference checker 1.39.7 printed in a nightly run; no GPL
+source was read. `tests/check_oracle.rs` repeats each change in the guest and
+requires both checkers to agree.
+
+- reconcile_work_phys, run 41633956585, `kernel.img` seed 1660868: a size on a
+  `set` key is deleted as "size != 0" (`bkey_size_nonzero`, #568).
+- accounting, run 41447579088, `kernel.img` seeds 1660769 and 1660782: a
+  nonzero snapshot field on a compression or per-snapshot key is "junk at end of
+  accounting key" (`accounting_key_junk_at_end`, #569).
+- accounting, run 42819634457, `kernel-rootsnap.img` seed 1661366: a key changed
+  into a `set` key, keeping its 24-byte value, is deleted as "incorrect value
+  size (24 != 0)" (`bkey_val_size_nonzero`, #623).
+- accounting, run 42475842401, `default.img` seed 1661217: a re-stamped node
+  holding a key of type 50 is clean to the reference (#615). Only this btree and
+  type are accepted; no meaning is inferred.
