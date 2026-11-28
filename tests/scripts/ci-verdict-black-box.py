@@ -102,9 +102,10 @@ def environment(profile):
     # explicit projection of the planner output into the verdict environment.
     needs["changes"]["outputs"] = {"code": code} if code else {}
     env = dict(os.environ)
-    for key in ("NEEDS", "EVENT", "REPRODUCER", "CODE"):
+    for key in ("NEEDS", "EVENT", "REPRODUCER", "CODE", "TITLE"):
         env.pop(key, None)
     env.update(NEEDS=json.dumps(needs), EVENT=event, REPRODUCER=reproducer, CODE=code)
+    env["TITLE"] = "fix: an ordinary change" if event == "pull_request" else ""
     return env
 
 
@@ -193,7 +194,7 @@ def main():
             "dependency set differs",
         )
         checked += 1
-        for key in ("NEEDS", "EVENT", "REPRODUCER", "CODE"):
+        for key in ("NEEDS", "EVENT", "REPRODUCER", "CODE", "TITLE"):
             missing_env = dict(base)
             del missing_env[key]
             run_case((profile, "missing environment", key), missing_env, False, key)
@@ -211,6 +212,18 @@ def main():
         profile = (record, event, reproducer, code)
         run_case(
             (profile, "malformed profile"), environment(profile), False, "::error::"
+        )
+        checked += 1
+    # A red: pull request's regression runs only on the full path: a quick
+    # record is refused however complete, and a full one is judged as any is.
+    red = "red: the run-end bound is checked"
+    for record, code, accepted in [("quick", "false", False), ("full", "true", True)]:
+        env = environment((record, "pull_request", "", code))
+        run_case(
+            ("red pull request", record),
+            dict(env, TITLE=red),
+            accepted,
+            "" if accepted else "::error::a red: pull request",
         )
         checked += 1
     for malformed in ("{", "null", "[]"):

@@ -3,8 +3,10 @@
 # workflow's own text: the planner step and the aggregate step are extracted
 # and run under every event, so no VM and no fixture is needed. Pull requests
 # and pushes to main are quick; the merge queue, manual dispatches, tags and
-# anything unexpected run the full pipeline. ci-ok must accept only the
-# declared full jobs' skips, and only on a quick run.
+# anything unexpected run the full pipeline, and so does a pull request whose
+# title starts "red:", so its failing oracle regression really runs (#410).
+# ci-ok must accept only the declared full jobs' skips, and only on a quick
+# run, and never a quick run of a red: pull request.
 #
 #   bash tests/scripts/ci-depth.sh
 set -euo pipefail
@@ -81,27 +83,36 @@ for selected in ["write-study-lifecycle", "crc128-native", None]:
         raise AssertionError((selected, "an unsafe dispatch default was accepted"))
 check_dispatch_default(doc)
 
-for event, ref, decision in [
-    ("pull_request", "refs/pull/1/merge", "false"),
-    ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "true"),
-    ("workflow_dispatch", "refs/heads/ci/oracle-red", "true"),
-    ("push", "refs/heads/main", "false"),
-    ("push", "refs/tags/v1.0.0", "true"),
-    ("unexpected", "", "true"),
+classify = next(s for s in jobs["changes"]["steps"] if s.get("id") == "c")
+assert classify["env"].get("TITLE") == "${{ github.event.pull_request.title }}", classify["env"]
+assert aggregate["env"].get("TITLE") == "${{ github.event.pull_request.title }}", aggregate["env"]
+
+for event, ref, title, decision in [
+    ("pull_request", "refs/pull/1/merge", "fix: the run-end bound is checked", "false"),
+    ("pull_request", "refs/pull/1/merge", "red: the run-end bound is checked", "true"),
+    ("pull_request", "refs/pull/1/merge", "Red: the run-end bound is checked", "true"),
+    ("pull_request", "refs/pull/1/merge", "reduce: a title that only starts alike", "false"),
+    ("pull_request", "refs/pull/1/merge", "fix: a red: run is never cancelled", "false"),
+    ("pull_request", "refs/pull/1/merge", 'red: $(exit 7) `exit 7` "', "true"),
+    ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "", "true"),
+    ("workflow_dispatch", "refs/heads/ci/oracle-red", "", "true"),
+    ("push", "refs/heads/main", "", "false"),
+    ("push", "refs/tags/v1.0.0", "", "true"),
+    ("unexpected", "", "", "true"),
 ]:
     with tempfile.TemporaryDirectory() as tmp:
         output = Path(tmp) / "output"
-        env = dict(os.environ, EVENT=event, REF=ref, GITHUB_OUTPUT=str(output))
+        env = dict(os.environ, EVENT=event, REF=ref, TITLE=title, GITHUB_OUTPUT=str(output))
         result = subprocess.run(["bash", "-c", planner], env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
-        assert output.read_text().splitlines() == ["code=" + decision], (event, result.stdout)
+        assert output.read_text().splitlines() == ["code=" + decision], (event, title, result.stdout)
 
-def verdict(code, results, event=None, reproducer=None):
+def verdict(code, results, event=None, reproducer=None, title="fix: an ordinary change"):
     event = event or ("workflow_dispatch" if code == "true" else "pull_request")
     if reproducer is None:
         reproducer = "full" if event == "workflow_dispatch" else ""
     env = dict(os.environ, CODE=code, NEEDS=json.dumps(results), FULL_JOBS=json.dumps(sorted(full)),
-               EVENT=event, REPRODUCER=reproducer)
+               EVENT=event, REPRODUCER=reproducer, TITLE=title)
     return subprocess.run(["bash", "-c", aggregate["run"]], env=env,
                           cwd=Path(sys.argv[1]).resolve().parents[2], capture_output=True, text=True)
 
@@ -110,6 +121,14 @@ quick = {n: {"result": "skipped" if n in full | focused else "success"} for n in
 for code, results in [("true", success), ("false", quick)]:
     result = verdict(code, results)
     assert result.returncode == 0, result.stdout + result.stderr
+
+# A red: pull request is never merge-ready by the quick path, whatever the
+# planner said, and its full run is judged job by job like any other.
+red = "red: the run-end bound is checked"
+assert verdict("false", quick, "pull_request", title=red).returncode != 0, "a quick red: run passed"
+assert verdict("true", success, "pull_request", title=red).returncode == 0
+failing = dict(success, oracle={"result": "failure"})
+assert verdict("true", failing, "pull_request", title=red).returncode != 0, "a failing regression passed"
 
 for code in ["", "invalid"]:
     assert verdict(code, success).returncode != 0, "a missing decision must fail closed"
