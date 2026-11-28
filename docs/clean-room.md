@@ -3673,3 +3673,25 @@ for each bucket the superblock copies, the journal or a btree node hold, under
 the conditions of "A bucket's sector counters". `tests/check_oracle.rs` changes
 and removes the key of one bucket of each type in the guest and requires the
 reference to print the same line this checker does.
+
+## Three more accounting and backpointer findings (#741)
+
+Observed in the reference checker's own printed output, nightly differential
+runs 45837218401 and 46013685297 (reference 1.39.7, S3):
+
+- A second backpointer at offset 1 of an extent's sector, in a bucket whose
+  backpointers then exceed its dirty sectors, is reported as "backpointer
+  doesn't match extent it points to", and the reference wants it at the
+  extent's own position (default.img and block4k.img seed 1662678). This
+  crate reports one only where every extent claim on that sector has an
+  observed offset.
+- A btree's own accounting key is judged for btrees other than logged_ops:
+  "accounting mismatch for btree btree=dirents: got 320 1 1 should be 320 5
+  1" (kernel-rootsnap.img seed 1662718), and, with the key's type changed,
+  "btree btree=snapshot_trees: got 0 0 0 should be 64 1 0" (seed 1662737).
+  A btree with no key at all is judged for logged_ops and snapshot_trees
+  only; whether every btree with a root must have one is an open question.
+- A per-snapshot counter over two inline_data keys has no data sectors:
+  "got 2 112 4654105073906763887 should be 2 112 0" (seed 1662646). This
+  crate wants 0 only where every counted key is inline_data or dirent. What
+  the other key types count is an open question.

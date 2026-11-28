@@ -33,7 +33,8 @@
 //! with no alloc key or a free one,
 //! the fragmentation lru holds an entry for each partly filled bucket and
 //! nothing else, the need_discard btree a key for each bucket waiting for
-//! discard and nothing else, and the device's accounting by data type is
+//! discard and nothing else, each btree's own accounting key holds its
+//! nodes, and the device's accounting by data type is
 //! what its alloc keys add up to. These are made on a filesystem shut down
 //! cleanly only: after a crash the allocation btrees can lag the rest, as
 //! the reference leaves them, and the reference rebuilds them in recovery.
@@ -393,39 +394,15 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
         check_replicas_counters(&trees, &sb, &mut r);
         check_inode_count(&trees, &mut r);
     }
-    // A btree's own accounting key holds its nodes' sectors, its nodes and
-    // its interior nodes (#381). Judged for logged_ops, the btree run
-    // 39764355709 caught, and like the other allocation figures only on a
-    // filesystem shut down cleanly.
-    if sb.is_clean() && trees.contains_key(&LOGGED_OPS) {
-        match btree::node_counts(dev, &sb, LOGGED_OPS, replay.as_ref()) {
-            Ok(Some(nodes)) => {
-                let at = (ACCT_BTREE << 56) | (u64::from(LOGGED_OPS) << 48);
-                let have = trees
-                    .get(&ACCOUNTING)
-                    .into_iter()
-                    .flatten()
-                    .find(|k| {
-                        k.key_type == KEY_ACCOUNTING
-                            && k.pos.inode == at
-                            && k.pos.offset == 0
-                            && k.pos.snapshot == 0
-                    })
-                    .map(|k| {
-                        let mut v = [0u64; 3];
-                        for (i, x) in v.iter_mut().enumerate() {
-                            if let Some(w) = k.value.get(i * 8..i * 8 + 8) {
-                                *x = le64(w, 0);
-                            }
-                        }
-                        v
-                    });
-                let node_sectors = u64::from(sb.btree_node_size());
-                check_btree_accounting(LOGGED_OPS, node_sectors, nodes, have, &mut r);
-            }
-            Ok(None) => {}
-            Err(e) => r.add("btree_node", format!("btree logged_ops: {e}")),
-        }
+    // A btree's own accounting key (#381, #741). Like the other allocation
+    // figures, only on a filesystem shut down cleanly.
+    if sb.is_clean() {
+        check_btree_counters(
+            &trees,
+            u64::from(sb.btree_node_size()),
+            |id| btree::node_counts(dev, &sb, id, replay.as_ref()),
+            &mut r,
+        );
     }
     // A btree's per-snapshot counters (#163). Clean only, as above.
     if sb.is_clean() {
@@ -1288,8 +1265,9 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
     // Every `reflink_p`: where it is, and the reflink btree sectors
     // `idx..idx + size` it shows (#139).
     let mut pointers: Vec<(Bpos, u64, u64)> = Vec::new();
-    // Where each extent's pointers land, for the backpointers no extent claims.
-    let mut extent_sectors: BTreeMap<(u64, u64), Vec<u64>> = BTreeMap::new();
+    // Where each extent's pointers land, for the backpointers no extent claims
+    // and those moved off their extent's position.
+    let mut claims: BTreeMap<(u64, u64), Vec<Claim>> = BTreeMap::new();
     for k in trees
         .get(&btree_id::EXTENTS)
         .into_iter()
@@ -1394,10 +1372,13 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
             if let Some(bps) = backpointers {
                 data_backpointer(k, &e, bucket_size, bps, &mut r);
             }
-            extent_sectors
+            claims
                 .entry((k.pos.inode, k.pos.offset))
                 .or_default()
-                .push(e.ptr.offset);
+                .push((
+                    e.ptr.offset,
+                    backpointer_offset(&e).filter(|_| !e.ptr.is_unwritten()),
+                ));
             // A poisoned extent's data is known to be bad, and the
             // filesystem says so: the reference checker passes an image
             // holding one (S8, the `poison` image), and so does this one.
@@ -1434,7 +1415,12 @@ pub fn check(dev: &dyn BlockRead) -> Result<Report> {
                 (k.pos.offset, bucket)
             })
             .collect();
+        let extent_sectors: BTreeMap<(u64, u64), Vec<u64>> = claims
+            .iter()
+            .map(|(&at, c)| (at, c.iter().map(|&(sector, _)| sector).collect()))
+            .collect();
         unclaimed_backpointers(bps, &extent_sectors, &alloc, b, &mut r);
+        moved_backpointers(bps, &claims, &alloc, b, &mut r);
     }
 
     // Reflinks (#139): every `reflink_p` lands on indirect extents that
@@ -2035,6 +2021,39 @@ struct BucketAlloc {
     dirty: u32,
 }
 
+/// The user data backpointers of the extents btree in the buckets the
+/// reference judges, each with its device sector and the extent it names.
+fn judged_backpointers<'a>(
+    bps: &'a BTreeMap<u64, &'a Bkey>,
+    alloc: &'a BTreeMap<u64, BucketAlloc>,
+    bucket_size: u64,
+) -> impl Iterator<Item = (&'a Bkey, u64, Bpos)> {
+    let mut held: BTreeMap<u64, u64> = BTreeMap::new();
+    for (&at, bp) in bps {
+        let bucket = (at >> 16) / bucket_size;
+        let gen = alloc.get(&bucket).map_or(0, |a| a.gen);
+        if bp.value.len() >= 12 && bp.value[3] == gen {
+            *held.entry(bucket).or_default() += u64::from(le32(&bp.value, 8));
+        }
+    }
+    bps.iter().filter_map(move |(&at, &bp)| {
+        let v = &bp.value;
+        let sector = at >> 16;
+        let bucket = sector / bucket_size;
+        let total = held.get(&bucket).copied().unwrap_or(0);
+        let a = alloc.get(&bucket);
+        if v.len() < 32
+            || v[..3] != [btree_id::EXTENTS, 0, DATA_USER]
+            || total == 0
+            || total == a.map_or(0, |a| u64::from(a.dirty))
+            || a.is_some_and(|a| matches!(a.data_type, DATA_SUPERBLOCK | DATA_JOURNAL))
+        {
+            return None;
+        }
+        Some((bp, sector, Bpos::parse(&v[12..32]).ok()?))
+    })
+}
+
 /// A backpointer that names an extent none of whose pointers land on its
 /// sector (#433). The reference judges a bucket's backpointers only where they
 /// do not add up to its dirty sectors, adding only those at the bucket's
@@ -2053,31 +2072,7 @@ fn unclaimed_backpointers(
     bucket_size: u64,
     r: &mut Report,
 ) {
-    let mut held: BTreeMap<u64, u64> = BTreeMap::new();
-    for (&at, bp) in bps {
-        let bucket = (at >> 16) / bucket_size;
-        let gen = alloc.get(&bucket).map_or(0, |a| a.gen);
-        if bp.value.len() >= 12 && bp.value[3] == gen {
-            *held.entry(bucket).or_default() += u64::from(le32(&bp.value, 8));
-        }
-    }
-    for (&at, bp) in bps {
-        let v = &bp.value;
-        let sector = at >> 16;
-        let bucket = sector / bucket_size;
-        let total = held.get(&bucket).copied().unwrap_or(0);
-        let a = alloc.get(&bucket);
-        if v.len() < 32
-            || v[..3] != [btree_id::EXTENTS, 0, DATA_USER]
-            || total == 0
-            || total == a.map_or(0, |a| u64::from(a.dirty))
-            || a.is_some_and(|a| matches!(a.data_type, DATA_SUPERBLOCK | DATA_JOURNAL))
-        {
-            continue;
-        }
-        let Ok(target) = Bpos::parse(&v[12..32]) else {
-            continue;
-        };
+    for (bp, sector, target) in judged_backpointers(bps, alloc, bucket_size) {
         let Some(sectors) = extent_sectors.get(&(target.inode, target.offset)) else {
             continue;
         };
@@ -2107,6 +2102,18 @@ fn sectors_at_generation(
         .sum()
 }
 
+/// The offset within its sector that a data extent's backpointer position
+/// carries. The aged image's piece at offset 136 of the region at sector
+/// 26880 has its backpointer at 26880 << 16 | 136. Only uncompressed pieces
+/// and whole compressed regions have an observed lookup rule.
+fn backpointer_offset(e: &DataExtent) -> Option<u64> {
+    let known = e.crc.is_none_or(|c| {
+        c.compression_type == crate::extent::compression::NONE
+            || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
+    });
+    known.then(|| u64::from(e.crc.map_or(0, |c| c.offset)))
+}
+
 /// The observed backpointer lookup for a written data extent (#163).
 fn data_backpointer(
     k: &Bkey,
@@ -2115,17 +2122,10 @@ fn data_backpointer(
     bps: &BTreeMap<u64, &Bkey>,
     r: &mut Report,
 ) {
-    // The aged image's piece at offset 136 of the region at sector 26880
-    // has its backpointer at 26880 << 16 | 136. Only uncompressed pieces
-    // and whole compressed regions have an observed lookup rule.
-    let known = e.crc.is_none_or(|c| {
-        c.compression_type == crate::extent::compression::NONE
-            || (c.offset == 0 && u64::from(c.uncompressed_size) == e.len)
-    });
-    let at = e.ptr.offset << 16 | u64::from(e.crc.map_or(0, |c| c.offset));
-    if !known || e.ptr.is_unwritten() {
+    let Some(offset) = backpointer_offset(e).filter(|_| !e.ptr.is_unwritten()) else {
         return;
-    }
+    };
+    let at = e.ptr.offset << 16 | offset;
     let Some(bp) = bps.get(&at) else {
         r.add(
             "missing_backpointer",
@@ -2193,6 +2193,75 @@ fn verify_data(dev: &dyn BlockRead, e: &DataExtent) -> Result<()> {
     })
 }
 
+/// Where one extent's pointer lands: the device sector, and the offset
+/// within it that its backpointer's position carries, where observed.
+type Claim = (u64, Option<u64>);
+
+/// A backpointer at an extent's sector but not at the position the extent
+/// gives (#741). S3: the reference's "backpointer doesn't match extent it
+/// points to", found at offset 1 of the sector and wanted at offset 0. Judged
+/// in the same buckets as [`unclaimed_backpointers`], and only where every
+/// claim on that sector has an observed position.
+fn moved_backpointers(
+    bps: &BTreeMap<u64, &Bkey>,
+    claims: &BTreeMap<(u64, u64), Vec<Claim>>,
+    alloc: &BTreeMap<u64, BucketAlloc>,
+    bucket_size: u64,
+    r: &mut Report,
+) {
+    for (bp, sector, target) in judged_backpointers(bps, alloc, bucket_size) {
+        let Some(claims) = claims.get(&(target.inode, target.offset)) else {
+            continue;
+        };
+        let here = || claims.iter().filter(|c| c.0 == sector).map(|c| c.1);
+        let offset = bp.pos.offset & 0xffff;
+        if here().next().is_some() && here().all(|o| o.is_some_and(|o| o != offset)) {
+            r.add(
+                "backpointer_to_missing_ptr",
+                format!(
+                    "backpointer {}: extent {target} has no backpointer position at device \
+                     sector {sector} offset {offset}",
+                    bp.pos
+                ),
+            );
+        }
+    }
+}
+
+/// Every btree's own accounting key against its nodes (#381, #741). A btree
+/// with no key at its position is judged for logged_ops and snapshot_trees
+/// only, the two the reference has been seen to report with none.
+fn check_btree_counters(
+    trees: &BTreeMap<u8, Vec<Bkey>>,
+    node_sectors: u64,
+    mut nodes: impl FnMut(u8) -> Result<Option<(u64, u64)>>,
+    r: &mut Report,
+) {
+    for &id in trees.keys() {
+        let at = (ACCT_BTREE << 56) | (u64::from(id) << 48);
+        let key = trees
+            .get(&ACCOUNTING)
+            .into_iter()
+            .flatten()
+            .find(|k| k.pos.inode == at && k.pos.offset == 0 && k.pos.snapshot == 0);
+        if key.is_none() && ![LOGGED_OPS, SNAPSHOT_TREES].contains(&id) {
+            continue;
+        }
+        // A key of another type there counts nothing.
+        let have = key
+            .filter(|k| k.key_type == KEY_ACCOUNTING)
+            .map(|k| [0, 1, 2].map(|i| k.value.get(i * 8..i * 8 + 8).map_or(0, |w| le64(w, 0))));
+        match nodes(id) {
+            Ok(Some(nodes)) => check_btree_accounting(id, node_sectors, nodes, have, r),
+            Ok(None) => {}
+            Err(e) => r.add(
+                "btree_node",
+                format!("btree {}: {e}", journal::btree_name(id)),
+            ),
+        }
+    }
+}
+
 /// Btree `id`'s own accounting key, `have` (`None` when there is none),
 /// against what its `nodes` add up to: nodes times `node_sectors` sectors,
 /// the nodes, and the interior nodes. S3: the reference's "accounting
@@ -2228,8 +2297,9 @@ fn check_btree_accounting(
 
 /// A btree's per-snapshot counters are the keys it holds in that snapshot
 /// and their unpacked bytes (#163: the reference's "accounting mismatch for
-/// snapshot id=4294967295 btree=dirents"). Data sectors are not judged: no
-/// measurement says what they count.
+/// snapshot id=4294967295 btree=dirents"). Data sectors are judged only
+/// where every key counted is of a type measured to hold none, inline_data
+/// and dirent (#741): no measurement says what the others count.
 fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
     for k in trees
         .get(&ACCOUNTING)
@@ -2252,14 +2322,28 @@ fn check_snapshot_accounting(trees: &BTreeMap<u8, Vec<Bkey>>, r: &mut Report) {
             },
             Err(_) => (format!("(unknown btree {btree})"), &[][..]),
         };
-        let held = keys
-            .iter()
-            .filter(|x| x.pos.snapshot == snapshot && !UNCOUNTED_KEY_TYPES.contains(&x.key_type));
-        let want = held.fold([0u64; 2], |[n, bytes], x| {
+        let held = || {
+            keys.iter().filter(|x| {
+                x.pos.snapshot == snapshot && !UNCOUNTED_KEY_TYPES.contains(&x.key_type)
+            })
+        };
+        let want = held().fold([0u64; 2], |[n, bytes], x| {
             [n + 1, bytes + UNPACKED_KEY_BYTES + x.value.len() as u64]
         });
-        let have = [0, 1].map(|i| k.value.get(i * 8..i * 8 + 8).map_or(0, |w| le64(w, 0)));
-        if want != have {
+        let [n, bytes, sectors] =
+            [0, 1, 2].map(|i| k.value.get(i * 8..i * 8 + 8).map_or(0, |w| le64(w, 0)));
+        let have = [n, bytes];
+        let no_data = want[0] != 0
+            && held().all(|x| matches!(x.key_type, key_type::INLINE_DATA | key_type::DIRENT));
+        if no_data && sectors != 0 {
+            r.add(
+                "accounting_mismatch",
+                format!(
+                    "snapshot {snapshot} btree {name}: its keys hold no data sectors; the \
+                     accounting says {sectors}"
+                ),
+            );
+        } else if want != have {
             r.add(
                 "accounting_mismatch",
                 format!(
@@ -4982,6 +5066,113 @@ mod tests {
         let mut unrelated = Report::default();
         check_key_fields(btree_id::INODES, &k, &mut unrelated);
         assert!(unrelated.clean(), "{unrelated:?}");
+    }
+
+    /// Nightly differential run 45837218401, default.img and block4k.img
+    /// seed 1662678: a second backpointer one offset past an extent's own, in
+    /// the same sector. The reference wants it at the extent's position.
+    #[test]
+    fn a_backpointer_moved_within_its_extents_sector_is_reported() {
+        let mut value = vec![btree_id::EXTENTS, 0, DATA_USER, 0, 0, 0, 0, 0];
+        value.extend_from_slice(&8u32.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&8u64.to_le_bytes());
+        value.extend_from_slice(&2147483766u64.to_le_bytes());
+        let at = 1000u64 << 16;
+        let own = key(KEY_BACKPOINTER, at, value.clone());
+        let moved = key(KEY_BACKPOINTER, at + 1, value);
+        let bps = BTreeMap::from([(at, &own), (at + 1, &moved)]);
+        let run = |claim: Claim, dirty: u32| {
+            let claims = BTreeMap::from([((2147483766u64, 8u64), vec![claim])]);
+            let alloc = BTreeMap::from([(
+                15u64,
+                BucketAlloc {
+                    gen: 0,
+                    data_type: DATA_USER,
+                    dirty,
+                },
+            )]);
+            let mut r = Report::default();
+            moved_backpointers(&bps, &claims, &alloc, 64, &mut r);
+            r.problems
+        };
+        let problems = run((1000, Some(0)), 8);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "backpointer_to_missing_ptr");
+        assert!(problems[0].detail.contains(&moved.pos.to_string()));
+        // A bucket whose totals balance is passed, as the reference does.
+        assert!(run((1000, Some(0)), 16).is_empty());
+        // An offset with no observed rule is not judged.
+        assert!(run((1000, None), 8).is_empty());
+        // A pointer at another sector is `unclaimed_backpointers`' finding.
+        assert!(run((2000, Some(0)), 8).is_empty());
+    }
+
+    /// Nightly differential run 45837218401, kernel-rootsnap.img seed
+    /// 1662718: "accounting mismatch for btree btree=dirents: got 320 1 1
+    /// should be 320 5 1".
+    #[test]
+    fn every_btree_accounting_key_is_held_to_its_nodes() {
+        let counter = |sectors: u64, nodes: u64, interior: u64| {
+            let mut v = sectors.to_le_bytes().to_vec();
+            v.extend(nodes.to_le_bytes());
+            v.extend(interior.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos.inode = (ACCT_BTREE << 56) | (u64::from(btree_id::DIRENTS) << 48);
+            k
+        };
+        let run = |acct: Bkey| {
+            let trees = BTreeMap::from([(btree_id::DIRENTS, Vec::new()), (ACCOUNTING, vec![acct])]);
+            let mut r = Report::default();
+            check_btree_counters(&trees, 64, |_| Ok(Some((5, 1))), &mut r);
+            r.problems
+        };
+        assert!(run(counter(320, 5, 1)).is_empty());
+        let problems = run(counter(320, 1, 1));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "accounting_mismatch");
+        assert!(problems[0].detail.contains("btree dirents"), "{problems:?}");
+    }
+
+    /// Nightly differential run 45837218401, kernel-rootsnap.img seed
+    /// 1662646: "accounting mismatch for snapshot id=4294967293
+    /// btree=extents: got 2 112 4654105073906763887 should be 2 112 0", over
+    /// two inline_data keys.
+    #[test]
+    fn a_per_snapshot_data_sector_counter_out_of_step_with_its_keys_is_named() {
+        const SNAPSHOT: u32 = u32::MAX - 2;
+        let extent = |key_type: u8, offset: u64, len: usize| {
+            let mut k = key(key_type, offset, vec![0; len]);
+            k.pos.snapshot = SNAPSHOT;
+            k
+        };
+        let judge = |btree: u8, keys: Vec<Bkey>, bytes: u64, sectors: u64| {
+            let mut v = (keys.len() as u64).to_le_bytes().to_vec();
+            v.extend(bytes.to_le_bytes());
+            v.extend(sectors.to_le_bytes());
+            let mut k = key(KEY_ACCOUNTING, 0, v);
+            k.pos.inode = (ACCT_SNAPSHOT_BTREE << 56)
+                | (u64::from(SNAPSHOT.swap_bytes()) << 24)
+                | (u64::from(btree) << 16);
+            let trees = BTreeMap::from([(btree, keys), (ACCOUNTING, vec![k])]);
+            let mut r = Report::default();
+            check_snapshot_accounting(&trees, &mut r);
+            r.problems
+        };
+        let inline = vec![
+            extent(key_type::INLINE_DATA, 8, 24),
+            extent(key_type::INLINE_DATA, 16, 8),
+        ];
+        assert!(judge(btree_id::EXTENTS, inline.clone(), 112, 0).is_empty());
+        let problems = judge(btree_id::EXTENTS, inline, 112, 4654105073906763887);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].kind, "accounting_mismatch");
+        let dirents = vec![extent(key_type::DIRENT, 1, 16)];
+        assert!(judge(btree_id::DIRENTS, dirents.clone(), 56, 0).is_empty());
+        assert_eq!(judge(btree_id::DIRENTS, dirents, 56, 1).len(), 1);
+        // A key type whose data sectors nothing measured leaves them unjudged.
+        let reserved = vec![extent(key_type::RESERVATION, 8, 8)];
+        assert!(judge(btree_id::EXTENTS, reserved, 48, 8).is_empty());
     }
 
     #[test]
