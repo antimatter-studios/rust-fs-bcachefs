@@ -445,7 +445,8 @@ tasks:
       # #380 adds twenty bucket counter cases: fifteen unit, three oracle and
       # two against the live reference.
       # #741 adds six cases: three unit and three oracle.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 663'
+      # #743 adds one live-reference need_discard case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh --refuse-ignored vm 664'
 
   # The command-line tools as installed. MEASURED 2026-10-06 (macOS arm64,
   # the eight formatter-made sets): 11 lines / 510 bytes, 2498 checks;
