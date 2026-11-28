@@ -3187,6 +3187,95 @@ fn where_the_reference_finds_free_space_damage_this_checker_names_it() {
     }
 }
 
+/// #743: aged.img seed 1662769 changed the type of a waiting bucket's
+/// need_discard key, and the reference checker called the image clean where
+/// this checker reported the key missing. The key is deleted, or given each
+/// type every btree may hold, on a copy of two reference-made images. Both
+/// checkers must give the same verdict on every case. A failure prints every
+/// case's verdicts, so one run records what the reference does with each.
+#[cfg(feature = "write")]
+#[test]
+fn both_checkers_agree_on_a_need_discard_key_gone_or_changed_type() {
+    use fs_bcachefs::bkey::{key_type, Bkey, Bpos};
+    use fs_bcachefs::btree;
+    use fs_bcachefs::write::Writer;
+
+    const NEED_DISCARD: u8 = 12;
+    const DATA_NEED_DISCARD: u8 = 9;
+    const KEY_SET: u8 = 25;
+    // The nightly's change was to whiteout; the others bound the rule.
+    const TYPES: [(&str, u8); 5] = [
+        ("deleted", key_type::DELETED),
+        ("whiteout", key_type::WHITEOUT),
+        ("error", key_type::ERROR),
+        ("cookie", 3),
+        ("unnamed-40", 40),
+    ];
+    assert!(
+        Path::new("/usr/local/bin/bcachefs-ref").exists(),
+        "the reference checker is not here: run `chore test:vm`"
+    );
+    let mut rows = Vec::new();
+    let mut disagreements = Vec::new();
+    for set in ["default", "aged"] {
+        let source = fixture(&format!("{set}.img"));
+        let dev = FileDevice::open(&source).unwrap();
+        let sb = Superblock::read(&dev).unwrap();
+        let alloc = btree::walk(&dev, &sb, btree_id::ALLOC)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.key_type == key_type::ALLOC_V4 && k.value[14] == DATA_NEED_DISCARD)
+            .unwrap_or_else(|| panic!("{set}.img has a bucket waiting for discard"));
+        let at = Bpos {
+            inode: u64::from_le_bytes(alloc.value[48..56].try_into().unwrap()),
+            offset: alloc.pos.offset,
+            snapshot: 0,
+        };
+        assert!(
+            btree::walk(&dev, &sb, NEED_DISCARD)
+                .unwrap()
+                .iter()
+                .any(|k| k.key_type == KEY_SET && k.pos == at),
+            "{set}: the reference left no need_discard key at {at}"
+        );
+        for (name, key_type) in TYPES {
+            let dir = ScratchDir::new("check-need-discard-type");
+            assert_seen_by_reference(&dir);
+            let img = dir.into_image(format!("{set}-{name}.img"));
+            common::copy_sparse(&source, &img);
+            let (status, text) = reference_checks(&img);
+            assert_eq!(status, Some(0), "{set}: the unchanged control:\n{text}");
+            assert!(check(&FileDevice::open(&img).unwrap()).unwrap().clean());
+            let changed = Bkey {
+                key_type,
+                size: 0,
+                version_hi: 0,
+                version_lo: 0,
+                pos: at,
+                value: Vec::new(),
+            };
+            let mut writer = Writer::open(FileDevice::open_rw(&img).unwrap()).unwrap();
+            writer.insert(NEED_DISCARD, vec![changed]).unwrap();
+            drop(writer);
+            let (status, text) = reference_checks(&img);
+            let ours = check(&FileDevice::open(&img).unwrap()).unwrap();
+            let row = format!(
+                "{set}, {name} at {at}: reference status {status:?}, this checker {:?}\n{text}",
+                ours.problems
+            );
+            if ours.clean() != (status == Some(0)) {
+                disagreements.push(format!("{set}, {name}"));
+            }
+            rows.push(row);
+        }
+    }
+    assert!(
+        disagreements.is_empty(),
+        "the checkers disagree on {disagreements:?}\n\n{}",
+        rows.join("\n")
+    );
+}
+
 /// A bucket_gens key has no extent size: kernel.img seed 1 in differential
 /// run 38749903964 stored one with a nonzero size, which the reference
 /// rejected (`bkey_size_nonzero`) and this checker called clean.
